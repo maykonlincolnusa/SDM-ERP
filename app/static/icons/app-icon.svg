@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title">
+  <title id="title">Acai Gestao</title>
+  <rect width="512" height="512" rx="112" fill="#153e36"/>
+  <circle cx="256" cy="256" r="174" fill="#eaf4e6"/>
+  <path d="M166 306c0-65 38-116 90-116s90 51 90 116v27H166z" fill="#5a1f4d"/>
+  <path d="M183 302h146l-18 69c-5 20-22 34-43 34h-24c-21 0-38-14-43-34z" fill="#74275f"/>
+  <path d="M180 293c24-29 48-39 76-39s52 10 76 39c-22 15-47 22-76 22s-54-7-76-22z" fill="#8a2f6a"/>
+  <circle cx="219" cy="261" r="16" fill="#f04e3e"/>
+  <circle cx="262" cy="247" r="18" fill="#efb840"/>
+  <circle cx="299" cy="267" r="15" fill="#f6d578"/>
+  <path d="M326 129c-10 38-26 73-52 103" fill="none" stroke="#c57a3d" stroke-linecap="round" stroke-width="21"/>
+  <path d="M215 355h82" fill="none" stroke="#eaf4e6" stroke-linecap="round" stroke-width="12" opacity=".7"/>
+</svg>

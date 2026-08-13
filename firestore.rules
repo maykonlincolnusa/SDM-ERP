@@ -1,0 +1,11 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // The FastAPI service uses the Admin SDK. Direct browser access is reserved
+    // for explicitly trusted owners and is denied to every other user.
+    match /{document=**} {
+      allow read, write: if request.auth != null && request.auth.token.erp_admin == true;
+    }
+  }
+}

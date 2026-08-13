@@ -1,0 +1,37 @@
+{
+  "id": "/",
+  "name": "Acai Gestao",
+  "short_name": "Acai Gestao",
+  "description": "Vendas, estoque e financeiro da sua loja de acai em um so lugar.",
+  "lang": "pt-BR",
+  "dir": "ltr",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "display_override": ["standalone"],
+  "orientation": "any",
+  "background_color": "#f5f3ef",
+  "theme_color": "#153e36",
+  "categories": ["business", "food", "productivity"],
+  "prefer_related_applications": false,
+  "icons": [
+    {
+      "src": "/static/icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/static/icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/static/icons/icon-512-maskable.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ]
+}

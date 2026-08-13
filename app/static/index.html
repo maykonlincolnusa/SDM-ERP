@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#153e36" />
+    <meta name="application-name" content="Acai Gestao" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <meta name="apple-mobile-web-app-title" content="Acai Gestao" />
+    <link rel="manifest" href="/static/manifest.webmanifest" />
+    <link rel="apple-touch-icon" href="/static/icons/icon-192.png" />
+    <title>Açaí Gestão</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Fraunces:opsz,wght@9..144,600&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <section class="auth-gate" id="auth-gate" aria-labelledby="auth-title" hidden>
+      <form class="auth-card" id="auth-form">
+        <div class="auth-brand"><span class="brand-mark">a</span><span><strong>Açaí</strong><em>gestão</em></span></div>
+        <p class="eyebrow">Acesso da loja</p>
+        <h1 id="auth-title">Entre para continuar.</h1>
+        <label>Email<input name="email" type="email" autocomplete="email" required /></label>
+        <label>Senha<input name="password" type="password" autocomplete="current-password" required /></label>
+        <p class="auth-status" id="auth-status" role="status" aria-live="polite"></p>
+        <button class="primary-button" type="submit"><i data-lucide="log-in"></i><span>Entrar</span></button>
+      </form>
+    </section>
+    <div class="app-shell">
+      <button class="mobile-nav-backdrop" id="mobile-nav-backdrop" type="button" aria-label="Fechar menu" hidden></button>
+      <aside class="sidebar" aria-label="Navegação principal">
+        <a class="brand" href="#dashboard" aria-label="Açaí Gestão, início">
+          <span class="brand-mark">a</span>
+          <span><strong>Açaí</strong><em>gestão</em></span>
+        </a>
+
+        <nav class="nav-list" id="main-navigation">
+          <button class="nav-item active" data-view-target="dashboard"><i data-lucide="layout-dashboard"></i><span>Visão geral</span></button>
+          <button class="nav-item" data-view-target="orders"><i data-lucide="receipt-text"></i><span>Pedidos</span></button>
+          <button class="nav-item" data-view-target="inventory"><i data-lucide="package-search"></i><span>Estoque</span><b id="nav-stock-count" hidden>0</b></button>
+          <button class="nav-item" data-view-target="finance"><i data-lucide="wallet-cards"></i><span>Financeiro</span></button>
+          <button class="nav-item" data-view-target="products"><i data-lucide="cup-soda"></i><span>Cardápio</span></button>
+          <button class="nav-item" data-view-target="files"><i data-lucide="folder-sync"></i><span>Arquivos</span><b id="nav-files-count" hidden>0</b></button>
+        </nav>
+
+        <div class="sidebar-spacer"></div>
+        <div class="store-context">
+          <span class="store-icon"><i data-lucide="store"></i></span>
+          <span><strong>Minha loja</strong><small id="storage-mode">Carregando dados</small></span>
+        </div>
+      </aside>
+
+      <main class="workspace">
+        <header class="topbar">
+          <button class="icon-button mobile-nav" id="mobile-menu" title="Abrir menu" aria-controls="main-navigation" aria-expanded="false"><i data-lucide="menu"></i></button>
+          <div class="date-context"><span id="today-label">Hoje</span><strong>Operação em tempo real</strong></div>
+          <div class="topbar-actions">
+            <button class="icon-button" type="button" id="refresh-data" title="Atualizar dados"><i data-lucide="refresh-cw"></i></button>
+            <button class="icon-button" type="button" id="install-app" title="Instalar aplicativo" hidden><i data-lucide="download"></i></button>
+            <button class="primary-button" type="button" data-modal="sale"><i data-lucide="plus"></i><span>Nova venda</span></button>
+          </div>
+        </header>
+
+        <section class="view active" id="dashboard" aria-labelledby="dashboard-title">
+          <div class="page-heading">
+            <div><p class="eyebrow">Visão geral</p><h1 id="dashboard-title">Bom trabalho, vamos cuidar da loja.</h1></div>
+            <label class="period-control">Período <select id="period-select" aria-label="Selecionar período"><option value="7">Últimos 7 dias</option><option value="30">Últimos 30 dias</option></select></label>
+          </div>
+
+          <div class="metric-grid" id="metric-grid" aria-live="polite">
+            <article class="metric-card"><span class="metric-icon revenue"><i data-lucide="banknote"></i></span><p>Faturamento</p><strong data-metric="revenue">--</strong><small data-metric="revenue-change">Atualizando</small></article>
+            <article class="metric-card"><span class="metric-icon orders"><i data-lucide="shopping-bag"></i></span><p>Pedidos concluídos</p><strong data-metric="orders">--</strong><small>no período selecionado</small></article>
+            <article class="metric-card"><span class="metric-icon ticket"><i data-lucide="tag"></i></span><p>Ticket médio</p><strong data-metric="ticket">--</strong><small>por venda</small></article>
+            <article class="metric-card"><span class="metric-icon margin"><i data-lucide="chart-no-axes-combined"></i></span><p>Margem bruta</p><strong data-metric="margin">--</strong><small data-metric="gross-profit">--</small></article>
+          </div>
+
+          <div class="dashboard-grid">
+            <section class="panel sales-panel" aria-labelledby="sales-title">
+              <div class="panel-header"><div><p class="eyebrow">Vendas</p><h2 id="sales-title">Ritmo de faturamento</h2></div><span class="panel-total" id="chart-total">--</span></div>
+              <div class="chart-wrap"><div class="chart-y-axis"><span>R$ 200</span><span>R$ 100</span><span>R$ 0</span></div><div class="chart" id="sales-chart" aria-label="Gráfico de vendas por dia"></div></div>
+            </section>
+
+            <section class="panel best-seller" aria-labelledby="featured-title">
+              <div class="panel-header"><div><p class="eyebrow">Ação do dia</p><h2 id="featured-title">Faça render</h2></div><button class="icon-button" type="button" title="Ver cardápio" data-view-target="products"><i data-lucide="arrow-up-right"></i></button></div>
+              <div class="featured-content"><div><strong id="featured-name">Produto campeão</strong><p id="featured-copy">Acompanhe o item de maior giro para garantir disponibilidade.</p><span class="soft-chip"><i data-lucide="trending-up"></i><span id="featured-amount">--</span></span></div><img src="/static/assets/acai-copo.png" alt="Copo de açaí com frutas e granola" /></div>
+            </section>
+          </div>
+
+          <div class="dashboard-grid lower-grid">
+            <section class="panel" aria-labelledby="insight-title"><div class="panel-header"><div><p class="eyebrow">Gestão inteligente</p><h2 id="insight-title">O que pede atenção</h2></div><i data-lucide="sparkles" class="heading-icon"></i></div><div class="insight-list" id="insight-list"></div></section>
+            <section class="panel" aria-labelledby="channel-title"><div class="panel-header"><div><p class="eyebrow">Canais</p><h2 id="channel-title">De onde vêm as vendas</h2></div></div><div class="channel-list" id="channel-list"></div></section>
+          </div>
+
+          <section class="panel orders-panel" aria-labelledby="recent-orders-title"><div class="panel-header"><div><p class="eyebrow">Operação</p><h2 id="recent-orders-title">Pedidos recentes</h2></div><button class="text-button" type="button" data-view-target="orders">Ver todos <i data-lucide="arrow-right"></i></button></div><div class="table-scroll"><table><thead><tr><th>Pedido</th><th>Canal</th><th>Itens</th><th>Pagamento</th><th>Valor</th></tr></thead><tbody id="recent-orders-body"></tbody></table></div></section>
+        </section>
+
+        <section class="view" id="orders" aria-labelledby="orders-title">
+          <div class="page-heading"><div><p class="eyebrow">Operação</p><h1 id="orders-title">Pedidos</h1><p class="page-description">Vendas concluídas e seus canais de origem.</p></div><button class="primary-button" type="button" data-modal="sale"><i data-lucide="plus"></i><span>Nova venda</span></button></div>
+          <section class="panel table-panel"><div class="filter-row"><span class="field-label">Pedidos recentes</span><label class="search-field"><i data-lucide="search"></i><input id="order-search" type="search" placeholder="Buscar pedido ou canal" /></label></div><div class="table-scroll"><table><thead><tr><th>Número</th><th>Data</th><th>Origem</th><th>Itens</th><th>Pagamento</th><th class="align-right">Total</th></tr></thead><tbody id="orders-body"></tbody></table></div></section>
+        </section>
+
+        <section class="view" id="inventory" aria-labelledby="inventory-title">
+          <div class="page-heading"><div><p class="eyebrow">Controle de insumos</p><h1 id="inventory-title">Estoque</h1><p class="page-description">O estoque é descontado automaticamente a cada venda pela ficha técnica.</p></div><div class="heading-actions"><button class="secondary-button" type="button" data-modal="adjust"><i data-lucide="sliders-horizontal"></i><span>Ajustar saldo</span></button><button class="primary-button" type="button" data-modal="inventory"><i data-lucide="plus"></i><span>Novo insumo</span></button></div></div>
+          <div class="inventory-summary" id="inventory-summary"></div>
+          <section class="panel table-panel"><div class="filter-row"><span class="field-label">Itens cadastrados</span><label class="search-field"><i data-lucide="search"></i><input id="inventory-search" type="search" placeholder="Buscar insumo" /></label></div><div class="table-scroll"><table><thead><tr><th>Insumo</th><th>Categoria</th><th>Saldo atual</th><th>Estoque mínimo</th><th>Custo médio</th><th>Status</th></tr></thead><tbody id="inventory-body"></tbody></table></div></section>
+        </section>
+
+        <section class="view" id="finance" aria-labelledby="finance-title">
+          <div class="page-heading"><div><p class="eyebrow">Resultado e caixa</p><h1 id="finance-title">Financeiro</h1><p class="page-description">Veja o que a operação já gerou e o que ainda vence nos próximos dias.</p></div><button class="primary-button" type="button" data-modal="expense"><i data-lucide="plus"></i><span>Lançar despesa</span></button></div>
+          <div class="finance-grid"><section class="panel result-panel"><p class="eyebrow">Resultado operacional</p><h2 id="finance-result">--</h2><p id="finance-result-copy">Aguardando dados financeiros</p><div class="result-lines"><span><i data-lucide="arrow-up-right"></i>Faturamento<strong id="finance-revenue">--</strong></span><span><i data-lucide="arrow-down-right"></i>Custos e despesas pagas<strong id="finance-cost">--</strong></span></div></section><section class="panel"><div class="panel-header"><div><p class="eyebrow">Pendências</p><h2>Próximos vencimentos</h2></div><span class="soft-chip" id="pending-count">--</span></div><div class="due-list" id="due-list"></div></section></div>
+          <section class="panel table-panel"><div class="panel-header"><div><p class="eyebrow">Lançamentos</p><h2>Despesas cadastradas</h2></div></div><div class="table-scroll"><table><thead><tr><th>Descrição</th><th>Categoria</th><th>Vencimento</th><th>Status</th><th class="align-right">Valor</th></tr></thead><tbody id="expenses-body"></tbody></table></div></section>
+        </section>
+
+        <section class="view" id="products" aria-labelledby="products-title">
+          <div class="page-heading"><div><p class="eyebrow">Preço e margem</p><h1 id="products-title">Cardápio</h1><p class="page-description">O custo de cada produto é calculado pela receita e atualizado com o custo dos insumos.</p></div><button class="primary-button" type="button" data-modal="product"><i data-lucide="plus"></i><span>Novo produto</span></button></div>
+          <div class="product-grid" id="product-grid"></div>
+        </section>
+
+        <section class="view" id="files" aria-labelledby="files-title">
+          <div class="page-heading"><div><p class="eyebrow">Central da loja</p><h1 id="files-title">Documentos e imagens</h1><p class="page-description">Arquivos da operação organizados para consulta e conferência.</p></div><div class="heading-actions"><button class="secondary-button" type="button" id="sync-media"><i data-lucide="refresh-cw"></i><span>Sincronizar</span></button><label class="primary-button upload-button"><i data-lucide="upload"></i><span>Enviar arquivos</span><input id="media-upload" type="file" accept=".pdf,.xlsx,.xls,.csv,.doc,.docx,.txt,.jpg,.jpeg,.png,.webp" multiple hidden /></label></div></div>
+          <div class="media-summary" id="media-summary"></div>
+          <section class="media-browser"><div class="media-toolbar"><label class="search-field"><i data-lucide="search"></i><input id="media-search" type="search" placeholder="Buscar arquivo ou etiqueta" /></label><div class="media-filters" role="group" aria-label="Filtrar arquivos"><button type="button" class="filter-chip active" data-media-filter="all">Todos</button><button type="button" class="filter-chip" data-media-filter="image">Imagens</button><button type="button" class="filter-chip" data-media-filter="spreadsheet">Planilhas</button><button type="button" class="filter-chip" data-media-filter="document">Documentos</button></div></div><div class="media-grid" id="media-grid"></div></section>
+        </section>
+      </main>
+    </div>
+
+    <div class="offline-banner" id="offline-banner" role="status" hidden>Sem conexao. Os dados serao atualizados quando a internet voltar.</div>
+    <div class="modal-backdrop" id="modal-backdrop" hidden></div>
+    <dialog class="modal" id="sale-modal" aria-labelledby="sale-modal-title"><form method="dialog" class="modal-shell" id="sale-form"><header class="modal-header"><div><p class="eyebrow">Pedido rápido</p><h2 id="sale-modal-title">Registrar venda</h2></div><button class="icon-button" type="button" data-close-modal title="Fechar"><i data-lucide="x"></i></button></header><div class="modal-body sale-layout"><section><p class="section-label">Escolha os produtos</p><div id="sale-products" class="sale-products"></div></section><aside class="sale-cart"><p class="section-label">Resumo do pedido</p><div id="cart-lines" class="cart-lines"><p class="empty-state">Selecione um produto ao lado.</p></div><div class="cart-total"><span>Total</span><strong id="cart-total">R$ 0,00</strong></div><div class="form-grid"><label>Canal<select name="channel"><option>Balcao</option><option>Delivery</option><option>iFood</option><option>WhatsApp</option></select></label><label>Pagamento<select name="payment_method"><option>Pix</option><option>Credito</option><option>Debito</option><option>Dinheiro</option></select></label><label>Cliente <input name="customer_name" maxlength="80" placeholder="Opcional" /></label><label>Desconto <input name="discount" type="number" min="0" step="0.01" value="0" /></label></div></aside></div><footer class="modal-footer"><button class="secondary-button" type="button" data-close-modal>Cancelar</button><button class="primary-button" type="submit" id="submit-sale"><i data-lucide="check"></i><span>Concluir venda</span></button></footer></form></dialog>
+
+    <dialog class="modal compact" id="expense-modal" aria-labelledby="expense-modal-title"><form method="dialog" class="modal-shell data-form" id="expense-form"><header class="modal-header"><div><p class="eyebrow">Financeiro</p><h2 id="expense-modal-title">Lançar despesa</h2></div><button class="icon-button" type="button" data-close-modal title="Fechar"><i data-lucide="x"></i></button></header><div class="modal-body form-grid two"><label>Descrição<input name="description" required maxlength="100" placeholder="Ex.: Compra de polpas" /></label><label>Categoria<select name="category"><option>Insumos</option><option>Fixo</option><option>Equipe</option><option>Marketing</option><option>Taxas</option><option>Outros</option></select></label><label>Valor<input name="amount" type="number" min="0.01" step="0.01" required /></label><label>Vencimento<input name="due_date" type="date" required /></label><label class="full">Situação<select name="status"><option value="Pendente">Pendente</option><option value="Paga">Paga</option></select></label></div><footer class="modal-footer"><button class="secondary-button" type="button" data-close-modal>Cancelar</button><button class="primary-button" type="submit"><i data-lucide="check"></i><span>Salvar despesa</span></button></footer></form></dialog>
+
+    <dialog class="modal compact" id="adjust-modal" aria-labelledby="adjust-modal-title"><form method="dialog" class="modal-shell data-form" id="adjust-form"><header class="modal-header"><div><p class="eyebrow">Controle de estoque</p><h2 id="adjust-modal-title">Ajustar saldo</h2></div><button class="icon-button" type="button" data-close-modal title="Fechar"><i data-lucide="x"></i></button></header><div class="modal-body form-grid"><label class="full">Insumo<select name="inventory_id" id="adjust-inventory" required></select></label><label>Variação<input name="quantity_delta" type="number" step="0.001" required placeholder="Ex.: 5 ou -0,5" /></label><label>Motivo<input name="reason" maxlength="120" required placeholder="Ex.: recebimento do fornecedor" /></label></div><footer class="modal-footer"><button class="secondary-button" type="button" data-close-modal>Cancelar</button><button class="primary-button" type="submit"><i data-lucide="check"></i><span>Aplicar ajuste</span></button></footer></form></dialog>
+
+    <dialog class="modal compact" id="inventory-modal" aria-labelledby="inventory-modal-title"><form method="dialog" class="modal-shell data-form" id="inventory-form"><header class="modal-header"><div><p class="eyebrow">Controle de estoque</p><h2 id="inventory-modal-title">Novo insumo</h2></div><button class="icon-button" type="button" data-close-modal title="Fechar"><i data-lucide="x"></i></button></header><div class="modal-body form-grid two"><label>Nome<input name="name" required maxlength="80" /></label><label>Categoria<input name="category" required maxlength="40" value="Insumos" /></label><label>Unidade<input name="unit" required maxlength="12" placeholder="kg, L ou un" /></label><label>Saldo inicial<input name="quantity" type="number" min="0" step="0.001" required /></label><label>Estoque mínimo<input name="minimum_quantity" type="number" min="0" step="0.001" required /></label><label>Custo por unidade<input name="unit_cost" type="number" min="0" step="0.01" required /></label></div><footer class="modal-footer"><button class="secondary-button" type="button" data-close-modal>Cancelar</button><button class="primary-button" type="submit"><i data-lucide="check"></i><span>Adicionar insumo</span></button></footer></form></dialog>
+
+    <dialog class="modal compact" id="product-modal" aria-labelledby="product-modal-title"><form method="dialog" class="modal-shell data-form" id="product-form"><header class="modal-header"><div><p class="eyebrow">Cardápio</p><h2 id="product-modal-title">Novo produto</h2></div><button class="icon-button" type="button" data-close-modal title="Fechar"><i data-lucide="x"></i></button></header><div class="modal-body form-grid two"><label>Nome<input name="name" required maxlength="80" /></label><label>Categoria<input name="category" required maxlength="40" value="Açaí" /></label><label class="full">Preço de venda<input name="price" type="number" min="0.01" step="0.01" required /></label><fieldset class="recipe-fieldset full"><legend>Ficha técnica</legend><div id="recipe-lines"></div><button class="text-button recipe-add" type="button" id="add-recipe-line"><i data-lucide="plus"></i>Adicionar insumo</button></fieldset></div><footer class="modal-footer"><button class="secondary-button" type="button" data-close-modal>Cancelar</button><button class="primary-button" type="submit"><i data-lucide="check"></i><span>Salvar produto</span></button></footer></form></dialog>
+
+    <dialog class="modal compact" id="media-modal" aria-labelledby="media-modal-title"><form method="dialog" class="modal-shell data-form" id="media-form"><header class="modal-header"><div><p class="eyebrow" id="media-kind-label">Arquivo</p><h2 id="media-modal-title">Organizar arquivo</h2></div><button class="icon-button" type="button" data-close-modal title="Fechar"><i data-lucide="x"></i></button></header><div class="modal-body"><div class="media-detail-preview" id="media-detail-preview"></div><div class="media-context" id="media-context" hidden></div><div class="form-grid two"><label>Nome para consulta<input name="title" required maxlength="120" /></label><label>Categoria<select name="category"><option>Financeiro</option><option>Precificação</option><option>Compras</option><option>Contratos</option><option>Planilhas</option><option>Documentos</option><option>Marketing</option><option>Operação</option></select></label><label class="full">Etiquetas<input name="tags" maxlength="180" placeholder="Ex.: fornecedor, julho, comprovante" /></label><label>Vincular a<select name="entity_type" id="media-entity-type"><option value="">Sem vínculo</option><option value="expense">Despesa</option><option value="product">Produto</option><option value="inventory">Insumo</option></select></label><label>Registro<select name="entity_id" id="media-entity-id" disabled><option value="">Selecione o tipo acima</option></select></label></div></div><footer class="modal-footer"><a class="secondary-button" id="media-open" href="#" target="_blank"><i data-lucide="external-link"></i><span>Abrir arquivo</span></a><span class="modal-footer-spacer"></span><button class="secondary-button" type="button" data-close-modal>Cancelar</button><button class="primary-button" type="submit"><i data-lucide="check"></i><span>Salvar organização</span></button></footer></form></dialog>
+    <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+    <script src="/static/vendor/lucide.js"></script>
+    <script src="/static/pwa-register.js"></script>
+    <script src="/static/firebase-auth.js"></script>
+    <script src="/static/app.js"></script>
+  </body>
+</html>
