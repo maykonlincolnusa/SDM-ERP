@@ -20,3 +20,9 @@ data/gold/*
 data/runtime/*
 !data/runtime/.gitkeep
 .firebase-service-account.json
+
+# Relatorios e planilhas de negocio ficam fora do Git, como data/raw.
+# O .dockerignore ja aplica a mesma regra para a imagem.
+*.xlsx
+*.xls
+*.csv
