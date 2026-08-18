@@ -166,13 +166,18 @@ function renderDashboard() {
   setText('[data-metric="revenue"]', currency.format(metrics.revenue));
   setText('[data-metric="orders"]', number.format(metrics.orders));
   setText('[data-metric="ticket"]', currency.format(metrics.average_ticket));
-  setText('[data-metric="margin"]', `${number.format(metrics.gross_margin)}%`);
+  // Sem nenhum pedido com custo, a margem nao e zero: e desconhecida. Mostrar
+  // "0%" faria o gestor ler prejuizo onde nao ha informacao nenhuma.
+  const semCusto = (metrics.margin_coverage ?? 100) <= 0;
+  setText('[data-metric="margin"]', semCusto ? "—" : `${number.format(metrics.gross_margin)}%`);
   // Pedido importado nao traz custo. Sem esse aviso, a margem parece valer para
   // o periodo inteiro quando na verdade cobre so parte do faturamento.
   const cobertura = metrics.margin_coverage ?? 100;
   setText('[data-metric="gross-profit"]', cobertura >= 99.5
     ? `${currency.format(metrics.gross_profit)} de lucro bruto`
-    : `sobre ${number.format(cobertura)}% do faturamento — ${currency.format(metrics.revenue_without_cost)} sem custo lançado`);
+    : cobertura <= 0
+      ? "nenhum pedido do período tem custo lançado"
+      : `sobre ${number.format(cobertura)}% do faturamento — ${currency.format(metrics.revenue_without_cost)} sem custo lançado`);
   const change = document.querySelector('[data-metric="revenue-change"]');
   const signal = metrics.revenue_change >= 0 ? "+" : "";
   change.textContent = `${signal}${number.format(metrics.revenue_change)}% vs. período anterior`;
