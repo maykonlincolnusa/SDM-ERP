@@ -41,6 +41,7 @@
           <button class="nav-item active" data-view-target="dashboard"><i data-lucide="layout-dashboard"></i><span>Visão geral</span></button>
           <button class="nav-item" data-view-target="orders"><i data-lucide="receipt-text"></i><span>Pedidos</span></button>
           <button class="nav-item" data-view-target="inventory"><i data-lucide="package-search"></i><span>Estoque</span><b id="nav-stock-count" hidden>0</b></button>
+          <button class="nav-item" data-view-target="consumption"><i data-lucide="clipboard-list"></i><span>Consumo</span></button>
           <button class="nav-item" data-view-target="finance"><i data-lucide="wallet-cards"></i><span>Financeiro</span></button>
           <button class="nav-item" data-view-target="products"><i data-lucide="cup-soda"></i><span>Cardápio</span></button>
           <button class="nav-item" data-view-target="files"><i data-lucide="folder-sync"></i><span>Arquivos</span><b id="nav-files-count" hidden>0</b></button>
@@ -106,6 +107,32 @@
           <div class="page-heading"><div><p class="eyebrow">Controle de insumos</p><h1 id="inventory-title">Estoque</h1><p class="page-description">O estoque é descontado automaticamente a cada venda pela ficha técnica.</p></div><div class="heading-actions"><button class="secondary-button" type="button" data-modal="adjust"><i data-lucide="sliders-horizontal"></i><span>Ajustar saldo</span></button><button class="primary-button" type="button" data-modal="inventory"><i data-lucide="plus"></i><span>Novo insumo</span></button></div></div>
           <div class="inventory-summary" id="inventory-summary"></div>
           <section class="panel table-panel"><div class="filter-row"><span class="field-label">Itens cadastrados</span><label class="search-field"><i data-lucide="search"></i><input id="inventory-search" type="search" placeholder="Buscar insumo" /></label></div><div class="table-scroll"><table><thead><tr><th>Insumo</th><th>Categoria</th><th>Saldo atual</th><th>Estoque mínimo</th><th>Custo médio</th><th>Status</th></tr></thead><tbody id="inventory-body"></tbody></table></div></section>
+        </section>
+
+        <section class="view" id="consumption" aria-labelledby="consumption-title">
+          <div class="page-heading"><div><p class="eyebrow">Saída de insumos</p><h1 id="consumption-title">Consumo</h1><p class="page-description">Tudo que saiu do estoque no período: o que virou venda e o que se perdeu pelo caminho.</p></div><div class="heading-actions"><button class="secondary-button" type="button" data-modal="adjust"><i data-lucide="sliders-horizontal"></i><span>Lançar baixa</span></button></div></div>
+
+          <div class="metric-grid">
+            <article class="metric-card"><span class="metric-icon revenue"><i data-lucide="coins"></i></span><p>Custo consumido</p><strong id="consumption-total">--</strong><small id="consumption-daily">no período</small></article>
+            <article class="metric-card"><span class="metric-icon orders"><i data-lucide="shopping-bag"></i></span><p>Saiu em venda</p><strong id="consumption-sale">--</strong><small>insumo que virou faturamento</small></article>
+            <article class="metric-card"><span class="metric-icon margin"><i data-lucide="trash-2"></i></span><p>Perdas</p><strong id="consumption-loss">--</strong><small id="consumption-loss-share">--</small></article>
+            <article class="metric-card"><span class="metric-icon ticket"><i data-lucide="hourglass"></i></span><p>Acabando em breve</p><strong id="consumption-running-out">--</strong><small>menos de 7 dias de estoque</small></article>
+          </div>
+
+          <section class="panel" aria-labelledby="consumption-chart-title">
+            <div class="panel-header"><div><p class="eyebrow">Dia a dia</p><h2 id="consumption-chart-title">Custo do que saiu</h2></div><span class="chart-legend"><span class="legend-key sale"></span>Venda<span class="legend-key loss"></span>Perda</span></div>
+            <div class="chart-wrap"><div class="chart-y-axis" id="consumption-y-axis"></div><div class="chart stacked" id="consumption-chart" aria-label="Custo de insumos por dia"></div></div>
+          </section>
+
+          <section class="panel table-panel">
+            <div class="filter-row"><span class="field-label">Por insumo</span><label class="search-field"><i data-lucide="search"></i><input id="consumption-search" type="search" placeholder="Buscar insumo" /></label></div>
+            <div class="table-scroll"><table><thead><tr><th>Insumo</th><th class="align-right">Vendido</th><th class="align-right">Perdido</th><th class="align-right">Custo</th><th class="align-right">Saldo</th><th>Duração</th></tr></thead><tbody id="consumption-body"></tbody></table></div>
+          </section>
+
+          <section class="panel table-panel">
+            <div class="panel-header"><div><p class="eyebrow">Registro</p><h2>Últimas movimentações</h2></div></div>
+            <div class="table-scroll"><table><thead><tr><th>Quando</th><th>Insumo</th><th>Movimento</th><th>Motivo</th><th class="align-right">Quantidade</th></tr></thead><tbody id="movement-body"></tbody></table></div>
+          </section>
         </section>
 
         <section class="view" id="finance" aria-labelledby="finance-title">

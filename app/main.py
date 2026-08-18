@@ -138,6 +138,15 @@ def inventory(service: ERPService = Depends(erp), _: dict = Depends(current_user
     return service.inventory()
 
 
+@app.get("/api/inventory/consumption")
+def inventory_consumption(
+    days: int = Query(default=7, ge=1, le=90),
+    service: ERPService = Depends(erp),
+    _: dict = Depends(current_user),
+) -> dict:
+    return service.consumption(days)
+
+
 @app.post("/api/inventory", status_code=status.HTTP_201_CREATED)
 def create_inventory_item(payload: InventoryItemCreate, service: ERPService = Depends(erp), _: dict = Depends(current_user)) -> dict:
     return _run(lambda: service.create_inventory_item(payload))

@@ -289,6 +289,19 @@ i[data-lucide] { width: 18px; height: 18px; stroke-width: 1.75; }
 .bar-group { height: 100%; display: flex; flex-direction: column; justify-content: flex-end; align-items: center; gap: 8px; min-width: 0; }
 .bar { width: min(30px, 74%); min-height: 4px; border-radius: 8px 8px 3px 3px; background: var(--accent); transition: height 450ms ease; }
 .bar-group:hover .bar { background: var(--accent-press); }
+/* Barra empilhada do consumo: venda embaixo, perda destacada no topo. */
+.chart.stacked .bar-stack { display: flex; flex-direction: column-reverse; align-items: center; width: min(30px, 74%); }
+.chart.stacked .bar { width: 100%; min-height: 0; border-radius: 0; transition: height 450ms ease; }
+.chart.stacked .bar.sale { background: var(--accent); border-radius: 0 0 3px 3px; }
+.chart.stacked .bar.loss { background: var(--orange); border-radius: 8px 8px 0 0; }
+.chart.stacked .bar.sale:only-child { border-radius: 8px 8px 3px 3px; }
+.chart.stacked .bar.empty { height: 2px; border-radius: 2px; background: var(--line-strong); }
+.chart-legend { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 11px; font-weight: 600; }
+.legend-key { width: 9px; height: 9px; border-radius: 3px; }
+.legend-key.sale { background: var(--accent); }
+.legend-key.loss { background: var(--orange); margin-left: 6px; }
+td strong.negative { color: var(--orange-ink); }
+
 .bar-label { overflow: hidden; max-width: 100%; color: var(--faint); font-size: 10px; font-weight: 500; white-space: nowrap; text-overflow: ellipsis; }
 
 .best-seller { overflow: hidden; }

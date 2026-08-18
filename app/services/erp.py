@@ -9,6 +9,11 @@ from app.repositories.store import Store, StoreTransaction
 from app.schemas import ExpenseCreate, InventoryAdjustment, InventoryItemCreate, OrderCreate, ProductCreate
 
 
+# Marca os movimentos gerados pela venda. Todo o resto e lancamento manual:
+# perda, quebra, degustacao ou recebimento.
+SALE_REASON = "Venda registrada"
+
+
 def needs_restock(item: dict[str, Any]) -> bool:
     """Only alert when a minimum was actually configured.
 
@@ -158,7 +163,7 @@ class ERPService:
                     "id": str(uuid4()),
                     "inventory_id": inventory_id,
                     "quantity_delta": -round(quantity, 3),
-                    "reason": "Venda registrada",
+                    "reason": SALE_REASON,
                     "created_at": now.isoformat(),
                 }
                 transaction.put("inventory_movements", movement["id"], movement)
@@ -225,6 +230,88 @@ class ERPService:
             return item
 
         return self.store.run_transaction(adjust)
+
+    def consumption(self, days: int = 7) -> dict[str, Any]:
+        """Turn the movement log into what the owner actually needs to decide.
+
+        Movements are already written by every sale and every manual
+        adjustment, but nothing reads them. Sales and losses are separated
+        because they mean opposite things: one produced revenue, the other
+        just evaporated.
+        """
+
+        days = max(1, min(days, 90))
+        now = datetime.now(timezone.utc)
+        start = now - timedelta(days=days - 1)
+        stock = {item["id"]: item for item in self.store.list("inventory")}
+
+        by_item: dict[str, dict[str, Any]] = {}
+        by_day: dict[str, dict[str, float]] = {}
+        for offset in range(days - 1, -1, -1):
+            by_day[(now.date() - timedelta(days=offset)).isoformat()] = {"sale_cost": 0.0, "loss_cost": 0.0}
+
+        history: list[dict[str, Any]] = []
+        for movement in self.store.list("inventory_movements"):
+            moment = self._timestamp(movement["created_at"])
+            if moment < start:
+                continue
+            item = stock.get(movement["inventory_id"])
+            if not item:
+                continue
+            delta = movement["quantity_delta"]
+            kind = "entrada" if delta > 0 else "venda" if movement["reason"] == SALE_REASON else "perda"
+            quantity = abs(delta)
+            cost = round(quantity * item["unit_cost"], 2)
+            day = moment.date().isoformat()
+            if kind != "entrada" and day in by_day:
+                by_day[day]["sale_cost" if kind == "venda" else "loss_cost"] += cost
+
+            row = by_item.setdefault(
+                movement["inventory_id"],
+                {"inventory_id": item["id"], "name": item["name"], "unit": item["unit"], "sold": 0.0, "lost": 0.0, "received": 0.0, "cost": 0.0},
+            )
+            row["sold" if kind == "venda" else "lost" if kind == "perda" else "received"] += quantity
+            if kind != "entrada":
+                row["cost"] += cost
+            history.append({**movement, "name": item["name"], "unit": item["unit"], "kind": kind, "cost": cost})
+
+        items = []
+        for row in by_item.values():
+            item = stock[row["inventory_id"]]
+            used = row["sold"] + row["lost"]
+            daily_average = used / days
+            items.append({
+                **row,
+                "sold": round(row["sold"], 3),
+                "lost": round(row["lost"], 3),
+                "received": round(row["received"], 3),
+                "used": round(used, 3),
+                "cost": round(row["cost"], 2),
+                "quantity": item["quantity"],
+                "daily_average": round(daily_average, 3),
+                # Sem consumo no periodo nao da para projetar duracao sem inventar numero.
+                "days_left": round(item["quantity"] / daily_average, 1) if daily_average > 0 else None,
+            })
+        items.sort(key=lambda row: row["cost"], reverse=True)
+
+        sale_cost = round(sum(day["sale_cost"] for day in by_day.values()), 2)
+        loss_cost = round(sum(day["loss_cost"] for day in by_day.values()), 2)
+        total_cost = round(sale_cost + loss_cost, 2)
+        history.sort(key=lambda row: row["created_at"], reverse=True)
+        return {
+            "period_days": days,
+            "totals": {
+                "sale_cost": sale_cost,
+                "loss_cost": loss_cost,
+                "total_cost": total_cost,
+                "loss_share": round(loss_cost / total_cost * 100, 1) if total_cost else 0.0,
+                "daily_cost": round(total_cost / days, 2),
+            },
+            "series": [{"date": day, **{key: round(value, 2) for key, value in values.items()}} for day, values in by_day.items()],
+            "items": items,
+            "running_out": [row for row in items if row["days_left"] is not None and row["days_left"] <= 7],
+            "history": history[:40],
+        }
 
     def create_expense(self, payload: ExpenseCreate) -> dict[str, Any]:
         expense = payload.model_dump()

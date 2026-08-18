@@ -6,6 +6,7 @@ const state = {
   expenses: [],
   media: [],
   mediaSummary: null,
+  consumption: null,
   mediaFilter: "all",
   selectedMediaId: null,
   mediaObjectUrl: null,
@@ -38,6 +39,7 @@ async function init() {
   });
   document.getElementById("order-search").addEventListener("input", renderOrders);
   document.getElementById("inventory-search").addEventListener("input", renderInventory);
+  document.getElementById("consumption-search").addEventListener("input", renderConsumption);
   document.getElementById("mobile-menu").addEventListener("click", () => {
     setMobileNavigation(!document.querySelector(".sidebar").classList.contains("open"));
   });
@@ -98,9 +100,10 @@ function setMobileNavigation(open) {
 async function loadAll() {
   setRefreshing(true);
   try {
-    const [config, dashboard, products, inventory, orders, expenses, mediaSummary, media] = await Promise.all([
+    const [config, dashboard, consumption, products, inventory, orders, expenses, mediaSummary, media] = await Promise.all([
       api("/api/config"),
       api(`/api/dashboard?days=${state.period}`),
+      api(`/api/inventory/consumption?days=${state.period}`),
       api("/api/products"),
       api("/api/inventory"),
       api("/api/orders"),
@@ -109,6 +112,7 @@ async function loadAll() {
       api("/api/media"),
     ]);
     state.dashboard = dashboard;
+    state.consumption = consumption;
     state.products = products;
     state.inventory = inventory;
     state.orders = orders;
@@ -126,8 +130,14 @@ async function loadAll() {
 
 async function loadDashboard() {
   try {
-    state.dashboard = await api(`/api/dashboard?days=${state.period}`);
+    const [dashboard, consumption] = await Promise.all([
+      api(`/api/dashboard?days=${state.period}`),
+      api(`/api/inventory/consumption?days=${state.period}`),
+    ]);
+    state.dashboard = dashboard;
+    state.consumption = consumption;
     renderDashboard();
+    renderConsumption();
   } catch (error) {
     toast(error.message, "error");
   }
@@ -137,6 +147,7 @@ function renderAll() {
   renderDashboard();
   renderOrders();
   renderInventory();
+  renderConsumption();
   renderFinance();
   renderProducts();
   renderMedia();
@@ -252,6 +263,56 @@ function renderInventory() {
     return `<tr><td><strong>${escapeHtml(item.name)}</strong></td><td>${escapeHtml(item.category)}</td><td><span class="stock-level"><i class="stock-dot ${dot}"></i><span class="stock-amount">${number.format(item.quantity)} ${escapeHtml(item.unit)}</span></span></td><td class="muted-value">${minimum}</td><td>${currency.format(item.unit_cost)}</td><td><span class="status-pill ${status.css}">${status.label}</span></td></tr>`;
   }).join("") : emptyRow(6, "Nenhum insumo encontrado.");
   refreshIcons();
+}
+
+function renderConsumption() {
+  const data = state.consumption;
+  if (!data) return;
+  const { totals } = data;
+  setText("#consumption-total", currency.format(totals.total_cost));
+  setText("#consumption-daily", `${currency.format(totals.daily_cost)} por dia, em média`);
+  setText("#consumption-sale", currency.format(totals.sale_cost));
+  setText("#consumption-loss", currency.format(totals.loss_cost));
+  setText("#consumption-loss-share", totals.total_cost ? `${number.format(totals.loss_share)}% de tudo que saiu` : "nada registrado ainda");
+  setText("#consumption-running-out", number.format(data.running_out.length));
+  renderConsumptionChart(data.series);
+
+  const query = document.getElementById("consumption-search")?.value.trim().toLocaleLowerCase("pt-BR") || "";
+  const items = data.items.filter((item) => item.name.toLocaleLowerCase("pt-BR").includes(query));
+  document.getElementById("consumption-body").innerHTML = items.length ? items.map((item) => {
+    const duration = item.days_left === null
+      ? '<span class="muted-value">sem consumo</span>'
+      : `<span class="status-pill ${item.days_left <= 7 ? "pending" : "success"}">${number.format(item.days_left)} dias</span>`;
+    const lost = item.lost > 0 ? `<strong class="negative">${number.format(item.lost)} ${escapeHtml(item.unit)}</strong>` : `<span class="muted-value">—</span>`;
+    return `<tr><td><strong>${escapeHtml(item.name)}</strong></td><td class="align-right">${number.format(item.sold)} ${escapeHtml(item.unit)}</td><td class="align-right">${lost}</td><td class="align-right">${currency.format(item.cost)}</td><td class="align-right muted-value">${number.format(item.quantity)} ${escapeHtml(item.unit)}</td><td>${duration}</td></tr>`;
+  }).join("") : emptyRow(6, "Nenhuma saída de insumo no período.");
+
+  document.getElementById("movement-body").innerHTML = data.history.length ? data.history.map((row) => {
+    const labels = { venda: "Venda", perda: "Baixa", entrada: "Entrada" };
+    const css = { venda: "success", perda: "pending", entrada: "neutral" };
+    const signal = row.quantity_delta > 0 ? "+" : "";
+    return `<tr><td class="muted-value">${escapeHtml(formatDateTime(row.created_at))}</td><td><strong>${escapeHtml(row.name)}</strong></td><td><span class="status-pill ${css[row.kind]}">${labels[row.kind]}</span></td><td>${escapeHtml(row.reason)}</td><td class="align-right"><strong>${signal}${number.format(row.quantity_delta)} ${escapeHtml(row.unit)}</strong></td></tr>`;
+  }).join("") : emptyRow(5, "Nenhuma movimentação registrada.");
+  refreshIcons();
+}
+
+function renderConsumptionChart(series) {
+  const container = document.getElementById("consumption-chart");
+  if (!container) return;
+  const peak = Math.max(...series.map((row) => row.sale_cost + row.loss_cost), 0);
+  const top = niceCeiling(peak);
+  const axis = document.getElementById("consumption-y-axis");
+  if (axis) axis.innerHTML = [top, top / 2, 0].map((value) => `<span>${escapeHtml(currency.format(value))}</span>`).join("");
+  container.style.setProperty("--columns", series.length);
+  container.innerHTML = series.map((row) => {
+    const total = row.sale_cost + row.loss_cost;
+    const height = (value) => (value > 0 ? Math.max(3, Math.round((value / top) * 150)) : 0);
+    const title = `${formatDate(row.date)}: ${currency.format(row.sale_cost)} em venda, ${currency.format(row.loss_cost)} em perda`;
+    const stack = total > 0
+      ? `<span class="bar loss" style="height:${height(row.loss_cost)}px"></span><span class="bar sale" style="height:${height(row.sale_cost)}px"></span>`
+      : `<span class="bar empty"></span>`;
+    return `<div class="bar-group" title="${escapeHtml(title)}"><span class="bar-stack">${stack}</span><span class="bar-label">${escapeHtml(shortDate.format(new Date(`${row.date}T12:00:00`)).replace(".", ""))}</span></div>`;
+  }).join("");
 }
 
 function renderFinance() {
