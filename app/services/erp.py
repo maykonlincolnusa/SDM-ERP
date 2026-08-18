@@ -9,6 +9,17 @@ from app.repositories.store import Store, StoreTransaction
 from app.schemas import ExpenseCreate, InventoryAdjustment, InventoryItemCreate, OrderCreate, ProductCreate
 
 
+def needs_restock(item: dict[str, Any]) -> bool:
+    """Only alert when a minimum was actually configured.
+
+    Items imported from the pricing workbook arrive with minimum zero, which
+    means "not defined yet" and not "out of stock". Treating those as critical
+    would bury the real alerts under one line per ingredient.
+    """
+
+    return item["minimum_quantity"] > 0 and item["quantity"] <= item["minimum_quantity"]
+
+
 class ERPService:
     def __init__(self, store: Store):
         self.store = store
@@ -22,7 +33,7 @@ class ERPService:
         return sorted(products, key=lambda item: item["name"])
 
     def inventory(self) -> list[dict[str, Any]]:
-        return sorted(self.store.list("inventory"), key=lambda item: (item["quantity"] > item["minimum_quantity"], item["name"]))
+        return sorted(self.store.list("inventory"), key=lambda item: (not needs_restock(item), item["name"]))
 
     def orders(self, days: int | None = None) -> list[dict[str, Any]]:
         values = self.store.list("orders")
@@ -47,7 +58,7 @@ class ERPService:
         previous_revenue = sum(order["total"] for order in previous_orders)
         average_ticket = revenue / len(current_orders) if current_orders else 0
         inventory = self.inventory()
-        low_stock = [item for item in inventory if item["quantity"] <= item["minimum_quantity"]]
+        low_stock = [item for item in inventory if needs_restock(item)]
         by_day: dict[str, float] = defaultdict(float)
         labels: list[str] = []
         for offset in range(days - 1, -1, -1):
@@ -250,10 +261,11 @@ class ERPService:
 
     def _insights(self, orders: list[dict[str, Any]], inventory: list[dict[str, Any]], products: Counter[str], channels: Counter[str]) -> list[dict[str, str]]:
         insights: list[dict[str, str]] = []
-        critical = [item for item in inventory if item["quantity"] <= item["minimum_quantity"]]
+        critical = [item for item in inventory if needs_restock(item)]
         if critical:
             names = ", ".join(item["name"] for item in critical[:2])
             insights.append({"type": "attention", "title": "Reposição prioritária", "description": f"{names} atingiu o estoque mínimo. Programe a compra antes do próximo pico."})
+        insights.extend(self._setup_insights(orders, inventory))
         if products:
             product, volume = products.most_common(1)[0]
             insights.append({"type": "opportunity", "title": "Produto com maior giro", "description": f"{product} vendeu {volume} unidades no período. Mantenha esse item visível no balcão."})
@@ -264,3 +276,33 @@ class ERPService:
         if not insights:
             insights.append({"type": "info", "title": "Dados em formação", "description": "Registre as vendas do dia para liberar recomendações mais precisas."})
         return insights[:3]
+
+    @staticmethod
+    def _setup_insights(orders: list[dict[str, Any]], inventory: list[dict[str, Any]]) -> list[dict[str, str]]:
+        """Guidance for a store that was just set up, in the order it should act.
+
+        A catalog imported from the pricing workbook has cost and margin but no
+        balances, so the generic "registre suas vendas" message leaves the owner
+        without a next step.
+        """
+
+        pending: list[dict[str, str]] = []
+        if inventory and not any(item["quantity"] for item in inventory):
+            pending.append({
+                "type": "attention",
+                "title": "Faça a contagem inicial",
+                "description": f"Os {len(inventory)} insumos vieram da precificação sem saldo. Use Ajustar saldo para lançar o que existe hoje e o estoque passa a baixar sozinho a cada venda.",
+            })
+        elif inventory and not any(item["minimum_quantity"] for item in inventory):
+            pending.append({
+                "type": "info",
+                "title": "Defina o estoque mínimo",
+                "description": "Nenhum insumo tem mínimo configurado, então o aviso de reposição fica desligado. Defina o mínimo dos itens que não podem faltar.",
+            })
+        if not orders:
+            pending.append({
+                "type": "info",
+                "title": "Registre a primeira venda",
+                "description": "Faturamento, ticket médio e margem começam a ser calculados assim que a primeira venda entrar em Nova venda.",
+            })
+        return pending

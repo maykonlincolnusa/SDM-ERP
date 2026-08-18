@@ -56,6 +56,28 @@ def test_dashboard_exposes_business_metrics(tmp_path):
     assert dashboard["top_products"]
 
 
+def test_inventory_without_minimum_is_not_reported_as_low_stock(tmp_path):
+    """Insumos importados da precificação chegam com mínimo zero.
+
+    Sem essa distinção, o painel acusa reposição urgente em cada ingrediente da
+    ficha técnica e o alerta real fica invisível no meio do ruído.
+    """
+
+    service = ERPService(DemoStore(tmp_path / "store.json"))
+    service.store.put(
+        "inventory",
+        "stock-importado",
+        {"id": "stock-importado", "name": "Insumo importado", "unit": "kg", "quantity": 0, "minimum_quantity": 0, "unit_cost": 12.0, "category": "Importado da precificação"},
+    )
+
+    dashboard = service.dashboard(7)
+
+    low_stock_ids = {item["id"] for item in dashboard["low_stock"]}
+    assert "stock-importado" not in low_stock_ids
+    titles = {insight["title"] for insight in dashboard["insights"]}
+    assert "Faça a contagem inicial" not in titles, "a loja de demonstração já tem saldo lançado"
+
+
 def test_pricing_importer_creates_recipe_and_suggested_price(tmp_path):
     workbook = Workbook()
     sheet = workbook.active

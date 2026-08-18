@@ -173,12 +173,32 @@ function renderDashboard() {
   refreshIcons();
 }
 
+// Mirrors needs_restock() no backend: minimo zero significa "nao definido".
+function needsRestock(item) {
+  return item.minimum_quantity > 0 && item.quantity <= item.minimum_quantity;
+}
+
+// Escala "bonita" acima do maior valor, para o eixo cair em numeros redondos.
+function niceCeiling(value) {
+  if (value <= 0) return 100;
+  const magnitude = 10 ** Math.floor(Math.log10(value));
+  const steps = [1, 2, 2.5, 5, 10];
+  return magnitude * steps.find((step) => value <= magnitude * step);
+}
+
 function renderChart(series) {
   const container = document.getElementById("sales-chart");
-  const max = Math.max(...series.map((row) => row.value), 1);
+  const peak = Math.max(...series.map((row) => row.value), 0);
+  const top = niceCeiling(peak);
+  const axis = document.getElementById("chart-y-axis");
+  if (axis) {
+    axis.innerHTML = [top, top / 2, 0]
+      .map((value) => `<span>${escapeHtml(currency.format(value))}</span>`)
+      .join("");
+  }
   container.style.setProperty("--columns", series.length);
   container.innerHTML = series.map((row) => {
-    const height = Math.max(4, Math.round((row.value / max) * 150));
+    const height = row.value > 0 ? Math.max(6, Math.round((row.value / top) * 150)) : 2;
     return `<div class="bar-group" title="${escapeHtml(formatDate(row.date))}: ${currency.format(row.value)}"><span class="bar" style="height:${height}px"></span><span class="bar-label">${escapeHtml(shortDate.format(new Date(`${row.date}T12:00:00`)).replace(".", ""))}</span></div>`;
   }).join("");
 }
@@ -216,15 +236,20 @@ function renderOrders() {
 function renderInventory() {
   const query = document.getElementById("inventory-search")?.value.trim().toLocaleLowerCase("pt-BR") || "";
   const items = state.inventory.filter(item => `${item.name} ${item.category}`.toLocaleLowerCase("pt-BR").includes(query));
-  const critical = state.inventory.filter(item => item.quantity <= item.minimum_quantity);
+  const critical = state.inventory.filter(needsRestock);
   const totalValue = state.inventory.reduce((sum, item) => sum + item.quantity * item.unit_cost, 0);
   document.getElementById("inventory-summary").innerHTML = `
     <article class="inventory-stat"><i data-lucide="boxes"></i><div><p>Itens cadastrados</p><strong>${state.inventory.length}</strong></div></article>
     <article class="inventory-stat ${critical.length ? "warning" : ""}"><i data-lucide="triangle-alert"></i><div><p>Abaixo do mínimo</p><strong>${critical.length} item${critical.length === 1 ? "" : "ns"}</strong></div></article>
     <article class="inventory-stat"><i data-lucide="landmark"></i><div><p>Valor em estoque</p><strong>${currency.format(totalValue)}</strong></div></article>`;
   document.getElementById("inventory-body").innerHTML = items.length ? items.map(item => {
-    const low = item.quantity <= item.minimum_quantity;
-    return `<tr><td><strong>${escapeHtml(item.name)}</strong></td><td>${escapeHtml(item.category)}</td><td><span class="stock-level"><i class="stock-dot ${low ? "low" : ""}"></i><span class="stock-amount">${number.format(item.quantity)} ${escapeHtml(item.unit)}</span></span></td><td class="muted-value">${number.format(item.minimum_quantity)} ${escapeHtml(item.unit)}</td><td>${currency.format(item.unit_cost)}</td><td><span class="status-pill ${low ? "pending" : "success"}">${low ? "Repor" : "Saudável"}</span></td></tr>`;
+    const low = needsRestock(item);
+    // Sem contagem e sem minimo o item nao esta saudavel nem em falta: esta por configurar.
+    const uncounted = !low && !item.quantity && !item.minimum_quantity;
+    const status = low ? { css: "pending", label: "Repor" } : uncounted ? { css: "neutral", label: "Sem contagem" } : { css: "success", label: "Saudável" };
+    const dot = low ? "low" : uncounted ? "idle" : "";
+    const minimum = item.minimum_quantity ? `${number.format(item.minimum_quantity)} ${escapeHtml(item.unit)}` : "não definido";
+    return `<tr><td><strong>${escapeHtml(item.name)}</strong></td><td>${escapeHtml(item.category)}</td><td><span class="stock-level"><i class="stock-dot ${dot}"></i><span class="stock-amount">${number.format(item.quantity)} ${escapeHtml(item.unit)}</span></span></td><td class="muted-value">${minimum}</td><td>${currency.format(item.unit_cost)}</td><td><span class="status-pill ${status.css}">${status.label}</span></td></tr>`;
   }).join("") : emptyRow(6, "Nenhum insumo encontrado.");
   refreshIcons();
 }

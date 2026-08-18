@@ -3,7 +3,8 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="theme-color" content="#f5f5f7" />
+    <meta name="theme-color" content="#f5f5f7" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)" />
     <meta name="application-name" content="Acai Gestao" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="default" />
@@ -79,7 +80,7 @@
           <div class="dashboard-grid">
             <section class="panel sales-panel" aria-labelledby="sales-title">
               <div class="panel-header"><div><p class="eyebrow">Vendas</p><h2 id="sales-title">Ritmo de faturamento</h2></div><span class="panel-total" id="chart-total">--</span></div>
-              <div class="chart-wrap"><div class="chart-y-axis"><span>R$ 200</span><span>R$ 100</span><span>R$ 0</span></div><div class="chart" id="sales-chart" aria-label="Gráfico de vendas por dia"></div></div>
+              <div class="chart-wrap"><div class="chart-y-axis" id="chart-y-axis"></div><div class="chart" id="sales-chart" aria-label="Gráfico de vendas por dia"></div></div>
             </section>
 
             <section class="panel best-seller" aria-labelledby="featured-title">
