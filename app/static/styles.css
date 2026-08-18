@@ -170,15 +170,18 @@ i[data-lucide] { width: 18px; height: 18px; stroke-width: 1.75; }
   border-right: 1px solid var(--line);
 }
 .brand { display: flex; align-items: center; gap: 10px; padding: 4px 10px 26px; color: var(--ink); text-decoration: none; }
+/* Marca SDM: tres frutos de acai num quadrado arredondado. Sobrevive sozinha
+   quando a barra lateral colapsa no celular e some o texto ao lado. */
 .brand-mark {
-  display: grid; place-items: center; width: 34px; height: 34px;
-  border-radius: 50%; color: var(--on-accent);
-  background: radial-gradient(circle at 32% 28%, var(--accent-hover), var(--accent) 62%, var(--purple) 165%);
-  box-shadow: 0 3px 10px var(--accent-glow);
-  font-family: var(--font); font-size: 17px; font-weight: 700; line-height: 1;
+  display: grid; place-items: center; flex-shrink: 0; width: 36px; height: 36px;
+  border-radius: 12px; color: #fff;
+  background: linear-gradient(145deg, var(--accent-hover) 0%, var(--accent) 52%, var(--purple) 130%);
+  box-shadow: 0 4px 12px var(--accent-glow), inset 0 1px 0 rgba(255, 255, 255, 0.22);
 }
-.brand strong, .brand em { display: block; font-size: 16px; font-style: normal; font-weight: 600; line-height: 16px; letter-spacing: -0.01em; }
-.brand em { margin-top: 1px; color: var(--muted); font-size: 11px; font-weight: 500; }
+.brand-mark svg { width: 21px; height: 21px; }
+/* SDM tem tres letras: aguenta um pouco mais de corpo e tracking apertado. */
+.brand strong { display: block; font-size: 19px; font-weight: 700; line-height: 19px; letter-spacing: -0.02em; }
+.brand em { display: block; margin-top: 3px; color: var(--muted); font-size: 10.5px; font-style: normal; font-weight: 600; letter-spacing: 0.02em; line-height: 11px; }
 
 .nav-list { display: grid; gap: 3px; }
 .nav-item {
@@ -567,9 +570,12 @@ td strong.negative { color: var(--orange-ink); }
 
 .auth-gate { position: fixed; z-index: 100; inset: 0; display: grid; place-items: center; padding: 20px; background: var(--canvas); }
 .auth-card { display: grid; width: min(100%, 390px); gap: 15px; padding: 30px; border-radius: var(--r-xl); background: var(--paper); box-shadow: var(--shadow-float); }
-.auth-brand { display: flex; align-items: center; gap: 10px; color: var(--ink); font-size: 18px; }
-.auth-brand strong, .auth-brand em { display: block; line-height: 1; }
-.auth-brand em { margin-top: 2px; color: var(--accent); font-family: inherit; font-size: 12px; font-style: normal; font-weight: 700; }
+/* Primeira coisa que o dono ve: a marca ganha corpo aqui. */
+.auth-brand { display: flex; align-items: center; gap: 13px; margin-bottom: 4px; color: var(--ink); }
+.auth-brand .brand-mark { width: 46px; height: 46px; border-radius: 15px; }
+.auth-brand .brand-mark svg { width: 27px; height: 27px; }
+.auth-brand strong { display: block; font-size: 27px; font-weight: 700; line-height: 1; letter-spacing: -0.025em; }
+.auth-brand em { display: block; margin-top: 5px; color: var(--accent); font-size: 11.5px; font-style: normal; font-weight: 700; letter-spacing: 0.04em; line-height: 1; text-transform: uppercase; }
 .auth-card h1 { margin: -4px 0 2px; color: var(--ink); font-size: 24px; font-weight: 700; letter-spacing: -0.015em; line-height: 1.15; }
 .auth-card label { display: grid; gap: 6px; color: var(--muted); font-size: 12px; font-weight: 600; }
 .auth-card input { width: 100%; min-height: 46px; padding: 0 14px; border: 1px solid transparent; border-radius: var(--r-md); background: var(--canvas); color: var(--ink); font: inherit; }
