@@ -295,6 +295,34 @@ i[data-lucide] { width: 18px; height: 18px; stroke-width: 1.75; }
 .bar-group { height: 100%; display: flex; flex-direction: column; justify-content: flex-end; align-items: center; gap: 8px; min-width: 0; }
 .bar { width: min(30px, 74%); min-height: 4px; border-radius: 8px 8px 3px 3px; background: var(--accent); transition: height 450ms ease; }
 .bar-group:hover .bar { background: var(--accent-press); }
+/* ------------------------------------------------------------------ Previsao */
+
+.forecast-empty { display: flex; gap: 16px; align-items: flex-start; padding: 26px; }
+.forecast-empty > i { flex-shrink: 0; width: 26px; height: 26px; color: var(--accent); }
+.forecast-empty strong { display: block; font-size: 16px; }
+.forecast-empty p { margin: 6px 0 12px; max-width: 62ch; color: var(--muted); font-size: 14px; line-height: 1.5; }
+.forecast-progress { display: inline-flex; padding: 5px 12px; border-radius: var(--r-pill); background: var(--accent-soft); color: var(--accent); font-size: 12px; font-weight: 700; }
+
+/* A formula fica visivel de proposito: o gestor precisa poder discordar dela. */
+.formula-panel { margin-bottom: 16px; padding: 22px 24px; }
+.formula { margin: 8px 0 10px; font-family: var(--mono, ui-monospace, "Cascadia Mono", Consolas, monospace); font-size: 15px; font-weight: 600; color: var(--accent); letter-spacing: -0.01em; }
+.formula-note { margin: 0; max-width: 76ch; color: var(--muted); font-size: 13.5px; line-height: 1.5; }
+.panel-note { margin: 0 0 4px; padding: 0 22px; color: var(--muted); font-size: 13px; }
+
+.weekday-list { display: grid; gap: 9px; padding: 4px 22px 20px; }
+.weekday-row { display: grid; grid-template-columns: 62px minmax(40px, 1fr) 46px; align-items: center; gap: 10px; }
+.weekday-row.unsure { opacity: 0.55; }
+.wd-name { font-size: 13px; font-weight: 600; text-transform: capitalize; }
+.wd-bar { height: 8px; border-radius: var(--r-pill); background: var(--neutral-soft); overflow: hidden; }
+.wd-bar > span { display: block; height: 100%; border-radius: var(--r-pill); background: var(--accent); }
+.wd-factor { font-size: 13px; font-weight: 700; text-align: right; font-variant-numeric: tabular-nums; }
+.wd-reading { grid-column: 1 / -1; margin-top: -3px; color: var(--faint); font-size: 11.5px; }
+
+@media (max-width: 720px) {
+  .weekday-row { grid-template-columns: 56px minmax(30px, 1fr) 42px; }
+  .formula { font-size: 13px; }
+}
+
 /* Barra empilhada do consumo: venda embaixo, perda destacada no topo. */
 .chart.stacked .bar-stack { display: flex; flex-direction: column-reverse; align-items: center; width: min(30px, 74%); }
 .chart.stacked .bar { width: 100%; min-height: 0; border-radius: 0; transition: height 450ms ease; }

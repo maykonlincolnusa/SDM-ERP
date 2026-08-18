@@ -42,6 +42,7 @@
           <button class="nav-item" data-view-target="orders"><i data-lucide="receipt-text"></i><span>Pedidos</span></button>
           <button class="nav-item" data-view-target="inventory"><i data-lucide="package-search"></i><span>Estoque</span><b id="nav-stock-count" hidden>0</b></button>
           <button class="nav-item" data-view-target="consumption"><i data-lucide="clipboard-list"></i><span>Consumo</span></button>
+          <button class="nav-item" data-view-target="forecast"><i data-lucide="chart-spline"></i><span>Previsão</span></button>
           <button class="nav-item" data-view-target="finance"><i data-lucide="wallet-cards"></i><span>Financeiro</span></button>
           <button class="nav-item" data-view-target="products"><i data-lucide="cup-soda"></i><span>Cardápio</span></button>
           <button class="nav-item" data-view-target="files"><i data-lucide="folder-sync"></i><span>Arquivos</span><b id="nav-files-count" hidden>0</b></button>
@@ -133,6 +134,52 @@
             <div class="panel-header"><div><p class="eyebrow">Registro</p><h2>Últimas movimentações</h2></div></div>
             <div class="table-scroll"><table><thead><tr><th>Quando</th><th>Insumo</th><th>Movimento</th><th>Motivo</th><th class="align-right">Quantidade</th></tr></thead><tbody id="movement-body"></tbody></table></div>
           </section>
+        </section>
+
+        <section class="view" id="forecast" aria-labelledby="forecast-title">
+          <div class="page-heading"><div><p class="eyebrow">Modelo de demanda</p><h1 id="forecast-title">Previsão</h1><p class="page-description">O que o histórico diz sobre a próxima semana — com a conta aberta, para você poder discordar.</p></div></div>
+
+          <div id="forecast-empty" class="panel forecast-empty" hidden>
+            <i data-lucide="hourglass"></i>
+            <div><strong id="forecast-empty-title">Ainda sem histórico suficiente</strong><p id="forecast-empty-reason"></p><span class="forecast-progress" id="forecast-progress"></span></div>
+          </div>
+
+          <div id="forecast-ready" hidden>
+            <section class="panel formula-panel">
+              <p class="eyebrow">Como a conta é feita</p>
+              <p class="formula" id="forecast-formula">previsão do dia = média diária × peso do dia da semana × tendência</p>
+              <p class="formula-note" id="forecast-basis"></p>
+            </section>
+
+            <div class="metric-grid">
+              <article class="metric-card"><span class="metric-icon revenue"><i data-lucide="equal"></i></span><p>Média diária</p><strong id="fc-baseline">--</strong><small id="fc-baseline-note">base do cálculo</small></article>
+              <article class="metric-card"><span class="metric-icon orders"><i data-lucide="trending-up"></i></span><p>Tendência</p><strong id="fc-trend">--</strong><small>por semana</small></article>
+              <article class="metric-card"><span class="metric-icon margin"><i data-lucide="target"></i></span><p>Erro médio do modelo</p><strong id="fc-error">--</strong><small id="fc-error-note">testado no próprio histórico</small></article>
+              <article class="metric-card"><span class="metric-icon ticket"><i data-lucide="calendar-days"></i></span><p>Histórico usado</p><strong id="fc-days">--</strong><small id="fc-orders">--</small></article>
+            </div>
+
+            <div class="dashboard-grid lower-grid">
+              <section class="panel" aria-labelledby="fc-weekday-title">
+                <div class="panel-header"><div><p class="eyebrow">Fator aprendido</p><h2 id="fc-weekday-title">Peso de cada dia</h2></div></div>
+                <div class="weekday-list" id="fc-weekday"></div>
+              </section>
+              <section class="panel" aria-labelledby="fc-next-title">
+                <div class="panel-header"><div><p class="eyebrow">Projeção</p><h2 id="fc-next-title">Próximos dias</h2></div><span class="panel-total" id="fc-next-total">--</span></div>
+                <div class="table-scroll"><table><thead><tr><th>Dia</th><th class="align-right">Previsto</th><th class="align-right">Peso</th></tr></thead><tbody id="fc-next-body"></tbody></table></div>
+              </section>
+            </div>
+
+            <section class="panel table-panel" id="fc-purchase-panel">
+              <div class="panel-header"><div><p class="eyebrow">Compra sugerida</p><h2>Insumo para os próximos dias</h2></div><span class="soft-chip" id="fc-purchase-total">--</span></div>
+              <p class="panel-note" id="fc-purchase-note"></p>
+              <div class="table-scroll"><table><thead><tr><th>Insumo</th><th class="align-right">Vai precisar</th><th class="align-right">Tem hoje</th><th class="align-right">Comprar</th><th class="align-right">Custo</th></tr></thead><tbody id="fc-purchase-body"></tbody></table></div>
+            </section>
+
+            <section class="panel table-panel" id="fc-product-panel">
+              <div class="panel-header"><div><p class="eyebrow">Movimento do cardápio</p><h2>O que está crescendo e caindo</h2></div></div>
+              <div class="table-scroll"><table><thead><tr><th>Produto</th><th class="align-right">1ª metade</th><th class="align-right">2ª metade</th><th class="align-right">Variação</th><th>Leitura</th></tr></thead><tbody id="fc-product-body"></tbody></table></div>
+            </section>
+          </div>
         </section>
 
         <section class="view" id="finance" aria-labelledby="finance-title">

@@ -7,6 +7,7 @@ const state = {
   media: [],
   mediaSummary: null,
   consumption: null,
+  forecast: null,
   mediaFilter: "all",
   selectedMediaId: null,
   mediaObjectUrl: null,
@@ -100,10 +101,11 @@ function setMobileNavigation(open) {
 async function loadAll() {
   setRefreshing(true);
   try {
-    const [config, dashboard, consumption, products, inventory, orders, expenses, mediaSummary, media] = await Promise.all([
+    const [config, dashboard, consumption, forecast, products, inventory, orders, expenses, mediaSummary, media] = await Promise.all([
       api("/api/config"),
       api(`/api/dashboard?days=${state.period}`),
       api(`/api/inventory/consumption?days=${state.period}`),
+      api("/api/forecast?horizon=7"),
       api("/api/products"),
       api("/api/inventory"),
       api("/api/orders"),
@@ -113,6 +115,7 @@ async function loadAll() {
     ]);
     state.dashboard = dashboard;
     state.consumption = consumption;
+    state.forecast = forecast;
     state.products = products;
     state.inventory = inventory;
     state.orders = orders;
@@ -148,6 +151,7 @@ function renderAll() {
   renderOrders();
   renderInventory();
   renderConsumption();
+  renderForecast();
   renderFinance();
   renderProducts();
   renderMedia();
@@ -163,7 +167,12 @@ function renderDashboard() {
   setText('[data-metric="orders"]', number.format(metrics.orders));
   setText('[data-metric="ticket"]', currency.format(metrics.average_ticket));
   setText('[data-metric="margin"]', `${number.format(metrics.gross_margin)}%`);
-  setText('[data-metric="gross-profit"]', `${currency.format(metrics.gross_profit)} de lucro bruto`);
+  // Pedido importado nao traz custo. Sem esse aviso, a margem parece valer para
+  // o periodo inteiro quando na verdade cobre so parte do faturamento.
+  const cobertura = metrics.margin_coverage ?? 100;
+  setText('[data-metric="gross-profit"]', cobertura >= 99.5
+    ? `${currency.format(metrics.gross_profit)} de lucro bruto`
+    : `sobre ${number.format(cobertura)}% do faturamento — ${currency.format(metrics.revenue_without_cost)} sem custo lançado`);
   const change = document.querySelector('[data-metric="revenue-change"]');
   const signal = metrics.revenue_change >= 0 ? "+" : "";
   change.textContent = `${signal}${number.format(metrics.revenue_change)}% vs. período anterior`;
@@ -320,6 +329,65 @@ function renderConsumptionChart(series) {
       : `<span class="bar empty"></span>`;
     return `<div class="bar-group" title="${escapeHtml(title)}"><span class="bar-stack">${stack}</span><span class="bar-label">${escapeHtml(shortDate.format(new Date(`${row.date}T12:00:00`)).replace(".", ""))}</span></div>`;
   }).join("");
+}
+
+function renderForecast() {
+  const f = state.forecast;
+  if (!f) return;
+  const vazio = document.getElementById("forecast-empty");
+  const pronto = document.getElementById("forecast-ready");
+  vazio.hidden = f.ready;
+  pronto.hidden = !f.ready;
+
+  if (!f.ready) {
+    setText("#forecast-empty-reason", f.reason);
+    setText("#forecast-progress", `${f.history_days} de ${f.required_days} dias necessários`);
+    refreshIcons();
+    return;
+  }
+
+  setText("#forecast-basis", `${f.explanation.baseline_note} ${f.explanation.trend_note}`);
+  setText("#fc-baseline", currency.format(f.baseline));
+  setText("#fc-baseline-note", `média de ${f.history_days} dias, incluindo os sem venda`);
+  const sinal = f.trend.percent_per_week >= 0 ? "+" : "";
+  setText("#fc-trend", `${sinal}${number.format(f.trend.percent_per_week)}%`);
+  setText("#fc-error", `${number.format(f.accuracy.percent)}%`);
+  setText("#fc-error-note", `${currency.format(f.accuracy.mean_absolute_error)} por dia, em média`);
+  setText("#fc-days", `${f.history_days} dias`);
+  setText("#fc-orders", `${number.format(f.orders)} pedidos`);
+
+  const maior = Math.max(...f.weekday_effect.map((d) => d.factor), 1);
+  document.getElementById("fc-weekday").innerHTML = f.weekday_effect.map((d) => `
+    <div class="weekday-row ${d.reliable ? "" : "unsure"}">
+      <span class="wd-name">${escapeHtml(d.name)}</span>
+      <span class="wd-bar"><span style="width:${Math.round((d.factor / maior) * 100)}%"></span></span>
+      <strong class="wd-factor">${number.format(d.factor)}×</strong>
+      <span class="wd-reading">${escapeHtml(d.reading)}</span>
+    </div>`).join("");
+
+  const total = f.daily_forecast.reduce((soma, d) => soma + d.value, 0);
+  setText("#fc-next-total", currency.format(total));
+  document.getElementById("fc-next-body").innerHTML = f.daily_forecast.map((d) => `
+    <tr><td><strong>${escapeHtml(d.weekday)}</strong> <span class="muted-value">${escapeHtml(formatDate(d.date))}</span></td><td class="align-right"><strong>${currency.format(d.value)}</strong></td><td class="align-right muted-value">${number.format(d.factor)}×${d.reliable ? "" : " *"}</td></tr>`).join("");
+
+  const compra = f.purchase_plan;
+  const painelCompra = document.getElementById("fc-purchase-panel");
+  painelCompra.hidden = !compra.available;
+  if (compra.available) {
+    setText("#fc-purchase-total", currency.format(compra.total_cost));
+    setText("#fc-purchase-note", compra.note);
+    document.getElementById("fc-purchase-body").innerHTML = compra.items.length ? compra.items.map((i) => `
+      <tr><td><strong>${escapeHtml(i.name)}</strong></td><td class="align-right">${number.format(i.needed)} ${escapeHtml(i.unit)}</td><td class="align-right muted-value">${number.format(i.in_stock)} ${escapeHtml(i.unit)}</td><td class="align-right">${i.to_buy > 0 ? `<strong>${number.format(i.to_buy)} ${escapeHtml(i.unit)}</strong>` : '<span class="muted-value">tem o bastante</span>'}</td><td class="align-right">${i.cost > 0 ? currency.format(i.cost) : "—"}</td></tr>`).join("") : emptyRow(5, "Sem receita cadastrada para converter a previsão em insumo.");
+  }
+
+  const painelProduto = document.getElementById("fc-product-panel");
+  painelProduto.hidden = f.product_trend.length === 0;
+  document.getElementById("fc-product-body").innerHTML = f.product_trend.map((p) => {
+    const css = p.reading === "crescendo" ? "success" : p.reading === "caindo" ? "pending" : "neutral";
+    const sinal = p.change_percent >= 0 ? "+" : "";
+    return `<tr><td><strong>${escapeHtml(p.name)}</strong></td><td class="align-right muted-value">${number.format(p.before)}</td><td class="align-right">${number.format(p.after)}</td><td class="align-right"><strong>${sinal}${number.format(p.change_percent)}%</strong></td><td><span class="status-pill ${css}">${p.reading}</span></td></tr>`;
+  }).join("");
+  refreshIcons();
 }
 
 function renderFinance() {

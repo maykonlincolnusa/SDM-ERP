@@ -59,7 +59,12 @@ class ERPService:
         current_orders = [order for order in all_orders if self._timestamp(order["created_at"]) >= start]
         previous_orders = [order for order in all_orders if previous_start <= self._timestamp(order["created_at"]) < start]
         revenue = sum(order["total"] for order in current_orders)
-        cost = sum(order["cost"] for order in current_orders)
+        # Pedido importado de fora traz o faturamento, mas nao os itens, entao o
+        # custo e desconhecido — diferente de zero, que significaria "de graca" e
+        # inflaria a margem. Margem e lucro contam so o que tem custo medido.
+        com_custo = [order for order in current_orders if order.get("cost") is not None]
+        revenue_com_custo = sum(order["total"] for order in com_custo)
+        cost = sum(order["cost"] for order in com_custo)
         previous_revenue = sum(order["total"] for order in previous_orders)
         average_ticket = revenue / len(current_orders) if current_orders else 0
         inventory = self.inventory()
@@ -86,8 +91,13 @@ class ERPService:
                 "revenue": round(revenue, 2),
                 "orders": len(current_orders),
                 "average_ticket": round(average_ticket, 2),
-                "gross_profit": round(revenue - cost, 2),
-                "gross_margin": self._margin(revenue, cost),
+                "gross_profit": round(revenue_com_custo - cost, 2),
+                "gross_margin": self._margin(revenue_com_custo, cost),
+                # Sobre quanto do faturamento a margem foi calculada. Abaixo de
+                # 100% a tela precisa dizer isso, senao o numero parece valer
+                # para o periodo inteiro.
+                "margin_coverage": round(revenue_com_custo / revenue * 100, 1) if revenue else 100.0,
+                "revenue_without_cost": round(revenue - revenue_com_custo, 2),
                 "expense_total": round(expense_total, 2),
                 "revenue_change": self._change(revenue, previous_revenue),
             },

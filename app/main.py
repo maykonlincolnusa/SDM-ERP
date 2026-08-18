@@ -8,7 +8,7 @@ from fastapi.staticfiles import StaticFiles
 from app.config import Settings, get_settings
 from app.repositories.store import Store, build_store
 from app.schemas import ExpenseCreate, InventoryAdjustment, InventoryItemCreate, MediaUpdate, OrderCreate, ProductCreate
-from app.services import ERPService, MediaService
+from app.services import ERPService, ForecastService, MediaService
 
 BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
@@ -20,6 +20,7 @@ async def lifespan(app: FastAPI):
     app.state.settings = settings
     app.state.store = build_store(settings)
     app.state.erp = ERPService(app.state.store)
+    app.state.forecast = ForecastService(app.state.store)
     app.state.media = MediaService(app.state.store, settings)
     app.state.media.sync_workspace()
     yield
@@ -36,6 +37,10 @@ app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 def erp(request: Request) -> ERPService:
     return request.app.state.erp
+
+
+def forecast_service(request: Request) -> ForecastService:
+    return request.app.state.forecast
 
 
 def store(request: Request) -> Store:
@@ -121,6 +126,15 @@ def dashboard(
     _: dict = Depends(current_user),
 ) -> dict:
     return service.dashboard(days)
+
+
+@app.get("/api/forecast")
+def forecast(
+    horizon: int = Query(default=7, ge=1, le=30),
+    service: ForecastService = Depends(forecast_service),
+    _: dict = Depends(current_user),
+) -> dict:
+    return service.forecast(horizon)
 
 
 @app.get("/api/products")
