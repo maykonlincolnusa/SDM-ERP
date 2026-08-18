@@ -206,6 +206,10 @@ def _seed_data() -> dict[str, list[dict[str, Any]]]:
         product = product_map[product_id]
         unit_cost = round(sum(inventory_map[line["inventory_id"]]["unit_cost"] * line["quantity"] for line in product["recipe"]), 2)
         created = datetime.combine(today - timedelta(days=days_ago), datetime.min.time(), tzinfo=timezone.utc).replace(hour=11 + index % 8)
+        # A semente nunca pode gerar venda no futuro: o horario fixo acima cai
+        # adiante do relogio quando a loja abre de manha, e ai o pedido recem
+        # criado deixa de ser o mais recente da lista.
+        created = min(created, now - timedelta(minutes=index))
         orders.append({"id": f"seed-{index}", "number": 1000 + index, "created_at": created.isoformat(), "channel": channel, "payment_method": payment, "customer_name": None, "discount": 0, "total": round(product["price"] * quantity, 2), "cost": round(unit_cost * quantity, 2), "status": "Concluido", "items": [{"product_id": product_id, "name": product["name"], "quantity": quantity, "unit_price": product["price"], "unit_cost": unit_cost, "line_total": round(product["price"] * quantity, 2)}]})
     return {"products": products, "inventory": inventory, "orders": orders, "expenses": [{"id": "expense-1", "description": "Aluguel", "category": "Fixo", "amount": 1800.0, "due_date": today.replace(day=min(5, today.day)).isoformat(), "status": "Paga", "created_at": now.isoformat()}, {"id": "expense-2", "description": "Compra de frutas", "category": "Insumos", "amount": 486.5, "due_date": (today + timedelta(days=2)).isoformat(), "status": "Pendente", "created_at": now.isoformat()}, {"id": "expense-3", "description": "Energia elétrica", "category": "Fixo", "amount": 278.4, "due_date": (today + timedelta(days=5)).isoformat(), "status": "Pendente", "created_at": now.isoformat()}], "inventory_movements": []}
 
