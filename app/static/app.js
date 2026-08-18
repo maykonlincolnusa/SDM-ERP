@@ -34,6 +34,7 @@ async function init() {
   const requestedView = window.location.hash.slice(1);
   if (document.getElementById(requestedView)) activateView(requestedView, false);
   document.getElementById("refresh-data").addEventListener("click", loadAll);
+  bindSignOut();
   document.getElementById("period-select").addEventListener("change", async (event) => {
     state.period = Number(event.target.value);
     await loadDashboard();
@@ -49,6 +50,20 @@ async function init() {
     if (event.key === "Escape") setMobileNavigation(false);
   });
   await loadAll();
+}
+
+function bindSignOut() {
+  const botao = document.getElementById("sign-out");
+  const identidade = document.getElementById("account-label");
+  const email = window.erpAuth?.email;
+  if (email && identidade) identidade.textContent = email;
+  // Sem login exigido (modo local) nao ha sessao para encerrar.
+  if (!botao || !window.erpAuth?.canSignOut) return;
+  botao.hidden = false;
+  botao.addEventListener("click", async () => {
+    if (!confirm("Sair da conta neste aparelho?")) return;
+    await window.erpAuth.signOut();
+  });
 }
 
 function bindPwaInstall() {

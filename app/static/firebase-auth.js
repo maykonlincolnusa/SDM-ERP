@@ -3,10 +3,21 @@
   let resolveReady;
   const ready = new Promise((resolve) => { resolveReady = resolve; });
 
+  let sair = null;
+
   window.erpAuth = {
     ready,
     async getToken() {
       return currentUser ? currentUser.getIdToken() : null;
+    },
+    get email() {
+      return currentUser ? currentUser.email : null;
+    },
+    get canSignOut() {
+      return typeof sair === "function";
+    },
+    async signOut() {
+      if (sair) await sair();
     },
   };
 
@@ -38,6 +49,13 @@
       const { getAuth, onAuthStateChanged, signInWithEmailAndPassword, signOut } = authSdk;
       const auth = getAuth(initializeApp(config));
       let deniedMessage = "";
+      sair = async () => {
+        await signOut(auth);
+        // Recarrega para limpar da tela os dados de quem saiu. Em celular de
+        // balcao o aparelho passa de mao em mao, e resto de dado na tela e
+        // vazamento silencioso.
+        window.location.reload();
+      };
 
       form.addEventListener("submit", async (event) => {
         event.preventDefault();
@@ -56,6 +74,9 @@
       onAuthStateChanged(auth, async (user) => {
         if (!user) {
           currentUser = null;
+          // Sem isso, sair da conta deixava o app numa tela morta: sessao
+          // encerrada e nenhuma forma de entrar de novo.
+          gate.hidden = false;
           setStatus(status, deniedMessage || "Entre com a conta autorizada da loja.");
           return;
         }
