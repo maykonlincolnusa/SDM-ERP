@@ -1,7 +1,7 @@
 /* =========================================================================
    Acai Gestao — design system
-   Apple-inspired: SF Pro / Inter type, neutral surfaces, single blue accent,
-   large radii, soft diffuse shadows, pill controls, glass chrome.
+   Identidade acai: roxo profundo da fruta como unico destaque, fundo creme
+   levemente quente, tipos SF Pro / Inter, raios largos, sombras difusas.
    ========================================================================= */
 
 :root {
@@ -9,31 +9,33 @@
   --font: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Inter", "Segoe UI", "Helvetica Neue", Arial, sans-serif;
 
   /* Ink */
-  --ink: #1d1d1f;
-  --ink-soft: #424245;
-  --muted: #6e6e73;
-  --faint: #86868b;
+  --ink: #1c1420;
+  --ink-soft: #3a2e42;
+  --muted: #6b5f75;
+  --faint: #8d8296;
 
   /* Surfaces */
-  --canvas: #f5f5f7;
+  --canvas: #faf7fb;
   --paper: #ffffff;
-  --surface: #fbfbfd;
-  --line: rgba(0, 0, 0, 0.08);
-  --line-strong: rgba(0, 0, 0, 0.13);
+  --surface: #fdfbfe;
+  --line: rgba(28, 20, 32, 0.09);
+  --line-strong: rgba(28, 20, 32, 0.15);
 
-  /* Accent system (Apple system colors) */
-  --accent: #0071e3;
-  --accent-hover: #0077ed;
-  --accent-press: #006edb;
-  --accent-soft: #e8f2fe;
+  /* Destaque unico: roxo profundo da polpa de acai */
+  --accent: #4c1d95;
+  --accent-hover: #5b21b6;
+  --accent-press: #3f1578;
+  --accent-soft: #f0e9fb;
+  --accent-glow: rgba(76, 29, 149, 0.26);
+  --on-accent: #ffffff;
   --green: #2fb350;
   --green-soft: #e6f8ea;
   --orange: #ff9f0a;
   --orange-soft: #fff3e0;
   --red: #ff3b30;
   --red-soft: #ffece9;
-  --purple: #af52de;
-  --purple-soft: #f7ecfc;
+  --purple: #b4308f;
+  --purple-soft: #fbe9f5;
   --teal: #32ade6;
   --teal-soft: #e6f6fd;
 
@@ -53,12 +55,12 @@
   --neutral-ink: #6e6e73;
 
   /* Chrome e overlays */
-  --chrome: rgba(246, 246, 248, 0.86);
-  --chrome-top: rgba(251, 251, 253, 0.82);
-  --hover: rgba(0, 0, 0, 0.045);
+  --chrome: rgba(247, 243, 249, 0.86);
+  --chrome-top: rgba(252, 250, 253, 0.82);
+  --hover: rgba(76, 29, 149, 0.06);
   --glass: rgba(255, 255, 255, 0.84);
   /* Painel de resultado: sempre o oposto do fundo, com texto branco fixo. */
-  --invert: #1d1d1f;
+  --invert: #241a2c;
 
   /* Elevation */
   --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.04), 0 10px 26px rgba(0, 0, 0, 0.05);
@@ -73,29 +75,31 @@
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --ink: #f5f5f7;
-    --ink-soft: #d1d1d6;
-    --muted: #98989d;
-    --faint: #8e8e93;
+    --ink: #f5f0f7;
+    --ink-soft: #d6cede;
+    --muted: #a096a8;
+    --faint: #8d8296;
 
-    --canvas: #000000;
-    --paper: #1c1c1e;
-    --surface: #2c2c2e;
-    --line: rgba(255, 255, 255, 0.12);
-    --line-strong: rgba(255, 255, 255, 0.22);
+    --canvas: #0d0810;
+    --paper: #1a1220;
+    --surface: #251a2e;
+    --line: rgba(245, 240, 247, 0.13);
+    --line-strong: rgba(245, 240, 247, 0.24);
 
-    --accent: #0a84ff;
-    --accent-hover: #3d9dff;
-    --accent-press: #0071e3;
-    --accent-soft: rgba(10, 132, 255, 0.20);
+    --accent: #a78bfa;
+    --accent-hover: #c4b2fd;
+    --accent-press: #8b5cf6;
+    --accent-soft: rgba(167, 139, 250, 0.20);
+    --accent-glow: rgba(167, 139, 250, 0.30);
+    --on-accent: #1c1024;
     --green: #30d158;
     --green-soft: rgba(48, 209, 88, 0.18);
     --orange: #ff9f0a;
     --orange-soft: rgba(255, 159, 10, 0.18);
     --red: #ff453a;
     --red-soft: rgba(255, 69, 58, 0.18);
-    --purple: #bf5af2;
-    --purple-soft: rgba(191, 90, 242, 0.18);
+    --purple: #ef6fc4;
+    --purple-soft: rgba(239, 111, 196, 0.18);
     --teal: #64d2ff;
     --teal-soft: rgba(100, 210, 255, 0.18);
 
@@ -104,12 +108,12 @@
     --neutral-soft: rgba(255, 255, 255, 0.08);
     --neutral-ink: #98989d;
 
-    --chrome: rgba(28, 28, 30, 0.82);
-    --chrome-top: rgba(0, 0, 0, 0.72);
-    --hover: rgba(255, 255, 255, 0.08);
-    --glass: rgba(28, 28, 30, 0.82);
+    --chrome: rgba(26, 18, 32, 0.82);
+    --chrome-top: rgba(13, 8, 16, 0.74);
+    --hover: rgba(167, 139, 250, 0.12);
+    --glass: rgba(26, 18, 32, 0.82);
     /* No escuro o "invertido" nao pode ser mais escuro que o fundo preto. */
-    --invert: #2c2c2e;
+    --invert: #2f2140;
 
     --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.5), 0 10px 26px rgba(0, 0, 0, 0.45);
     --shadow-card-hover: 0 6px 14px rgba(0, 0, 0, 0.55), 0 20px 40px rgba(0, 0, 0, 0.5);
@@ -141,7 +145,7 @@ button, input, select { font: inherit; color: inherit; }
 button { cursor: pointer; -webkit-tap-highlight-color: transparent; }
 button:disabled, input:disabled, select:disabled { cursor: not-allowed; }
 button:active:not(:disabled), .upload-button:active { transform: translateY(1px); }
-button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px solid rgba(0, 113, 227, 0.32); outline-offset: 2px; }
+button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px solid var(--accent-glow); outline-offset: 2px; }
 i[data-lucide] { width: 18px; height: 18px; stroke-width: 1.75; }
 
 @media (prefers-reduced-motion: reduce) {
@@ -168,7 +172,9 @@ i[data-lucide] { width: 18px; height: 18px; stroke-width: 1.75; }
 .brand { display: flex; align-items: center; gap: 10px; padding: 4px 10px 26px; color: var(--ink); text-decoration: none; }
 .brand-mark {
   display: grid; place-items: center; width: 34px; height: 34px;
-  border-radius: 50%; background: var(--accent); color: #fff;
+  border-radius: 50%; color: var(--on-accent);
+  background: radial-gradient(circle at 32% 28%, var(--accent-hover), var(--accent) 62%, var(--purple) 165%);
+  box-shadow: 0 3px 10px var(--accent-glow);
   font-family: var(--font); font-size: 17px; font-weight: 700; line-height: 1;
 }
 .brand strong, .brand em { display: block; font-size: 16px; font-style: normal; font-weight: 600; line-height: 16px; letter-spacing: -0.01em; }
@@ -182,7 +188,7 @@ i[data-lucide] { width: 18px; height: 18px; stroke-width: 1.75; }
   transition: background 140ms ease, color 140ms ease;
 }
 .nav-item:hover { background: var(--hover); color: var(--ink); }
-.nav-item.active { background: var(--accent); color: #fff; font-weight: 600; box-shadow: 0 4px 12px rgba(0, 113, 227, 0.28); }
+.nav-item.active { background: var(--accent); color: var(--on-accent); font-weight: 600; box-shadow: 0 6px 16px var(--accent-glow); }
 .nav-item i { width: 18px; height: 18px; }
 .nav-item b { display: grid; place-items: center; min-width: 19px; height: 19px; margin-left: auto; padding: 0 5px; border-radius: var(--r-pill); background: var(--red); color: #fff; font-size: 11px; font-weight: 700; }
 .nav-item.active b { background: rgba(255, 255, 255, 0.28); }
@@ -231,7 +237,7 @@ i[data-lucide] { width: 18px; height: 18px; stroke-width: 1.75; }
   padding: 0 20px; border-radius: var(--r-pill); font-size: 14px; font-weight: 600;
   white-space: nowrap; transition: background 140ms ease, border-color 140ms ease, opacity 140ms ease;
 }
-.primary-button { border: 1px solid transparent; background: var(--accent); color: #fff; }
+.primary-button { border: 1px solid transparent; background: var(--accent); color: var(--on-accent); }
 .primary-button:hover { background: var(--accent-hover); }
 .primary-button:active:not(:disabled) { background: var(--accent-press); }
 .primary-button:disabled { cursor: not-allowed; opacity: 0.5; }
@@ -418,7 +424,7 @@ td strong.negative { color: var(--orange-ink); }
 .media-filters { display: flex; flex-wrap: wrap; gap: 6px; }
 .filter-chip { min-height: 38px; padding: 0 14px; border: 1px solid var(--line-strong); border-radius: var(--r-pill); background: var(--paper); color: var(--ink-soft); font-size: 12px; font-weight: 600; }
 .filter-chip:hover { border-color: var(--line-strong); color: var(--ink); }
-.filter-chip.active { border-color: var(--accent); background: var(--accent); color: #fff; }
+.filter-chip.active { border-color: var(--accent); background: var(--accent); color: var(--on-accent); }
 
 .media-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 16px; }
 .media-card { position: relative; display: flex; flex-direction: column; min-height: 254px; overflow: hidden; border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--paper); box-shadow: var(--shadow-card); }
