@@ -56,6 +56,28 @@ def test_dashboard_exposes_business_metrics(tmp_path):
     assert dashboard["top_products"]
 
 
+def test_sale_is_recorded_even_without_stock_balance(tmp_path):
+    """Venda nunca e recusada por saldo: o pedido ja aconteceu no balcao.
+
+    A loja lanca a contagem depois, e bloquear o registro so faria o
+    faturamento sumir do sistema. O saldo negativo fica como sinal visivel
+    de que o cadastro esta atrasado.
+    """
+
+    service = ERPService(DemoStore(tmp_path / "store.json"))
+    for item in service.inventory():
+        item["quantity"] = 0
+        service.store.put("inventory", item["id"], item)
+
+    order = service.create_order(OrderCreate(items=[OrderLine(product_id="acai-500", quantity=2)]))
+
+    assert order["total"] == 44.0
+    acai = next(item for item in service.inventory() if item["id"] == "acai")
+    assert acai["quantity"] < 0, "o consumo precisa ser descontado mesmo sem saldo"
+    titles = {insight["title"] for insight in service.dashboard(7)["insights"]}
+    assert "Saldo negativo no estoque" in titles, "o gestor precisa ser avisado do saldo negativo"
+
+
 def test_inventory_without_minimum_is_not_reported_as_low_stock(tmp_path):
     """Insumos importados da precificação chegam com mínimo zero.
 

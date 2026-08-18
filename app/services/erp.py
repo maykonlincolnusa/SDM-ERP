@@ -114,13 +114,16 @@ class ERPService:
                 for recipe_line in product.get("recipe", []):
                     needed[recipe_line["inventory_id"]] += recipe_line["quantity"] * line.quantity
 
+            # A venda nunca e recusada por falta de saldo. O pedido ja aconteceu no
+            # balcao: bloquear o registro nao devolve o insumo, so faz a loja perder
+            # o faturamento no sistema quando alguem esquece de lancar a contagem.
+            # O saldo pode ficar negativo de proposito, como sinal de que o cadastro
+            # esta atrasado, e a tela de Estoque destaca esses itens para conferencia.
             stock: dict[str, dict[str, Any]] = {}
-            for inventory_id, quantity in needed.items():
+            for inventory_id in needed:
                 item = transaction.get("inventory", inventory_id)
-                if not item or item["quantity"] < quantity:
-                    label = item["name"] if item else "insumo cadastrado na receita"
-                    raise ValueError(f"Estoque insuficiente: {label}.")
-                stock[inventory_id] = item
+                if item:
+                    stock[inventory_id] = item
 
             line_items: list[dict[str, Any]] = []
             total = total_cost = 0.0
@@ -155,7 +158,11 @@ class ERPService:
             number = sequence_value + 1
             transaction.put("system", "order_sequence", {"id": "order_sequence", "value": number, "updated_at": now.isoformat()})
             for inventory_id, quantity in needed.items():
-                item = stock[inventory_id]
+                item = stock.get(inventory_id)
+                # Receita que aponta para insumo removido do cadastro nao tem o que
+                # baixar, mas tambem nao pode impedir a venda de ser registrada.
+                if not item:
+                    continue
                 item["quantity"] = round(item["quantity"] - quantity, 3)
                 item["updated_at"] = now.isoformat()
                 transaction.put("inventory", inventory_id, item)
@@ -352,6 +359,14 @@ class ERPService:
         if critical:
             names = ", ".join(item["name"] for item in critical[:2])
             insights.append({"type": "attention", "title": "Reposição prioritária", "description": f"{names} atingiu o estoque mínimo. Programe a compra antes do próximo pico."})
+        negative = [item for item in inventory if item["quantity"] < 0]
+        if negative:
+            names = ", ".join(item["name"] for item in negative[:2])
+            insights.append({
+                "type": "attention",
+                "title": "Saldo negativo no estoque",
+                "description": f"{names} saiu mais do que o cadastro tinha. A venda foi registrada assim mesmo; refaça a contagem desses itens para o custo voltar a bater.",
+            })
         insights.extend(self._setup_insights(orders, inventory))
         if products:
             product, volume = products.most_common(1)[0]

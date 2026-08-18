@@ -354,6 +354,7 @@ td strong.negative { color: var(--orange-ink); }
 .status-pill.success { color: var(--green-ink); background: var(--green-soft); }
 .status-pill.pending { color: var(--orange-ink); background: var(--orange-soft); }
 .status-pill.neutral { color: var(--neutral-ink); background: var(--neutral-soft); }
+.status-pill.danger { color: var(--red); background: var(--red-soft); }
 .channel-pill { display: inline-flex; min-height: 26px; padding: 0 9px; align-items: center; border: 1px solid var(--line-strong); border-radius: var(--r-sm); color: var(--ink-soft); font-size: 11px; font-weight: 600; }
 
 .table-panel { min-height: 420px; }
@@ -378,6 +379,7 @@ td strong.negative { color: var(--orange-ink); }
 .stock-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--green); }
 .stock-dot.low { background: var(--orange); }
 .stock-dot.idle { background: var(--faint); }
+.stock-dot.negative { background: var(--red); box-shadow: 0 0 0 3px var(--red-soft); }
 .stock-amount { white-space: nowrap; }
 .muted-value { color: var(--faint); }
 

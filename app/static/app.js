@@ -254,11 +254,18 @@ function renderInventory() {
     <article class="inventory-stat ${critical.length ? "warning" : ""}"><i data-lucide="triangle-alert"></i><div><p>Abaixo do mínimo</p><strong>${critical.length} item${critical.length === 1 ? "" : "ns"}</strong></div></article>
     <article class="inventory-stat"><i data-lucide="landmark"></i><div><p>Valor em estoque</p><strong>${currency.format(totalValue)}</strong></div></article>`;
   document.getElementById("inventory-body").innerHTML = items.length ? items.map(item => {
-    const low = needsRestock(item);
+    // Negativo significa que a venda saiu sem o insumo estar lancado: a contagem
+    // esta atrasada, e isso pesa mais que qualquer outro aviso.
+    const negative = item.quantity < 0;
+    const low = !negative && needsRestock(item);
     // Sem contagem e sem minimo o item nao esta saudavel nem em falta: esta por configurar.
-    const uncounted = !low && !item.quantity && !item.minimum_quantity;
-    const status = low ? { css: "pending", label: "Repor" } : uncounted ? { css: "neutral", label: "Sem contagem" } : { css: "success", label: "Saudável" };
-    const dot = low ? "low" : uncounted ? "idle" : "";
+    const uncounted = !negative && !low && !item.quantity && !item.minimum_quantity;
+    const status = negative
+      ? { css: "danger", label: "Conferir" }
+      : low ? { css: "pending", label: "Repor" }
+      : uncounted ? { css: "neutral", label: "Sem contagem" }
+      : { css: "success", label: "Saudável" };
+    const dot = negative ? "negative" : low ? "low" : uncounted ? "idle" : "";
     const minimum = item.minimum_quantity ? `${number.format(item.minimum_quantity)} ${escapeHtml(item.unit)}` : "não definido";
     return `<tr><td><strong>${escapeHtml(item.name)}</strong></td><td>${escapeHtml(item.category)}</td><td><span class="stock-level"><i class="stock-dot ${dot}"></i><span class="stock-amount">${number.format(item.quantity)} ${escapeHtml(item.unit)}</span></span></td><td class="muted-value">${minimum}</td><td>${currency.format(item.unit_cost)}</td><td><span class="status-pill ${status.css}">${status.label}</span></td></tr>`;
   }).join("") : emptyRow(6, "Nenhum insumo encontrado.");
