@@ -22,6 +22,8 @@ class StoreTransaction(Protocol):
 
     def put(self, collection: str, document_id: str, value: dict[str, Any]) -> None: ...
 
+    def delete(self, collection: str, document_id: str) -> None: ...
+
 
 class Store(Protocol):
     mode: str
@@ -31,6 +33,8 @@ class Store(Protocol):
     def get(self, collection: str, document_id: str) -> dict[str, Any] | None: ...
 
     def put(self, collection: str, document_id: str, value: dict[str, Any]) -> None: ...
+
+    def delete(self, collection: str, document_id: str) -> None: ...
 
     def run_transaction(self, operation: Callable[[StoreTransaction], T]) -> T: ...
 
@@ -81,6 +85,16 @@ class DemoStore:
                 records.append(deepcopy(value))
             self._write(data)
 
+    def delete(self, collection: str, document_id: str) -> None:
+        with self.lock:
+            data = self._read()
+            records = data.get(collection, [])
+            remaining = [record for record in records if record["id"] != document_id]
+            if len(remaining) == len(records):
+                return
+            data[collection] = remaining
+            self._write(data)
+
     def run_transaction(self, operation: Callable[[StoreTransaction], T]) -> T:
         with self.lock:
             data = self._read()
@@ -107,6 +121,12 @@ class _DemoTransaction:
                 records[index] = deepcopy(value)
                 return
         records.append(deepcopy(value))
+
+    def delete(self, collection: str, document_id: str) -> None:
+        records = self.data.get(collection)
+        if not records:
+            return
+        self.data[collection] = [record for record in records if record["id"] != document_id]
 
 
 class FirestoreStore:
@@ -135,6 +155,9 @@ class FirestoreStore:
         payload = {key: value for key, value in value.items() if key != "id"}
         self.db.collection(collection).document(document_id).set(payload)
 
+    def delete(self, collection: str, document_id: str) -> None:
+        self.db.collection(collection).document(document_id).delete()
+
     def run_transaction(self, operation: Callable[[StoreTransaction], T]) -> T:
         @self.firestore.transactional
         def execute(transaction):
@@ -161,6 +184,9 @@ class _FirestoreTransaction:
         payload = {key: value for key, value in value.items() if key != "id"}
         self.transaction.set(self.database.collection(collection).document(document_id), payload)
 
+    def delete(self, collection: str, document_id: str) -> None:
+        self.transaction.delete(self.database.collection(collection).document(document_id))
+
 
 def build_store(settings: Settings) -> Store:
     if settings.data_mode == "demo":
@@ -181,10 +207,10 @@ def _seed_data() -> dict[str, list[dict[str, Any]]]:
     now = datetime.now(timezone.utc)
     today = date.today()
     inventory = [
-        _inventory("acai", "Base de açaí", "kg", 31.5, 8, 22.5, "Polpas"),
+        _inventory("acai", "Base de açaí", "kg", 31.5, 8, 22.5, "Polpas", shelf_life=3, lead_time=3),
         _inventory("guarana", "Xarope de guaraná", "L", 7.2, 2, 13.8, "Complementos"),
-        _inventory("banana", "Banana", "kg", 8.6, 4, 6.9, "Frutas"),
-        _inventory("morango", "Morango", "kg", 1.4, 2, 22.0, "Frutas"),
+        _inventory("banana", "Banana", "kg", 8.6, 4, 6.9, "Frutas", shelf_life=5, lead_time=1),
+        _inventory("morango", "Morango", "kg", 1.4, 2, 22.0, "Frutas", shelf_life=3, lead_time=1),
         _inventory("granola", "Granola", "kg", 3.8, 1.5, 27.0, "Complementos"),
         _inventory("leite-po", "Leite em pó", "kg", 1.8, 0.8, 30.0, "Complementos"),
         _inventory("copo-300", "Copo 300 ml", "un", 94, 80, 0.72, "Embalagens"),
@@ -216,8 +242,8 @@ def _seed_data() -> dict[str, list[dict[str, Any]]]:
     return {"products": products, "inventory": inventory, "orders": orders, "expenses": [{"id": "expense-1", "description": "Aluguel", "category": "Fixo", "amount": 1800.0, "due_date": today.replace(day=min(5, today.day)).isoformat(), "status": "Paga", "created_at": now.isoformat()}, {"id": "expense-2", "description": "Compra de frutas", "category": "Insumos", "amount": 486.5, "due_date": (today + timedelta(days=2)).isoformat(), "status": "Pendente", "created_at": now.isoformat()}, {"id": "expense-3", "description": "Energia elétrica", "category": "Fixo", "amount": 278.4, "due_date": (today + timedelta(days=5)).isoformat(), "status": "Pendente", "created_at": now.isoformat()}], "inventory_movements": []}
 
 
-def _inventory(item_id: str, name: str, unit: str, quantity: float, minimum: float, unit_cost: float, category: str) -> dict[str, Any]:
-    return {"id": item_id, "name": name, "unit": unit, "quantity": quantity, "minimum_quantity": minimum, "unit_cost": unit_cost, "category": category, "updated_at": datetime.now(timezone.utc).isoformat()}
+def _inventory(item_id: str, name: str, unit: str, quantity: float, minimum: float, unit_cost: float, category: str, shelf_life: int | None = None, lead_time: int = 2) -> dict[str, Any]:
+    return {"id": item_id, "name": name, "unit": unit, "quantity": quantity, "minimum_quantity": minimum, "unit_cost": unit_cost, "category": category, "shelf_life_days": shelf_life, "lead_time_days": lead_time, "updated_at": datetime.now(timezone.utc).isoformat()}
 
 
 def _product(item_id: str, name: str, category: str, price: float, recipe: list[tuple[str, float]]) -> dict[str, Any]:

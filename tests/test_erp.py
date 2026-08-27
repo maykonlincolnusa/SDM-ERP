@@ -1,8 +1,11 @@
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timedelta, timezone
+from uuid import uuid4
 
 from app.repositories.store import DemoStore
 from app.schemas import InventoryAdjustment, OrderCreate, OrderLine
 from app.services import ERPService
+from app.services.erp import FUSO_LOJA
 from openpyxl import Workbook
 from scripts.import_pricing import import_workbook
 
@@ -118,3 +121,79 @@ def test_pricing_importer_creates_recipe_and_suggested_price(tmp_path):
     product = store.get("products", "product-acai-teste-500-ml")
     assert product["price"] == 18
     assert product["recipe"] == [{"inventory_id": "stock-base-de-acai", "quantity": 0.4}]
+
+
+# ----------------------------------------------------------------------
+# Fuso da loja
+# ----------------------------------------------------------------------
+
+
+def _ontem_as(hora: int):
+    """Um horario de ontem, que nunca cai no futuro seja qual for a hora do teste."""
+
+    ontem = datetime.now(FUSO_LOJA).date() - timedelta(days=1)
+    return ontem, datetime.combine(ontem, datetime.min.time(), tzinfo=FUSO_LOJA).replace(hour=hora)
+
+
+def test_dashboard_buckets_the_day_in_the_store_timezone(tmp_path):
+    """Venda das 21h pertence ao dia em que a loja trabalhou.
+
+    Convertida para UTC ela vira meia-noite do dia seguinte: o grafico mostraria
+    movimento num dia que mal comecou e tiraria o faturamento do dia que ja
+    fechou o caixa. O gestor confere a barra contra o dinheiro na gaveta, entao
+    a barra tem de seguir o expediente, nao o meridiano de Greenwich.
+    """
+
+    service = ERPService(DemoStore(tmp_path / "store.json"))
+    ontem, noite = _ontem_as(21)
+    assert noite.astimezone(timezone.utc).date() != ontem, "o teste so prova algo se UTC discordar"
+    hoje = datetime.now(FUSO_LOJA).date().isoformat()
+    antes = {row["date"]: row["value"] for row in service.dashboard(7)["sales_series"]}
+
+    service.create_order(OrderCreate(items=[OrderLine(product_id="acai-300", quantity=1)], occurred_at=noite))
+
+    depois = {row["date"]: row["value"] for row in service.dashboard(7)["sales_series"]}
+    assert round(depois[ontem.isoformat()] - antes[ontem.isoformat()], 2) == 16.0
+    assert depois[hoje] == antes[hoje], "a venda de ontem a noite nao pode aparecer como movimento de hoje"
+
+
+def test_dashboard_window_covers_whole_days(tmp_path):
+    """Sete barras precisam contar sete dias inteiros.
+
+    Com janela em horas, a barra mais antiga contava so o pedaco do dia depois
+    do horario em que a tela foi aberta — o grafico dizia "ultimos 7 dias" e
+    entregava seis dias e meio.
+    """
+
+    service = ERPService(DemoStore(tmp_path / "store.json"))
+    primeiro_dia = datetime.now(FUSO_LOJA).date() - timedelta(days=6)
+    madrugada = datetime.combine(primeiro_dia, datetime.min.time(), tzinfo=FUSO_LOJA).replace(hour=1)
+    antes = {row["date"]: row["value"] for row in service.dashboard(7)["sales_series"]}
+
+    service.create_order(OrderCreate(items=[OrderLine(product_id="acai-300", quantity=1)], occurred_at=madrugada))
+
+    painel = service.dashboard(7)
+    depois = {row["date"]: row["value"] for row in painel["sales_series"]}
+    assert round(depois[primeiro_dia.isoformat()] - antes[primeiro_dia.isoformat()], 2) == 16.0
+    # E o total do periodo precisa incluir esse pedido, nao so a barra.
+    assert painel["metrics"]["revenue"] >= 16.0
+
+
+def test_consumption_buckets_the_day_in_the_store_timezone(tmp_path):
+    """A baixa lancada a noite pertence ao dia em que a loja trabalhou."""
+
+    service = ERPService(DemoStore(tmp_path / "store.json"))
+    ontem, noite = _ontem_as(22)
+    hoje = datetime.now(FUSO_LOJA).date().isoformat()
+    service.store.put("inventory_movements", "perda-noturna", {
+        "id": "perda-noturna",
+        "inventory_id": "granola",
+        "quantity_delta": -1.0,
+        "reason": "quebra no fechamento",
+        "created_at": noite.astimezone(timezone.utc).isoformat(),
+    })
+
+    serie = {row["date"]: row for row in service.consumption(7)["series"]}
+
+    assert serie[ontem.isoformat()]["loss_cost"] == 27.0
+    assert serie[hoje]["loss_cost"] == 0.0

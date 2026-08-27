@@ -11,6 +11,12 @@ def _loja_com_historico(tmp_path, dias: int, crescimento_semanal: float = 0.0) -
     """Cria um historico com padrao conhecido para conferir o que o modelo recupera."""
 
     store = DemoStore(tmp_path / "store.json")
+    # A loja de demonstracao ja vem semeada com sete dias de venda, inclusive de
+    # hoje. Esta serie vai so ate ontem, entao os pedidos de hoje virariam um dia
+    # extra — com receita muito menor — bem no dia da semana atual, puxando o
+    # peso dele para baixo. O dia que quebrava mudava a cada 24 horas.
+    for pedido in store.list("orders"):
+        store.delete("orders", pedido["id"])
     hoje = datetime.now(FUSO_LOJA).date()
     for atras in range(dias, 0, -1):
         dia = hoje - timedelta(days=atras)

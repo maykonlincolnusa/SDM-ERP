@@ -53,3 +53,34 @@ def test_upload_deduplicates_by_content_and_keeps_organization(tmp_path):
     assert len(service.list()) == 1
     assert updated["tags"] == ["fornecedor", "agosto"]
     assert updated["entity_id"] == "acai"
+
+
+def test_deleting_an_uploaded_file_removes_it_from_the_shelf(tmp_path):
+    service = media_service(tmp_path)
+    registro = service.upload("nota.pdf", b"conteudo da nota")
+
+    resultado = service.delete(registro["id"])
+
+    assert resultado["status"] == "excluido"
+    assert service.get(registro["id"]) is None
+    assert service.local_path(registro) is None, "a cópia do sistema também sai"
+
+
+def test_a_synced_file_does_not_come_back_on_the_next_sync(tmp_path):
+    """Excluir arquivo sincronizado precisa valer.
+
+    O original do usuário não é apagado — o ERP catalogou o arquivo, não virou
+    dono dele. Mas sem registrar a dispensa, a próxima sincronização traria
+    tudo de volta e a exclusão pareceria não ter funcionado.
+    """
+
+    service = media_service(tmp_path)
+    (tmp_path / "planilha antiga.xlsx").write_bytes(b"conteudo qualquer")
+    service.sync_workspace()
+    registro = next(row for row in service.list() if row["original_name"] == "planilha antiga.xlsx")
+
+    service.delete(registro["id"])
+    service.sync_workspace()
+
+    assert not any(row["original_name"] == "planilha antiga.xlsx" for row in service.list())
+    assert (tmp_path / "planilha antiga.xlsx").exists(), "o arquivo original do usuário não pode ser apagado"

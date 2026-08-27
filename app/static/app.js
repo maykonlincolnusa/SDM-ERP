@@ -13,6 +13,26 @@ const state = {
   mediaObjectUrl: null,
   cart: new Map(),
   period: 7,
+  channels: [],
+  channelPerformance: null,
+  salesDay: null,
+  lines: null,
+  // Dia escolhido no fechamento. Vazio significa hoje, no fuso da loja.
+  closingDate: "",
+  lineFilter: "all",
+  growth: null,
+  growthPeriod: 90,
+  growthFilter: "all",
+  planning: null,
+  planningService: 0.9,
+  couriers: [],
+  deliveries: [],
+  deliveryPerformance: null,
+  deliveryPeriod: 30,
+  catalogs: [],
+  history: [],
+  historyLimit: 60,
+  historyFilter: "all",
 };
 
 const currency = new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" });
@@ -40,6 +60,33 @@ async function init() {
     await loadDashboard();
   });
   document.getElementById("order-search").addEventListener("input", renderOrders);
+  document.getElementById("closing-date").addEventListener("change", async (event) => {
+    state.closingDate = event.target.value;
+    await loadClosing();
+  });
+  document.getElementById("history-search").addEventListener("input", renderHistory);
+  document.getElementById("history-refresh").addEventListener("click", loadHistory);
+  document.getElementById("history-limit").addEventListener("change", async (event) => {
+    state.historyLimit = Number(event.target.value);
+    await loadHistory();
+  });
+  document.getElementById("delivery-period").addEventListener("change", async (event) => {
+    state.deliveryPeriod = Number(event.target.value);
+    await loadDelivery();
+  });
+  document.getElementById("planning-service").addEventListener("change", async (event) => {
+    state.planningService = Number(event.target.value);
+    await loadPlanning();
+  });
+  document.getElementById("growth-period").addEventListener("change", async (event) => {
+    state.growthPeriod = Number(event.target.value);
+    await loadGrowth();
+  });
+  document.getElementById("closing-today").addEventListener("click", async () => {
+    state.closingDate = "";
+    document.getElementById("closing-date").value = todayInputValue();
+    await loadClosing();
+  });
   document.getElementById("inventory-search").addEventListener("input", renderInventory);
   document.getElementById("consumption-search").addEventListener("input", renderConsumption);
   document.getElementById("mobile-menu").addEventListener("click", () => {
@@ -116,7 +163,7 @@ function setMobileNavigation(open) {
 async function loadAll() {
   setRefreshing(true);
   try {
-    const [config, dashboard, consumption, forecast, products, inventory, orders, expenses, mediaSummary, media] = await Promise.all([
+    const [config, dashboard, consumption, forecast, products, inventory, orders, expenses, mediaSummary, media, channels, channelPerformance, lines, salesDay, growth, planning, couriers, deliveries, deliveryPerformance, catalogs, history] = await Promise.all([
       api("/api/config"),
       api(`/api/dashboard?days=${state.period}`),
       api(`/api/inventory/consumption?days=${state.period}`),
@@ -127,6 +174,17 @@ async function loadAll() {
       api("/api/expenses"),
       api("/api/media/summary"),
       api("/api/media"),
+      api("/api/channels"),
+      api("/api/channels/performance?days=30"),
+      api("/api/products/lines?days=30"),
+      api(`/api/sales/daily${state.closingDate ? `?day=${state.closingDate}` : ""}`),
+      api(`/api/growth?days=${state.growthPeriod}`),
+      api(`/api/planning?days=90&horizon=7&service_level=${state.planningService}`),
+      api("/api/couriers"),
+      api(`/api/deliveries?days=${state.deliveryPeriod}`),
+      api(`/api/couriers/performance?days=${state.deliveryPeriod}`),
+      api("/api/catalogs"),
+      api(`/api/audit?limit=${state.historyLimit}`),
     ]);
     state.dashboard = dashboard;
     state.consumption = consumption;
@@ -137,6 +195,17 @@ async function loadAll() {
     state.expenses = expenses;
     state.mediaSummary = mediaSummary;
     state.media = media;
+    state.channels = channels;
+    state.channelPerformance = channelPerformance;
+    state.lines = lines;
+    state.salesDay = salesDay;
+    state.growth = growth;
+    state.planning = planning;
+    state.couriers = couriers;
+    state.deliveries = deliveries;
+    state.deliveryPerformance = deliveryPerformance;
+    state.catalogs = catalogs;
+    state.history = history;
     document.getElementById("storage-mode").textContent = config.storage === "firebase" ? "Firebase conectado" : "Modo demonstrativo";
     renderAll();
   } catch (error) {
@@ -163,14 +232,24 @@ async function loadDashboard() {
 
 function renderAll() {
   renderDashboard();
+  renderClosing();
   renderOrders();
   renderInventory();
   renderConsumption();
+  renderPlanning();
   renderForecast();
   renderFinance();
   renderProducts();
+  renderChannelsView();
+  renderDelivery();
+  renderBrand();
+  renderGrowth();
   renderMedia();
+  renderCatalogs();
+  renderHistory();
   populateSelects();
+  // manage.js cuida das telas de edição e reaproveita este mesmo estado.
+  window.sdmManage?.afterRender?.();
   refreshIcons();
 }
 
@@ -268,9 +347,26 @@ function renderRecentOrders(orders) {
 function renderOrders() {
   const query = document.getElementById("order-search")?.value.trim().toLocaleLowerCase("pt-BR") || "";
   const orders = state.orders.filter(order => `${order.number} ${order.channel} ${itemSummary(order)}`.toLocaleLowerCase("pt-BR").includes(query));
-  document.getElementById("orders-body").innerHTML = orders.length ? orders.map(order => `
-    <tr><td><strong>#${order.number}</strong></td><td>${escapeHtml(formatDateTime(order.created_at))}</td><td><span class="channel-pill">${escapeHtml(order.channel)}</span></td><td>${escapeHtml(itemSummary(order))}</td><td>${escapeHtml(paymentLabel(order.payment_method))}</td><td class="align-right"><strong>${currency.format(order.total)}</strong></td></tr>
-  `).join("") : emptyRow(6, "Nenhum pedido encontrado.");
+  document.getElementById("orders-body").innerHTML = orders.length ? orders.map(orderRow).join("") : emptyRow(7, "Nenhum pedido encontrado.");
+  refreshIcons();
+}
+
+// Pedido cancelado continua na lista, riscado: sumir com ele esconderia da
+// loja que a venda existiu e por que caiu.
+function orderRow(order) {
+  const cancelled = order.status === "Cancelado";
+  const reason = cancelled ? `<span class="cancel-reason">${escapeHtml(order.cancel_reason || "cancelado")}</span>` : "";
+  return `<tr class="${cancelled ? "cancelled-row" : ""}"><td><strong>#${order.number}</strong>${reason}</td><td>${escapeHtml(formatDateTime(order.created_at))}</td><td><span class="channel-pill">${escapeHtml(order.channel)}</span></td><td>${escapeHtml(itemSummary(order) || "sem itens detalhados")}</td><td>${escapeHtml(paymentLabel(order.payment_method))}</td><td class="align-right"><strong>${currency.format(order.total)}</strong>${order.channel_fee ? `<small class="row-note">-${currency.format(order.channel_fee)} de taxa</small>` : ""}</td><td class="align-right">${orderActions(order)}</td></tr>`;
+}
+
+function orderActions(order) {
+  if (order.status === "Cancelado") {
+    return `<div class="row-actions"><button class="row-action danger" type="button" data-delete-order="${order.id}" title="Excluir do histórico"><i data-lucide="trash-2"></i></button></div>`;
+  }
+  return `<div class="row-actions">
+    <button class="row-action" type="button" data-edit-order="${order.id}" title="Editar pedido"><i data-lucide="pencil"></i></button>
+    <button class="row-action danger" type="button" data-cancel-order="${order.id}" title="Cancelar e devolver o estoque"><i data-lucide="ban"></i></button>
+  </div>`;
 }
 
 function renderInventory() {
@@ -296,8 +392,12 @@ function renderInventory() {
       : { css: "success", label: "Saudável" };
     const dot = negative ? "negative" : low ? "low" : uncounted ? "idle" : "";
     const minimum = item.minimum_quantity ? `${number.format(item.minimum_quantity)} ${escapeHtml(item.unit)}` : "não definido";
-    return `<tr><td><strong>${escapeHtml(item.name)}</strong></td><td>${escapeHtml(item.category)}</td><td><span class="stock-level"><i class="stock-dot ${dot}"></i><span class="stock-amount">${number.format(item.quantity)} ${escapeHtml(item.unit)}</span></span></td><td class="muted-value">${minimum}</td><td>${currency.format(item.unit_cost)}</td><td><span class="status-pill ${status.css}">${status.label}</span></td></tr>`;
-  }).join("") : emptyRow(6, "Nenhum insumo encontrado.");
+    return `<tr><td><strong>${escapeHtml(item.name)}</strong></td><td>${escapeHtml(item.category)}</td><td><span class="stock-level"><i class="stock-dot ${dot}"></i><span class="stock-amount">${number.format(item.quantity)} ${escapeHtml(item.unit)}</span></span></td><td class="muted-value">${minimum}</td><td>${currency.format(item.unit_cost)}</td><td><span class="status-pill ${status.css}">${status.label}</span></td><td class="align-right"><div class="row-actions">
+      <button class="row-action" type="button" data-count-item="${item.id}" title="Contagem física"><i data-lucide="clipboard-check"></i></button>
+      <button class="row-action" type="button" data-edit-inventory="${item.id}" title="Editar cadastro"><i data-lucide="pencil"></i></button>
+      <button class="row-action danger" type="button" data-delete-inventory="${item.id}" title="Excluir insumo"><i data-lucide="trash-2"></i></button>
+    </div></td></tr>`;
+  }).join("") : emptyRow(7, "Nenhum insumo encontrado.");
   refreshIcons();
 }
 
@@ -324,11 +424,16 @@ function renderConsumption() {
   }).join("") : emptyRow(6, "Nenhuma saída de insumo no período.");
 
   document.getElementById("movement-body").innerHTML = data.history.length ? data.history.map((row) => {
-    const labels = { venda: "Venda", perda: "Baixa", entrada: "Entrada" };
-    const css = { venda: "success", perda: "pending", entrada: "neutral" };
+    const labels = { venda: "Venda", perda: "Baixa", entrada: "Entrada", estorno: "Estorno" };
+    const css = { venda: "success", perda: "pending", entrada: "neutral", estorno: "neutral" };
     const signal = row.quantity_delta > 0 ? "+" : "";
-    return `<tr><td class="muted-value">${escapeHtml(formatDateTime(row.created_at))}</td><td><strong>${escapeHtml(row.name)}</strong></td><td><span class="status-pill ${css[row.kind]}">${labels[row.kind]}</span></td><td>${escapeHtml(row.reason)}</td><td class="align-right"><strong>${signal}${number.format(row.quantity_delta)} ${escapeHtml(row.unit)}</strong></td></tr>`;
-  }).join("") : emptyRow(5, "Nenhuma movimentação registrada.");
+    // Baixa de venda só muda pelo pedido: oferecer o lápis aqui separaria o
+    // pedido do estoque, que é exatamente o que a edição precisa evitar.
+    const actions = row.editable
+      ? `<div class="row-actions"><button class="row-action" type="button" data-edit-movement="${row.id}" title="Corrigir lançamento"><i data-lucide="pencil"></i></button></div>`
+      : `<span class="muted-value" title="Esta baixa veio de uma venda. Edite o pedido para corrigi-la.">—</span>`;
+    return `<tr><td class="muted-value">${escapeHtml(formatDateTime(row.created_at))}</td><td><strong>${escapeHtml(row.name)}</strong></td><td><span class="status-pill ${css[row.kind]}">${labels[row.kind]}</span></td><td>${escapeHtml(row.reason)}</td><td class="align-right"><strong>${signal}${number.format(row.quantity_delta)} ${escapeHtml(row.unit)}</strong></td><td class="align-right">${actions}</td></tr>`;
+  }).join("") : emptyRow(6, "Nenhuma movimentação registrada.");
   refreshIcons();
 }
 
@@ -426,14 +531,33 @@ function renderFinance() {
     return `<article class="due-item"><span class="due-date">${String(date.getDate()).padStart(2, "0")}<br>${date.toLocaleDateString("pt-BR", { month: "short" }).replace(".", "")}</span><div><strong>${escapeHtml(expense.description)}</strong><span>${escapeHtml(expense.category)}</span></div><b>${currency.format(expense.amount)}</b></article>`;
   }).join("") : '<p class="empty-state">Nenhuma despesa pendente.</p>';
   document.getElementById("expenses-body").innerHTML = state.expenses.length ? state.expenses.map(expense => `
-    <tr><td><strong>${escapeHtml(expense.description)}</strong></td><td>${escapeHtml(expense.category)}</td><td>${escapeHtml(formatDate(expense.due_date))}</td><td><span class="status-pill ${expense.status === "Paga" ? "success" : "pending"}">${escapeHtml(expense.status)}</span></td><td class="align-right"><strong>${currency.format(expense.amount)}</strong></td></tr>
-  `).join("") : emptyRow(5, "Nenhuma despesa cadastrada.");
+    <tr><td><strong>${escapeHtml(expense.description)}</strong>${expense.recurring ? '<span class="row-note">fixa</span>' : ""}</td><td>${escapeHtml(expense.category)}</td><td>${escapeHtml(formatDate(expense.due_date))}</td><td><span class="status-pill ${expense.status === "Paga" ? "success" : "pending"}">${escapeHtml(expense.status)}</span></td><td class="align-right"><strong>${currency.format(expense.amount)}</strong></td><td class="align-right"><div class="row-actions">
+      ${expense.status === "Pendente" ? `<button class="row-action" type="button" data-pay-expense="${expense.id}" title="Marcar como paga"><i data-lucide="circle-check"></i></button>` : ""}
+      <button class="row-action" type="button" data-edit-expense="${expense.id}" title="Editar despesa"><i data-lucide="pencil"></i></button>
+      <button class="row-action danger" type="button" data-delete-expense="${expense.id}" title="Excluir despesa"><i data-lucide="trash-2"></i></button>
+    </div></td></tr>
+  `).join("") : emptyRow(6, "Nenhuma despesa cadastrada.");
+  refreshIcons();
 }
 
 function renderProducts() {
   document.getElementById("product-grid").innerHTML = state.products.map(product => `
-    <article class="product-card ${product.image ? "featured-product" : ""}"><span class="category">${escapeHtml(product.category)}</span><h2>${escapeHtml(product.name)}</h2><span class="price">${currency.format(product.price)}</span>${product.image ? `<img class="product-image" src="${product.image}" alt="${escapeHtml(product.name)}" />` : ""}<div class="product-footer"><span class="product-cost">Custo da receita<b>${currency.format(product.cost)}</b></span><span class="product-margin">Margem<strong>${number.format(product.margin)}%</strong></span></div></article>
+    <article class="product-card ${product.image ? "featured-product" : ""} ${product.active === false ? "inactive-product" : ""}">
+      <div class="product-top"><span class="category">${escapeHtml(product.category)}</span>${product.line && product.line !== "Classico" ? `<span class="line-pill line-${escapeHtml(String(product.line).toLowerCase())}">${escapeHtml(product.line)}</span>` : ""}${product.active === false ? '<span class="line-pill muted">fora do cardápio</span>' : ""}</div>
+      <h2>${escapeHtml(product.name)}</h2>
+      <span class="price">${currency.format(product.price)}</span>
+      ${product.image ? `<img class="product-image" src="${product.image}" alt="${escapeHtml(product.name)}" />` : ""}
+      <div class="product-footer"><span class="product-cost">Custo da receita<b>${currency.format(product.cost)}</b></span><span class="product-margin">Margem<strong>${number.format(product.margin)}%</strong></span></div>
+      <div class="product-actions">
+        <button class="text-button" type="button" data-dossier="${product.id}"><i data-lucide="file-search"></i>Dossiê de custo</button>
+        <span class="row-actions">
+          <button class="row-action" type="button" data-edit-product="${product.id}" title="Editar produto"><i data-lucide="pencil"></i></button>
+          <button class="row-action danger" type="button" data-delete-product="${product.id}" title="Tirar do cardápio"><i data-lucide="trash-2"></i></button>
+        </span>
+      </div>
+    </article>
   `).join("");
+  refreshIcons();
 }
 
 function renderMedia() {
@@ -570,7 +694,26 @@ async function submitSale(event) {
   event.preventDefault();
   if (!state.cart.size) return toast("Selecione pelo menos um produto.", "error");
   const form = new FormData(event.currentTarget);
-  const payload = { items: [...state.cart.entries()].map(([product_id, quantity]) => ({ product_id, quantity })), channel: form.get("channel"), payment_method: form.get("payment_method"), customer_name: form.get("customer_name") || null, discount: Number(form.get("discount") || 0) };
+  const payload = {
+    items: [...state.cart.entries()].map(([product_id, quantity]) => ({ product_id, quantity })),
+    channel: form.get("channel"),
+    payment_method: form.get("payment_method"),
+    customer_name: form.get("customer_name") || null,
+    discount: Number(form.get("discount") || 0),
+  };
+  // Campo vazio significa "agora"; preenchido, permite cadastrar o movimento
+  // de outro dia sem que ele entre no histórico com a data de hoje.
+  const occurred = form.get("occurred_at");
+  if (occurred) payload.occurred_at = occurred;
+  // Balcão é a maioria: os campos de entrega só valem quando ela é marcada.
+  payload.is_delivery = form.get("is_delivery") === "on";
+  payload.delivery_fee = payload.is_delivery ? Number(form.get("delivery_fee") || 0) : 0;
+  payload.courier_id = payload.is_delivery ? (form.get("courier_id") || null) : null;
+  const orderId = form.get("order_id");
+  if (orderId) {
+    await submitData(`/api/orders/${orderId}`, payload, "Pedido corrigido e estoque ajustado.", "PATCH");
+    return;
+  }
   await submitData("/api/orders", payload, "Venda registrada e estoque atualizado.");
 }
 
@@ -578,7 +721,14 @@ async function submitExpense(event) {
   event.preventDefault();
   const form = new FormData(event.currentTarget);
   const payload = Object.fromEntries(form.entries());
+  const expenseId = payload.expense_id;
+  delete payload.expense_id;
   payload.amount = Number(payload.amount);
+  payload.recurring = form.get("recurring") === "on";
+  if (expenseId) {
+    await submitData(`/api/expenses/${expenseId}`, payload, "Despesa atualizada.", "PATCH");
+    return;
+  }
   await submitData("/api/expenses", payload, "Despesa lançada no financeiro.");
 }
 
@@ -593,16 +743,48 @@ async function submitInventory(event) {
   event.preventDefault();
   const form = new FormData(event.currentTarget);
   const payload = Object.fromEntries(form.entries());
+  const inventoryId = payload.inventory_id;
+  delete payload.inventory_id;
   ["quantity", "minimum_quantity", "unit_cost"].forEach(key => { payload[key] = Number(payload[key]); });
+  // Validade em branco significa "não perece", e nulo é como o cadastro grava
+  // isso. Mandar string vazia faria a validação recusar o insumo inteiro.
+  payload.shelf_life_days = payload.shelf_life_days === "" ? null : Number(payload.shelf_life_days);
+  payload.lead_time_days = Number(payload.lead_time_days || 2);
+  if (inventoryId) {
+    // Saldo não entra na edição: ele só muda por contagem ou ajuste, para toda
+    // diferença ficar registrada em uma movimentação.
+    delete payload.quantity;
+    await submitData(`/api/inventory/${inventoryId}`, payload, "Cadastro do insumo atualizado.", "PATCH");
+    return;
+  }
   await submitData("/api/inventory", payload, "Novo insumo adicionado ao estoque.");
 }
 
 async function submitProduct(event) {
   event.preventDefault();
   const form = new FormData(event.currentTarget);
-  const recipe = [...document.querySelectorAll(".recipe-line")].map(line => ({ inventory_id: line.querySelector("select").value, quantity: Number(line.querySelector("input").value) })).filter(line => line.inventory_id && line.quantity > 0);
+  const recipe = [...document.querySelectorAll("#recipe-lines .recipe-line")].map(line => ({ inventory_id: line.querySelector("select").value, quantity: Number(line.querySelector("input").value) })).filter(line => line.inventory_id && line.quantity > 0);
   if (!recipe.length) return toast("Inclua ao menos um insumo na ficha técnica.", "error");
-  await submitData("/api/products", { name: form.get("name"), category: form.get("category"), price: Number(form.get("price")), recipe, active: true }, "Produto salvo no cardápio.");
+  const nutrition = {};
+  ["kcal", "protein_g", "carbs_g", "fiber_g"].forEach((key) => {
+    const value = form.get(key);
+    if (value !== null && value !== "") nutrition[key] = Number(value);
+  });
+  const payload = {
+    name: form.get("name"),
+    category: form.get("category"),
+    price: Number(form.get("price")),
+    line: form.get("line") || "Classico",
+    claims: String(form.get("claims") || "").split(",").map((claim) => claim.trim()).filter(Boolean),
+    nutrition,
+    recipe,
+  };
+  const productId = form.get("product_id");
+  if (productId) {
+    await submitData(`/api/products/${productId}`, payload, "Produto atualizado.", "PATCH");
+    return;
+  }
+  await submitData("/api/products", { ...payload, active: true }, "Produto salvo no cardápio.");
 }
 
 async function openMedia(mediaId) {
@@ -707,9 +889,9 @@ function populateEntityTargets(type, selectedId = "") {
   select.value = selectedId;
 }
 
-async function submitData(path, payload, successMessage) {
+async function submitData(path, payload, successMessage, method = "POST") {
   try {
-    await api(path, { method: "POST", body: JSON.stringify(payload) });
+    await api(path, { method, body: JSON.stringify(payload) });
     closeModal();
     toast(successMessage, "success");
     await loadAll();
@@ -720,6 +902,19 @@ async function submitData(path, payload, successMessage) {
 
 function populateSelects() {
   populateAdjustSelect();
+  populateChannelSelect();
+  populateCourierSelects();
+  populateCatalogSelects();
+}
+
+// Canal deixou de ser lista fixa no código: quem manda é o cadastro em Canais.
+function populateChannelSelect() {
+  const select = document.getElementById("sale-channel");
+  if (!select) return;
+  const current = select.value;
+  const active = state.channels.filter((channel) => channel.active);
+  select.innerHTML = active.map((channel) => `<option value="${escapeHtml(channel.name)}">${escapeHtml(channel.name)}${channel.fee_percent ? ` — ${number.format(channel.fee_percent)}% de taxa` : ""}</option>`).join("");
+  if (current && active.some((channel) => channel.name === current)) select.value = current;
 }
 
 function populateAdjustSelect() {
@@ -776,3 +971,640 @@ function escapeHtml(value) { return String(value ?? "").replace(/[&<>'"]/g, char
 function refreshIcons() { window.lucide?.createIcons(); }
 function setRefreshing(value) { const button = document.getElementById("refresh-data"); button.disabled = value; button.classList.toggle("is-loading", value); }
 function toast(message, type) { const element = document.getElementById("toast"); element.textContent = message; element.className = `toast ${type}`; element.hidden = false; clearTimeout(toast.timer); toast.timer = setTimeout(() => { element.hidden = true; }, 4200); }
+
+
+// ---------------------------------------------------------------------------
+// Fechamento do dia, canais e linhas de marca
+// ---------------------------------------------------------------------------
+
+async function loadClosing() {
+  try {
+    state.salesDay = await api(`/api/sales/daily${state.closingDate ? `?day=${state.closingDate}` : ""}`);
+    renderClosing();
+  } catch (error) {
+    toast(error.message || "Não foi possível carregar o fechamento.", "error");
+  }
+}
+
+function renderClosing() {
+  const day = state.salesDay;
+  if (!day) return;
+  const input = document.getElementById("closing-date");
+  if (input && !input.value) input.value = day.date;
+  const t = day.totals;
+
+  setText("#day-revenue", currency.format(t.revenue));
+  setText("#day-orders", number.format(t.orders));
+  setText("#day-ticket", t.orders ? `${currency.format(t.average_ticket)} por pedido` : "nenhuma venda registrada");
+  setText("#day-net", currency.format(t.net_revenue));
+  setText("#day-fee", t.channel_fee ? `${currency.format(t.channel_fee)} ficaram com os canais` : "nenhuma taxa de canal no dia");
+  // Sem nenhum pedido com custo lançado a margem é desconhecida, não zero.
+  setText("#day-margin", t.margin_coverage <= 0 ? "—" : `${number.format(t.gross_margin)}%`);
+  setText("#day-profit", t.margin_coverage <= 0
+    ? "nenhum pedido do dia tem custo lançado"
+    : t.margin_coverage >= 99.5
+      ? `${currency.format(t.gross_profit)} de lucro bruto`
+      : `sobre ${number.format(t.margin_coverage)}% do faturamento do dia`);
+
+  const compare = document.getElementById("day-compare");
+  if (compare) {
+    if (day.comparison.change === null) {
+      compare.textContent = `primeira ${day.weekday} com movimento`;
+      compare.className = "";
+    } else {
+      const signal = day.comparison.change >= 0 ? "+" : "";
+      compare.textContent = `${signal}${number.format(day.comparison.change)}% vs. média de ${day.weekday}`;
+      compare.className = day.comparison.change >= 0 ? "positive" : "negative";
+    }
+  }
+
+  renderShareList("day-channel-list", day.by_channel, "Nenhuma venda neste dia.");
+  renderShareList("day-payment-list", day.by_payment, "Nenhum recebimento neste dia.");
+
+  document.getElementById("day-product-body").innerHTML = day.by_product.length
+    ? day.by_product.map((row) => `<tr><td><strong>${escapeHtml(row.name)}</strong></td><td class="align-right">${number.format(row.quantity)}</td><td class="align-right">${currency.format(row.value)}</td></tr>`).join("")
+    : emptyRow(3, "Nenhum produto vendido — ou os pedidos do dia vieram sem itens detalhados.");
+
+  document.getElementById("day-alerts").innerHTML = closingAlerts(day).map((item) => `
+    <article class="insight ${item.type}"><span class="insight-icon"><i data-lucide="${item.icon}"></i></span><div><strong>${escapeHtml(item.title)}</strong><p>${escapeHtml(item.description)}</p></div></article>`).join("");
+
+  setText("#day-order-count", `${day.totals.orders} pedido${day.totals.orders === 1 ? "" : "s"}`);
+  document.getElementById("day-order-body").innerHTML = day.orders.length
+    ? day.orders.map((order) => `<tr><td><strong>#${order.number}</strong></td><td class="muted-value">${escapeHtml(timeOnly(order.created_at))}</td><td><span class="channel-pill">${escapeHtml(order.channel)}</span></td><td>${escapeHtml(itemSummary(order) || "sem itens detalhados")}</td><td class="align-right"><strong>${currency.format(order.total)}</strong></td><td class="align-right">${orderActions(order)}</td></tr>`).join("")
+    : emptyRow(6, "Nenhum pedido neste dia. Use Lançar venda para cadastrar o movimento.");
+  refreshIcons();
+}
+
+// O que precisa de conferência antes de fechar o caixa, na ordem em que pesa.
+function closingAlerts(day) {
+  const alerts = [];
+  const t = day.totals;
+  if (t.loss_cost > 0) {
+    alerts.push({ type: "attention", icon: "trash-2", title: "Perdas lançadas hoje", description: `${currency.format(t.loss_cost)} de insumo saíram sem virar venda. Confira se foi quebra, degustação ou erro de lançamento.` });
+  }
+  if (t.cancelled) {
+    alerts.push({ type: "attention", icon: "ban", title: `${t.cancelled} pedido${t.cancelled === 1 ? "" : "s"} cancelado${t.cancelled === 1 ? "" : "s"}`, description: `${currency.format(t.cancelled_value)} saíram do faturamento e o insumo voltou para o estoque.` });
+  }
+  if (t.channel_fee > 0) {
+    const share = t.revenue ? (t.channel_fee / t.revenue) * 100 : 0;
+    alerts.push({ type: "info", icon: "scissors", title: "Taxa dos canais", description: `${number.format(share)}% do faturamento do dia ficou com os canais de distribuição.` });
+  }
+  if (day.expenses_due.length) {
+    const total = day.expenses_due.reduce((sum, row) => sum + row.amount, 0);
+    alerts.push({ type: "attention", icon: "calendar-clock", title: `${day.expenses_due.length} conta${day.expenses_due.length === 1 ? "" : "s"} vencendo hoje`, description: `${currency.format(total)} — ${day.expenses_due.map((row) => row.description).slice(0, 3).join(", ")}.` });
+  }
+  if (t.discount > 0) {
+    alerts.push({ type: "info", icon: "tag", title: "Descontos concedidos", description: `${currency.format(t.discount)} em desconto nos pedidos do dia.` });
+  }
+  if (!alerts.length) {
+    alerts.push({ type: "info", icon: "check", title: "Dia sem pendência", description: "Nenhuma perda, cancelamento ou conta vencendo. O caixa fecha com o que foi vendido." });
+  }
+  return alerts.slice(0, 4);
+}
+
+function renderShareList(elementId, rows, emptyMessage) {
+  const container = document.getElementById(elementId);
+  if (!container) return;
+  const total = rows.reduce((sum, row) => sum + row.value, 0);
+  container.innerHTML = rows.length ? rows.map((row) => {
+    const percentage = total ? (row.value / total) * 100 : 0;
+    return `<div class="channel-row"><span>${escapeHtml(row.name)}</span><span class="channel-meter"><span style="width:${percentage}%"></span></span><strong>${currency.format(row.value)}</strong></div>`;
+  }).join("") : `<p class="empty-state">${escapeHtml(emptyMessage)}</p>`;
+}
+
+function renderChannelsView() {
+  const performance = state.channelPerformance;
+  if (performance) {
+    setText("#ch-revenue", currency.format(performance.totals.revenue));
+    setText("#ch-fee", currency.format(performance.totals.fee));
+    const share = performance.totals.revenue ? (performance.totals.fee / performance.totals.revenue) * 100 : 0;
+    setText("#ch-fee-share", performance.totals.fee ? `${number.format(share)}% do faturamento` : "nenhuma comissão no período");
+    setText("#ch-net", currency.format(performance.totals.net_revenue));
+
+    document.getElementById("channel-performance-body").innerHTML = performance.channels.length
+      ? performance.channels.map((row) => {
+          const margin = row.contribution_margin === null
+            ? '<span class="muted-value" title="Os pedidos deste canal vieram sem custo lançado.">—</span>'
+            : `<span class="status-pill ${row.contribution_margin > 0 ? "success" : "danger"}">${number.format(row.contribution_margin)}%</span>`;
+          const warning = row.registered ? "" : '<span class="row-note">canal não cadastrado</span>';
+          return `<tr><td><strong>${escapeHtml(row.name)}</strong>${warning}<span class="row-note">${number.format(row.share)}% das vendas</span></td><td class="align-right">${number.format(row.orders)}</td><td class="align-right">${currency.format(row.revenue)}</td><td class="align-right ${row.fee ? "negative" : "muted-value"}">${row.fee ? `-${currency.format(row.fee)}` : "—"}</td><td class="align-right"><strong>${currency.format(row.net_revenue)}</strong></td><td class="align-right muted-value">${currency.format(row.average_ticket)}</td><td>${margin}</td></tr>`;
+        }).join("")
+      : emptyRow(7, "Nenhuma venda por canal no período.");
+
+    if (performance.idle_channels.length) {
+      document.getElementById("channel-performance-body").insertAdjacentHTML("beforeend",
+        `<tr><td colspan="7" class="muted-value">Sem movimento no período: ${escapeHtml(performance.idle_channels.join(", "))}.</td></tr>`);
+    }
+  }
+
+  document.getElementById("channel-body").innerHTML = state.channels.length
+    ? state.channels.map((channel) => `<tr class="${channel.active ? "" : "cancelled-row"}"><td><strong>${escapeHtml(channel.name)}</strong></td><td class="align-right">${channel.fee_percent ? `${number.format(channel.fee_percent)}%` : '<span class="muted-value">—</span>'}</td><td class="align-right">${channel.fee_fixed ? currency.format(channel.fee_fixed) : '<span class="muted-value">—</span>'}</td><td><span class="status-pill ${channel.active ? "success" : "neutral"}">${channel.active ? "Ativo" : "Inativo"}</span></td><td class="muted-value">${escapeHtml(channel.note || "—")}</td><td class="align-right"><div class="row-actions">
+        <button class="row-action" type="button" data-edit-channel="${channel.id}" title="Editar canal"><i data-lucide="pencil"></i></button>
+        <button class="row-action danger" type="button" data-delete-channel="${channel.id}" title="Remover canal"><i data-lucide="trash-2"></i></button>
+      </div></td></tr>`).join("")
+    : emptyRow(6, "Nenhum canal cadastrado.");
+  refreshIcons();
+}
+
+function renderBrand() {
+  const data = state.lines;
+  if (!data) return;
+
+  document.getElementById("line-grid").innerHTML = data.lines.length ? data.lines.map((line) => {
+    const inativa = line.revenue === 0;
+    return `<article class="line-card ${inativa ? "idle" : ""}">
+      <header><span class="line-pill line-${escapeHtml(String(line.name).toLowerCase())}">${escapeHtml(line.name)}</span><span class="muted-value">${line.active_products} de ${line.products} no cardápio</span></header>
+      <strong>${currency.format(line.revenue)}</strong>
+      <p>${inativa ? "sem venda nos últimos 30 dias" : `${number.format(line.share)}% do faturamento`}</p>
+      <div class="line-stats">
+        <span>Margem<b>${inativa ? "—" : `${number.format(line.margin)}%`}</b></span>
+        <span>Unidades<b>${number.format(line.units)}</b></span>
+        <span>Ticket<b>${inativa ? "—" : currency.format(line.average_ticket)}</b></span>
+      </div>
+    </article>`;
+  }).join("") : '<p class="empty-state">Nenhuma linha cadastrada ainda.</p>';
+
+  const linhas = ["all", ...new Set(data.catalog.map((row) => row.line))];
+  document.getElementById("line-filters").innerHTML = linhas.map((line) => `
+    <button type="button" class="filter-chip ${state.lineFilter === line ? "active" : ""}" data-line-filter="${escapeHtml(line)}">${line === "all" ? "Todas" : escapeHtml(line)}</button>`).join("");
+
+  const rows = data.catalog.filter((row) => state.lineFilter === "all" || row.line === state.lineFilter);
+  document.getElementById("brand-catalog-body").innerHTML = rows.length ? rows.map((row) => `
+    <tr class="${row.active ? "" : "cancelled-row"}"><td><strong>${escapeHtml(row.name)}</strong></td><td><span class="line-pill line-${escapeHtml(String(row.line).toLowerCase())}">${escapeHtml(row.line)}</span></td><td class="align-right">${currency.format(row.price)}</td><td class="align-right muted-value">${currency.format(row.cost)}</td><td class="align-right"><strong>${number.format(row.margin)}%</strong></td><td class="muted-value">${(row.claims || []).length ? escapeHtml(row.claims.join(", ")) : "—"}</td><td class="align-right"><div class="row-actions">
+      <button class="row-action" type="button" data-dossier="${row.id}" title="Dossiê de custo"><i data-lucide="file-search"></i></button>
+      <button class="row-action" type="button" data-edit-product="${row.id}" title="Editar produto"><i data-lucide="pencil"></i></button>
+    </div></td></tr>`).join("") : emptyRow(7, "Nenhum produto nesta linha.");
+  refreshIcons();
+}
+
+function timeOnly(value) { return new Intl.DateTimeFormat("pt-BR", { hour: "2-digit", minute: "2-digit" }).format(new Date(value)); }
+function todayInputValue() { const now = new Date(); return new Date(now.getTime() - now.getTimezoneOffset() * 60000).toISOString().slice(0, 10); }
+
+
+// ---------------------------------------------------------------------------
+// Crescimento: o que fazer para a loja crescer, com a conta aberta
+// ---------------------------------------------------------------------------
+
+async function loadGrowth() {
+  try {
+    state.growth = await api(`/api/growth?days=${state.growthPeriod}`);
+    renderGrowth();
+  } catch (error) {
+    toast(error.message || "Não foi possível carregar as oportunidades.", "error");
+  }
+}
+
+const GROWTH_TYPES = {
+  combo: { label: "Combo", icon: "layers" },
+  produto: { label: "Produto", icon: "cup-soda" },
+  servico: { label: "Serviço", icon: "concierge-bell" },
+  preco: { label: "Preço", icon: "tag" },
+  canal: { label: "Canal", icon: "route" },
+  marketing: { label: "Marketing", icon: "megaphone" },
+};
+
+function renderGrowth() {
+  const data = state.growth;
+  if (!data) return;
+  const { context: ctx, totals } = data;
+
+  setText("#growth-impact", totals.impact_monthly ? currency.format(totals.impact_monthly) : "—");
+  setText("#growth-impact-note", totals.quantified
+    ? `somando ${totals.quantified} sugestão${totals.quantified === 1 ? "" : "ões"} com número`
+    : "nenhuma sugestão pôde ser quantificada ainda");
+  setText("#growth-count", number.format(totals.count));
+  setText("#growth-quantified", `${totals.count - totals.quantified} sem valor calculável`);
+  setText("#growth-orders", `${number.format(ctx.orders)} pedidos`);
+  // Cesta e mix só enxergam o pedido que tem itens. Sem dizer isso, a sugestão
+  // parece cobrir a loja inteira quando cobre só a parte detalhada.
+  setText("#growth-coverage", ctx.detail_coverage >= 99.5
+    ? `todos com itens detalhados`
+    : `${number.format(ctx.detail_coverage)}% com itens detalhados`);
+  setText("#growth-identified", `${number.format(ctx.identified_share)}%`);
+  setText("#growth-identified-note", `${number.format(ctx.identified_customers)} pedidos com nome do cliente`);
+
+  const badge = document.getElementById("nav-growth-count");
+  badge.hidden = totals.count === 0;
+  badge.textContent = totals.count;
+
+  const tipos = ["all", ...data.by_type.map((row) => row.type)];
+  document.getElementById("growth-filters").innerHTML = tipos.map((tipo) => {
+    const total = tipo === "all" ? totals.count : data.by_type.find((row) => row.type === tipo)?.count || 0;
+    const label = tipo === "all" ? "Todas" : GROWTH_TYPES[tipo]?.label || tipo;
+    return `<button type="button" class="filter-chip ${state.growthFilter === tipo ? "active" : ""}" data-growth-filter="${escapeHtml(tipo)}">${escapeHtml(label)} <b>${total}</b></button>`;
+  }).join("");
+
+  const rows = data.suggestions.filter((row) => state.growthFilter === "all" || row.type === state.growthFilter);
+  document.getElementById("growth-list").innerHTML = rows.length
+    ? rows.map(growthCard).join("")
+    : '<p class="empty-state">Nenhuma sugestão deste tipo no período analisado.</p>';
+
+  const blockers = document.getElementById("growth-blockers");
+  document.getElementById("growth-blockers-panel").hidden = data.blockers.length === 0;
+  blockers.innerHTML = data.blockers.map((row) => `
+    <article class="insight attention"><span class="insight-icon"><i data-lucide="triangle-alert"></i></span><div><strong>${escapeHtml(row.title)}</strong><p>${escapeHtml(row.description)}</p></div></article>`).join("");
+  refreshIcons();
+}
+
+function growthCard(row) {
+  const tipo = GROWTH_TYPES[row.type] || { label: row.type, icon: "lightbulb" };
+  const confidence = { alta: "success", media: "pending", baixa: "neutral" }[row.confidence] || "neutral";
+  const impact = row.impact_monthly !== null
+    ? `<span class="growth-impact"><b>+${currency.format(row.impact_monthly)}</b><small>por mês</small></span>`
+    : `<span class="growth-impact none"><b>sem valor</b><small>calculável</small></span>`;
+  const metrics = (row.metrics || []).length
+    ? `<div class="growth-metrics">${row.metrics.map((m) => `<span>${escapeHtml(m.label)}<b>${escapeHtml(m.value)}</b></span>`).join("")}</div>`
+    : "";
+  return `<article class="growth-card" data-growth-type="${escapeHtml(row.type)}">
+    <div class="growth-rank">${row.rank}</div>
+    <div class="growth-body">
+      <div class="growth-top">
+        <span class="growth-type"><i data-lucide="${tipo.icon}"></i>${escapeHtml(tipo.label)}</span>
+        <span class="status-pill ${confidence}" title="${escapeHtml(row.confidence_note)}">confiança ${escapeHtml(row.confidence)}</span>
+      </div>
+      <h3>${escapeHtml(row.title)}</h3>
+      <p class="growth-evidence"><i data-lucide="search"></i><span>${escapeHtml(row.evidence)}</span></p>
+      <p class="growth-action"><i data-lucide="arrow-right"></i><span>${escapeHtml(row.action)}</span></p>
+      ${metrics}
+      ${row.impact_note ? `<p class="growth-premise"><i data-lucide="scale"></i><span>${escapeHtml(row.impact_note)}</span></p>` : ""}
+    </div>
+    ${impact}
+  </article>`;
+}
+
+
+// ---------------------------------------------------------------------------
+// Planejamento: quanto preparar e quando pedir
+// ---------------------------------------------------------------------------
+
+async function loadPlanning() {
+  try {
+    state.planning = await api(`/api/planning?days=90&horizon=7&service_level=${state.planningService}`);
+    renderPlanning();
+  } catch (error) {
+    toast(error.message || "Não foi possível carregar o planejamento.", "error");
+  }
+}
+
+function renderPlanning() {
+  const plan = state.planning;
+  if (!plan) return;
+
+  setText("#pl-production", currency.format(plan.production_total));
+  setText("#pl-production-day", plan.production.length
+    ? `${plan.production.length} insumo(s) para ${plan.target_weekday}`
+    : "nenhum insumo perecível com histórico");
+  const pedir = plan.purchase.filter((row) => row.reorder_now);
+  setText("#pl-purchase", currency.format(plan.purchase_total));
+  setText("#pl-purchase-count", pedir.length ? `${pedir.length} item(ns) no ponto de pedido` : "nada no ponto de pedido");
+  setText("#pl-days", number.format(plan.open_days));
+  setText("#pl-service", `${number.format(plan.service_level)}%`);
+  setText("#pl-method", plan.method.summary);
+  setText("#pl-nofit", plan.method.why_no_fit);
+  setText("#pl-target", `${plan.target_weekday}, ${formatDate(plan.target_day)}`);
+  setText("#pl-production-title", `Ficha de produção — ${plan.target_weekday}`);
+  setText("#pl-purchase-total", pedir.length ? `${currency.format(plan.purchase_total)} a pedir` : "nada urgente");
+
+  const badge = document.getElementById("nav-planning-count");
+  badge.hidden = pedir.length === 0;
+  badge.textContent = pedir.length;
+
+  document.getElementById("pl-production-body").innerHTML = plan.production.length
+    ? plan.production.map((row) => `<tr>
+        <td><strong>${escapeHtml(row.name)}</strong><span class="row-note">validade de ${row.shelf_life_days} dia(s) · ${row.observations} observações</span></td>
+        <td class="align-right"><strong>${number.format(row.prepare)} ${escapeHtml(row.unit)}</strong><span class="row-note">percentil ${number.format(row.critical_ratio)}</span></td>
+        <td class="align-right muted-value">${number.format(row.median)} ${escapeHtml(row.unit)}</td>
+        <td class="align-right muted-value">${number.format(row.in_stock)} ${escapeHtml(row.unit)}</td>
+        <td class="align-right">${row.to_prepare > 0 ? `<strong>${number.format(row.to_prepare)} ${escapeHtml(row.unit)}</strong>` : '<span class="muted-value">já tem</span>'}</td>
+        <td class="plan-why"><span>${escapeHtml(row.reading)}</span><small>${escapeHtml(row.ratio_basis)}</small></td>
+      </tr>`).join("")
+    : emptyRow(6, "Nenhum insumo perecível tem histórico de consumo suficiente. Cadastre a validade dos insumos e registre as vendas item a item.");
+
+  document.getElementById("pl-purchase-body").innerHTML = plan.purchase.length
+    ? plan.purchase.map((row) => {
+        const situacao = row.reorder_now
+          ? '<span class="status-pill pending">Pedir agora</span>'
+          : `<span class="status-pill success">${row.days_left === null ? "sem consumo" : `${number.format(row.days_left)} dias`}</span>`;
+        // O mínimo digitado no olho ganha origem: o histórico do próprio insumo
+        // no prazo daquele fornecedor.
+        const minimo = Math.abs(row.current_minimum - row.suggested_minimum) > 0.01
+          ? `<span class="row-note">mínimo hoje ${number.format(row.current_minimum)} → sugerido ${number.format(row.suggested_minimum)}</span>`
+          : "";
+        return `<tr class="${row.reorder_now ? "" : "muted-row"}">
+          <td><strong>${escapeHtml(row.name)}</strong><span class="row-note">prazo de ${row.lead_time_days} dia(s) · ${number.format(row.daily_average)} ${escapeHtml(row.unit)}/dia</span>${minimo}</td>
+          <td class="align-right ${row.in_stock < 0 ? "negative" : "muted-value"}">${number.format(row.in_stock)} ${escapeHtml(row.unit)}</td>
+          <td class="align-right"><strong>${number.format(row.reorder_point)} ${escapeHtml(row.unit)}</strong></td>
+          <td class="align-right muted-value">${number.format(row.safety_stock)} ${escapeHtml(row.unit)}</td>
+          <td class="align-right">${row.to_buy > 0 ? `<strong>${number.format(row.to_buy)} ${escapeHtml(row.unit)}</strong>` : '<span class="muted-value">—</span>'}</td>
+          <td class="align-right">${row.cost > 0 ? currency.format(row.cost) : '<span class="muted-value">—</span>'}</td>
+          <td>${situacao}</td>
+        </tr>`;
+      }).join("")
+    : emptyRow(7, "Nenhum insumo tem histórico de consumo suficiente para calcular ponto de pedido.");
+
+  document.getElementById("pl-abc-body").innerHTML = plan.abc.length
+    ? plan.abc.map((row) => `<tr>
+        <td><strong>${escapeHtml(row.name)}</strong></td>
+        <td><span class="class-pill class-${escapeHtml(row.abc.toLowerCase())}">${escapeHtml(row.abc)}${escapeHtml(row.xyz)}</span></td>
+        <td class="align-right">${currency.format(row.cost)}<span class="row-note">${number.format(row.share)}%</span></td>
+        <td class="align-right muted-value">${number.format(row.cumulative)}%</td>
+        <td class="align-right muted-value">${number.format(row.variation)}</td>
+        <td class="muted-value">${escapeHtml(row.routine)}</td>
+      </tr>`).join("")
+    : emptyRow(6, "Sem consumo registrado no período.");
+
+  document.getElementById("pl-blockers-panel").hidden = plan.blockers.length === 0;
+  document.getElementById("pl-blockers").innerHTML = plan.blockers.map((row) => `
+    <article class="insight attention"><span class="insight-icon"><i data-lucide="triangle-alert"></i></span><div><strong>${escapeHtml(row.title)}</strong><p>${escapeHtml(row.description)}</p></div></article>`).join("");
+  refreshIcons();
+}
+
+
+// ---------------------------------------------------------------------------
+// Entregas
+// ---------------------------------------------------------------------------
+
+async function loadDelivery() {
+  try {
+    const [deliveries, performance] = await Promise.all([
+      api(`/api/deliveries?days=${state.deliveryPeriod}`),
+      api(`/api/couriers/performance?days=${state.deliveryPeriod}`),
+    ]);
+    state.deliveries = deliveries;
+    state.deliveryPerformance = performance;
+    renderDelivery();
+  } catch (error) {
+    toast(error.message || "Não foi possível carregar as entregas.", "error");
+  }
+}
+
+// Entregador ativo aparece na venda e no lançamento; inativo some da escolha
+// mas continua no histórico.
+function populateCourierSelects() {
+  const ativos = state.couriers.filter((row) => row.active);
+  const opcoes = ativos.map((row) => `<option value="${row.id}">${escapeHtml(row.name)}</option>`).join("");
+  const venda = document.getElementById("sale-courier");
+  if (venda) {
+    const atual = venda.value;
+    venda.innerHTML = `<option value="">Sem entregador definido</option>${opcoes}`;
+    if (atual) venda.value = atual;
+  }
+  const turno = document.getElementById("delivery-courier");
+  if (turno) {
+    const atual = turno.value;
+    turno.innerHTML = ativos.length ? opcoes : '<option value="">Cadastre um entregador primeiro</option>';
+    if (atual) turno.value = atual;
+  }
+}
+
+function renderDelivery() {
+  const data = state.deliveryPerformance;
+  if (!data) return;
+  const t = data.totals;
+
+  setText("#dl-count", number.format(t.deliveries));
+  const turnos = data.couriers.reduce((soma, row) => soma + row.shifts, 0);
+  setText("#dl-per-shift", turnos ? `${number.format(t.deliveries / turnos)} por turno, em média` : "nenhum turno lançado");
+  setText("#dl-freight", currency.format(t.freight));
+  setText("#dl-freight-each", t.freight_per_delivery !== null ? `${currency.format(t.freight_per_delivery)} por entrega` : "sem entregas no período");
+  setText("#dl-payout", currency.format(t.payout));
+  setText("#dl-cost-each", t.cost_per_delivery !== null ? `${currency.format(t.cost_per_delivery)} por entrega` : "sem entregas no período");
+
+  const resultado = document.getElementById("dl-result");
+  resultado.textContent = t.payout ? currency.format(t.result) : "—";
+  resultado.className = t.result >= 0 ? "positive" : "negative";
+  // Abaixo de 100%, a diferença sai da margem do produto. É a conta que decide
+  // se o delivery vale a pena como está.
+  setText("#dl-coverage", t.coverage !== null
+    ? `o frete cobre ${number.format(t.coverage)}% do custo`
+    : "lance um turno para a conta aparecer");
+
+  const badge = document.getElementById("nav-delivery-count");
+  const pendentes = data.reconciliation.orders_without_courier;
+  badge.hidden = pendentes === 0;
+  badge.textContent = pendentes;
+
+  document.getElementById("dl-readings").innerHTML = data.readings.map((row) => `
+    <article class="insight ${row.type}"><span class="insight-icon"><i data-lucide="${row.type === "attention" ? "triangle-alert" : row.type === "opportunity" ? "badge-dollar-sign" : "lightbulb"}"></i></span><div><strong>${escapeHtml(row.title)}</strong><p>${escapeHtml(row.description)}</p></div></article>`).join("");
+
+  document.getElementById("dl-courier-body").innerHTML = data.couriers.length
+    ? data.couriers.map((row) => `<tr class="${row.active ? "" : "cancelled-row"}">
+        <td><strong>${escapeHtml(row.name)}</strong>${row.vehicle ? `<span class="row-note">${escapeHtml(row.vehicle)}</span>` : ""}${row.overrides ? `<span class="row-note">${row.overrides} turno(s) com valor à mão</span>` : ""}</td>
+        <td class="align-right"><strong>${number.format(row.deliveries)}</strong></td>
+        <td class="align-right muted-value">${number.format(row.shifts)}</td>
+        <td class="align-right muted-value">${number.format(row.deliveries_per_shift)}</td>
+        <td class="align-right">${currency.format(row.freight)}</td>
+        <td class="align-right"><strong>${currency.format(row.payout)}</strong>${row.salary ? `<span class="row-note">inclui ${currency.format(row.salary)} de salário</span>` : ""}</td>
+        <td class="align-right">${row.cost_per_delivery !== null ? currency.format(row.cost_per_delivery) : '<span class="muted-value">—</span>'}</td>
+        <td class="align-right ${row.result >= 0 ? "positive" : "negative"}"><strong>${currency.format(row.result)}</strong></td>
+        <td class="align-right"><div class="row-actions"><button class="row-action" type="button" data-edit-courier="${row.courier_id}" title="Editar entregador"><i data-lucide="pencil"></i></button></div></td>
+      </tr>`).join("")
+    : emptyRow(9, "Nenhum entregador com lançamento no período.");
+
+  setText("#dl-entry-count", `${state.deliveries.length} turno(s)`);
+  document.getElementById("dl-entry-body").innerHTML = state.deliveries.length
+    ? state.deliveries.map((row) => {
+        const conta = row.breakdown.length
+          ? row.breakdown.map((parte) => `${escapeHtml(parte.label)} = ${currency.format(parte.value)}`).join(" · ")
+          : "sem remuneração definida para este entregador";
+        const marca = row.overridden
+          ? `<span class="row-note">valor à mão; calculado seria ${currency.format(row.calculated_payout)}</span>`
+          : "";
+        return `<tr>
+          <td class="muted-value">${escapeHtml(formatDate(row.date))}${row.worked ? "" : '<span class="row-note">sem diária</span>'}</td>
+          <td><strong>${escapeHtml(row.courier_name)}</strong>${row.note ? `<span class="row-note">${escapeHtml(row.note)}</span>` : ""}</td>
+          <td class="align-right">${number.format(row.deliveries)}</td>
+          <td class="align-right muted-value">${currency.format(row.freight_total)}</td>
+          <td class="plan-why"><span>${escapeHtml(conta)}</span>${marca}</td>
+          <td class="align-right"><strong>${currency.format(row.payout)}</strong></td>
+          <td class="align-right"><div class="row-actions">
+            <button class="row-action" type="button" data-edit-delivery="${row.id}" title="Corrigir turno"><i data-lucide="pencil"></i></button>
+            <button class="row-action danger" type="button" data-delete-delivery="${row.id}" title="Excluir turno"><i data-lucide="trash-2"></i></button>
+          </div></td>
+        </tr>`;
+      }).join("")
+    : emptyRow(7, "Nenhum turno lançado no período.");
+
+  const r = data.reconciliation;
+  document.getElementById("dl-reconcile").innerHTML = `
+    <article><p>Pedidos de entrega no ERP</p><strong>${number.format(r.delivery_orders)}</strong><small>${currency.format(r.order_freight)} de frete</small></article>
+    <article><p>Entregas lançadas nos turnos</p><strong>${number.format(r.entries_deliveries)}</strong><small>somando os fechamentos</small></article>
+    <article class="${r.difference === 0 ? "" : "attention"}"><p>Diferença</p><strong>${r.difference > 0 ? "+" : ""}${number.format(r.difference)}</strong><small>${r.difference === 0 ? "os dois lados batem" : "confira antes do acerto"}</small></article>
+    <article class="${r.orders_without_courier ? "attention" : ""}"><p>Sem entregador marcado</p><strong>${number.format(r.orders_without_courier)}</strong><small>pedidos de entrega</small></article>`;
+  refreshIcons();
+}
+
+
+// ---------------------------------------------------------------------------
+// Listas editáveis
+// ---------------------------------------------------------------------------
+
+function catalogItems(catalogId) {
+  const lista = state.catalogs.find((row) => row.id === catalogId);
+  return lista ? lista.items.map((item) => item.value) : [];
+}
+
+/* Todo campo de escolha passa a vir do cadastro, não de uma lista fixa no
+ * código. Valor antigo que saiu da lista continua sendo injetado pelo
+ * setSelectValue, para o registro não perder o que já tinha. */
+function populateCatalogSelects() {
+  if (!state.catalogs.length) return;
+  const alvos = [
+    ["payment_methods", '#sale-form [name="payment_method"]'],
+    ["payment_methods", "#import-payment"],
+    ["expense_categories", '#expense-form [name="category"]'],
+    ["product_lines", '#product-form [name="line"]'],
+    ["media_categories", '#media-form [name="category"]'],
+  ];
+  alvos.forEach(([catalogId, seletor]) => {
+    const select = document.querySelector(seletor);
+    if (!select) return;
+    const atual = select.value;
+    const opcoes = catalogItems(catalogId);
+    if (!opcoes.length) return;
+    select.innerHTML = opcoes.map((valor) => `<option value="${escapeHtml(valor)}">${escapeHtml(valor)}</option>`).join("");
+    if (atual && opcoes.includes(atual)) select.value = atual;
+  });
+  // Campo livre: a lista sugere, mas não impede um valor novo.
+  [["inventory_categories", "inventory-categories"], ["courier_vehicles", "courier-vehicles"]].forEach(([catalogId, elementId]) => {
+    const datalist = document.getElementById(elementId);
+    if (datalist) {
+      datalist.innerHTML = catalogItems(catalogId).map((valor) => `<option value="${escapeHtml(valor)}"></option>`).join("");
+    }
+  });
+}
+
+function renderCatalogs() {
+  const grid = document.getElementById("catalog-grid");
+  if (!grid) return;
+  grid.innerHTML = state.catalogs.map((lista) => {
+    const itens = lista.items.map((item, indice) => `
+      <li class="catalog-row">
+        <button type="button" class="catalog-item" data-edit-catalog="${escapeHtml(lista.id)}" data-catalog-value="${escapeHtml(item.value)}">
+          <span>${escapeHtml(item.value)}</span>
+          <b class="${item.usage ? "" : "unused"}">${item.usage ? `${number.format(item.usage)} em uso` : "sem uso"}</b>
+          <i data-lucide="pencil"></i>
+        </button>
+        <span class="row-actions catalog-move">
+          <button class="row-action" type="button" data-move-catalog="${escapeHtml(lista.id)}" data-move-index="${indice}" data-move-step="-1" title="Subir" ${indice === 0 ? "disabled" : ""}><i data-lucide="chevron-up"></i></button>
+          <button class="row-action" type="button" data-move-catalog="${escapeHtml(lista.id)}" data-move-index="${indice}" data-move-step="1" title="Descer" ${indice === lista.items.length - 1 ? "disabled" : ""}><i data-lucide="chevron-down"></i></button>
+        </span>
+      </li>`).join("");
+    // Valor que ficou nos registros mas saiu da lista: some da escolha, não da
+    // tela — é ele que explica um relatório antigo com categoria inexistente.
+    const orfaos = lista.orphans.length
+      ? `<p class="catalog-orphans"><i data-lucide="ghost"></i>Fora da lista, ainda em uso: ${lista.orphans.map((row) => `${escapeHtml(row.value)} (${row.usage})`).join(", ")}</p>`
+      : "";
+    return `<article class="panel catalog-card">
+      <div class="panel-header"><div><p class="eyebrow">${escapeHtml(lista.feeds)}</p><h2>${escapeHtml(lista.name)}</h2></div>
+      <button class="icon-button" type="button" data-add-catalog="${escapeHtml(lista.id)}" title="Adicionar item"><i data-lucide="plus"></i></button></div>
+      <p class="panel-note">${escapeHtml(lista.description)}</p>
+      <ul class="catalog-list">${itens}</ul>
+      ${orfaos}
+    </article>`;
+  }).join("");
+  refreshIcons();
+}
+
+
+// ---------------------------------------------------------------------------
+// Histórico: a trilha que sustenta a edição
+// ---------------------------------------------------------------------------
+
+// Nomes internos das entidades traduzidos para a linguagem da loja. Não é
+// catálogo editável: são identificadores de código, não dado de negócio.
+const HISTORY_ENTITIES = {
+  order: { label: "Pedido", icon: "receipt-text" },
+  product: { label: "Produto", icon: "cup-soda" },
+  inventory: { label: "Insumo", icon: "package-search" },
+  movement: { label: "Movimentação", icon: "clipboard-list" },
+  expense: { label: "Despesa", icon: "wallet-cards" },
+  channel: { label: "Canal", icon: "route" },
+  courier: { label: "Entregador", icon: "bike" },
+  delivery: { label: "Turno de entrega", icon: "package-check" },
+  catalog: { label: "Lista", icon: "sliders-horizontal" },
+};
+
+const HISTORY_ACTIONS = {
+  criado: "success", editado: "neutral", excluido: "danger",
+  cancelado: "danger", inativado: "pending", contagem: "neutral",
+};
+
+async function loadHistory() {
+  try {
+    state.history = await api(`/api/audit?limit=${state.historyLimit}`);
+    renderHistory();
+  } catch (error) {
+    toast(error.message || "Não foi possível carregar o histórico.", "error");
+  }
+}
+
+function renderHistory() {
+  const container = document.getElementById("history-body");
+  if (!container) return;
+
+  const tipos = [...new Set(state.history.map((row) => row.entity))];
+  document.getElementById("history-filters").innerHTML = ["all", ...tipos].map((tipo) => {
+    const total = tipo === "all" ? state.history.length : state.history.filter((row) => row.entity === tipo).length;
+    const rotulo = tipo === "all" ? "Tudo" : HISTORY_ENTITIES[tipo]?.label || tipo;
+    return `<button type="button" class="filter-chip ${state.historyFilter === tipo ? "active" : ""}" data-history-filter="${escapeHtml(tipo)}">${escapeHtml(rotulo)} <b>${total}</b></button>`;
+  }).join("");
+
+  const busca = document.getElementById("history-search")?.value.trim().toLocaleLowerCase("pt-BR") || "";
+  const linhas = state.history.filter((row) => {
+    const tipoOk = state.historyFilter === "all" || row.entity === state.historyFilter;
+    const texto = `${row.summary} ${HISTORY_ENTITIES[row.entity]?.label || row.entity} ${row.action}`.toLocaleLowerCase("pt-BR");
+    return tipoOk && texto.includes(busca);
+  });
+
+  container.innerHTML = linhas.length ? linhas.map((row) => {
+    const entidade = HISTORY_ENTITIES[row.entity] || { label: row.entity, icon: "file" };
+    const css = HISTORY_ACTIONS[row.action] || "neutral";
+    return `<tr>
+      <td class="muted-value">${escapeHtml(formatDateTime(row.at))}</td>
+      <td><span class="history-entity"><i data-lucide="${entidade.icon}"></i>${escapeHtml(entidade.label)}</span></td>
+      <td><span class="status-pill ${css}">${escapeHtml(row.action)}</span></td>
+      <td>${escapeHtml(row.summary)}</td>
+      <td class="history-changes">${renderChanges(row.changes)}</td>
+    </tr>`;
+  }).join("") : emptyRow(5, busca || state.historyFilter !== "all"
+    ? "Nenhuma alteração corresponde ao filtro."
+    : "Nenhuma alteração registrada ainda.");
+  refreshIcons();
+}
+
+// O diff só guarda o que mudou de fato, então cada linha aqui é uma diferença
+// real — não um despejo do registro inteiro.
+function renderChanges(changes) {
+  const campos = Object.entries(changes || {});
+  if (!campos.length) return '<span class="muted-value">—</span>';
+  return campos.map(([campo, valor]) => {
+    if (valor === null || typeof valor !== "object" || !("de" in valor)) {
+      return `<span class="change-line"><b>${escapeHtml(fieldLabel(campo))}</b> ${escapeHtml(String(valor))}</span>`;
+    }
+    return `<span class="change-line"><b>${escapeHtml(fieldLabel(campo))}</b><em>${escapeHtml(changeValue(valor.de))}</em><i data-lucide="move-right"></i><strong>${escapeHtml(changeValue(valor.para))}</strong></span>`;
+  }).join("");
+}
+
+function changeValue(value) {
+  if (value === null || value === undefined || value === "") return "vazio";
+  if (typeof value === "boolean") return value ? "sim" : "não";
+  if (typeof value === "number") return number.format(value);
+  return String(value);
+}
+
+function fieldLabel(field) {
+  return {
+    total: "total", discount: "desconto", channel: "canal", payment_method: "pagamento",
+    created_at: "data", itens: "itens", amount: "valor", status: "situação",
+    due_date: "vencimento", description: "descrição", category: "categoria",
+    unit_cost: "custo", minimum_quantity: "mínimo", quantity_delta: "quantidade",
+    reason: "motivo", price: "preço", line: "linha", name: "nome", active: "ativo",
+    fee_percent: "taxa %", fee_fixed: "taxa fixa", fee_per_delivery: "por entrega",
+    commission_percent: "comissão", daily_rate: "diária", monthly_salary: "salário",
+    deliveries: "entregas", freight_total: "frete", worked: "diária contada",
+    bonus: "bônus", deduction: "desconto", payout_override: "valor à mão",
+    delivery_fee: "frete", is_delivery: "é entrega", valor: "valor",
+    registros_migrados: "registros migrados", recurring: "fixa",
+  }[field] || field;
+}

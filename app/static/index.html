@@ -39,13 +39,21 @@
 
         <nav class="nav-list" id="main-navigation">
           <button class="nav-item active" data-view-target="dashboard"><i data-lucide="layout-dashboard"></i><span>Visão geral</span></button>
+          <button class="nav-item" data-view-target="closing"><i data-lucide="calendar-check"></i><span>Fechamento do dia</span></button>
           <button class="nav-item" data-view-target="orders"><i data-lucide="receipt-text"></i><span>Pedidos</span></button>
           <button class="nav-item" data-view-target="inventory"><i data-lucide="package-search"></i><span>Estoque</span><b id="nav-stock-count" hidden>0</b></button>
           <button class="nav-item" data-view-target="consumption"><i data-lucide="clipboard-list"></i><span>Consumo</span></button>
+          <button class="nav-item" data-view-target="planning"><i data-lucide="chef-hat"></i><span>Planejamento</span><b id="nav-planning-count" hidden>0</b></button>
           <button class="nav-item" data-view-target="forecast"><i data-lucide="chart-spline"></i><span>Previsão</span></button>
           <button class="nav-item" data-view-target="finance"><i data-lucide="wallet-cards"></i><span>Financeiro</span></button>
+          <button class="nav-item" data-view-target="channels"><i data-lucide="route"></i><span>Canais</span></button>
+          <button class="nav-item" data-view-target="delivery"><i data-lucide="bike"></i><span>Entregas</span><b id="nav-delivery-count" hidden>0</b></button>
           <button class="nav-item" data-view-target="products"><i data-lucide="cup-soda"></i><span>Cardápio</span></button>
+          <button class="nav-item" data-view-target="brand"><i data-lucide="gem"></i><span>Marca e linhas</span></button>
+          <button class="nav-item" data-view-target="growth"><i data-lucide="sprout"></i><span>Crescimento</span><b id="nav-growth-count" hidden>0</b></button>
           <button class="nav-item" data-view-target="files"><i data-lucide="folder-sync"></i><span>Arquivos</span><b id="nav-files-count" hidden>0</b></button>
+          <button class="nav-item" data-view-target="history"><i data-lucide="history"></i><span>Histórico</span></button>
+          <button class="nav-item" data-view-target="settings"><i data-lucide="sliders-horizontal"></i><span>Ajustes</span></button>
         </nav>
 
         <div class="sidebar-spacer"></div>
@@ -100,15 +108,48 @@
           <section class="panel orders-panel" aria-labelledby="recent-orders-title"><div class="panel-header"><div><p class="eyebrow">Operação</p><h2 id="recent-orders-title">Pedidos recentes</h2></div><button class="text-button" type="button" data-view-target="orders">Ver todos <i data-lucide="arrow-right"></i></button></div><div class="table-scroll"><table><thead><tr><th>Pedido</th><th>Canal</th><th>Itens</th><th>Pagamento</th><th>Valor</th></tr></thead><tbody id="recent-orders-body"></tbody></table></div></section>
         </section>
 
+        <section class="view" id="closing" aria-labelledby="closing-title">
+          <div class="page-heading">
+            <div><p class="eyebrow">Controle diário</p><h1 id="closing-title">Fechamento do dia</h1><p class="page-description">O caixa de um dia só, no fuso da loja: o que entrou, por onde entrou e o que sobrou depois das taxas.</p></div>
+            <div class="heading-actions">
+              <label class="period-control">Dia <input type="date" id="closing-date" /></label>
+              <button class="secondary-button" type="button" id="closing-today"><i data-lucide="rotate-ccw"></i><span>Hoje</span></button>
+              <button class="primary-button" type="button" data-modal="sale"><i data-lucide="plus"></i><span>Lançar venda</span></button>
+            </div>
+          </div>
+
+          <div class="metric-grid">
+            <article class="metric-card"><span class="metric-icon revenue"><i data-lucide="banknote"></i></span><p>Faturamento do dia</p><strong id="day-revenue">--</strong><small id="day-compare">--</small></article>
+            <article class="metric-card"><span class="metric-icon orders"><i data-lucide="shopping-bag"></i></span><p>Pedidos</p><strong id="day-orders">--</strong><small id="day-ticket">--</small></article>
+            <article class="metric-card"><span class="metric-icon ticket"><i data-lucide="hand-coins"></i></span><p>Fica na loja</p><strong id="day-net">--</strong><small id="day-fee">--</small></article>
+            <article class="metric-card"><span class="metric-icon margin"><i data-lucide="chart-no-axes-combined"></i></span><p>Margem bruta</p><strong id="day-margin">--</strong><small id="day-profit">--</small></article>
+          </div>
+
+          <div class="dashboard-grid lower-grid">
+            <section class="panel" aria-labelledby="day-channel-title"><div class="panel-header"><div><p class="eyebrow">Origem</p><h2 id="day-channel-title">De onde veio o dinheiro</h2></div></div><div class="channel-list" id="day-channel-list"></div></section>
+            <section class="panel" aria-labelledby="day-payment-title"><div class="panel-header"><div><p class="eyebrow">Recebimento</p><h2 id="day-payment-title">Como foi pago</h2></div></div><div class="channel-list" id="day-payment-list"></div></section>
+          </div>
+
+          <div class="dashboard-grid lower-grid">
+            <section class="panel table-panel"><div class="panel-header"><div><p class="eyebrow">Saída do balcão</p><h2>Produtos vendidos no dia</h2></div></div><div class="table-scroll"><table><thead><tr><th>Produto</th><th class="align-right">Unidades</th><th class="align-right">Valor</th></tr></thead><tbody id="day-product-body"></tbody></table></div></section>
+            <section class="panel" aria-labelledby="day-alert-title"><div class="panel-header"><div><p class="eyebrow">Conferência</p><h2 id="day-alert-title">O que fecha o dia</h2></div></div><div class="insight-list" id="day-alerts"></div></section>
+          </div>
+
+          <section class="panel table-panel">
+            <div class="panel-header"><div><p class="eyebrow">Lançamentos</p><h2>Pedidos do dia</h2></div><span class="soft-chip" id="day-order-count">--</span></div>
+            <div class="table-scroll"><table><thead><tr><th>Número</th><th>Hora</th><th>Origem</th><th>Itens</th><th class="align-right">Total</th><th class="align-right">Ações</th></tr></thead><tbody id="day-order-body"></tbody></table></div>
+          </section>
+        </section>
+
         <section class="view" id="orders" aria-labelledby="orders-title">
           <div class="page-heading"><div><p class="eyebrow">Operação</p><h1 id="orders-title">Pedidos</h1><p class="page-description">Vendas concluídas e seus canais de origem.</p></div><button class="primary-button" type="button" data-modal="sale"><i data-lucide="plus"></i><span>Nova venda</span></button></div>
-          <section class="panel table-panel"><div class="filter-row"><span class="field-label">Pedidos recentes</span><label class="search-field"><i data-lucide="search"></i><input id="order-search" type="search" placeholder="Buscar pedido ou canal" /></label></div><div class="table-scroll"><table><thead><tr><th>Número</th><th>Data</th><th>Origem</th><th>Itens</th><th>Pagamento</th><th class="align-right">Total</th></tr></thead><tbody id="orders-body"></tbody></table></div></section>
+          <section class="panel table-panel"><div class="filter-row"><span class="field-label">Pedidos recentes</span><label class="search-field"><i data-lucide="search"></i><input id="order-search" type="search" placeholder="Buscar pedido ou canal" /></label></div><div class="table-scroll"><table><thead><tr><th>Número</th><th>Data</th><th>Origem</th><th>Itens</th><th>Pagamento</th><th class="align-right">Total</th><th class="align-right">Ações</th></tr></thead><tbody id="orders-body"></tbody></table></div></section>
         </section>
 
         <section class="view" id="inventory" aria-labelledby="inventory-title">
-          <div class="page-heading"><div><p class="eyebrow">Controle de insumos</p><h1 id="inventory-title">Estoque</h1><p class="page-description">O estoque é descontado automaticamente a cada venda pela ficha técnica.</p></div><div class="heading-actions"><button class="secondary-button" type="button" data-modal="adjust"><i data-lucide="sliders-horizontal"></i><span>Ajustar saldo</span></button><button class="primary-button" type="button" data-modal="inventory"><i data-lucide="plus"></i><span>Novo insumo</span></button></div></div>
+          <div class="page-heading"><div><p class="eyebrow">Controle de insumos</p><h1 id="inventory-title">Estoque</h1><p class="page-description">O estoque é descontado automaticamente a cada venda pela ficha técnica.</p></div><div class="heading-actions"><button class="secondary-button" type="button" data-modal="count"><i data-lucide="clipboard-check"></i><span>Contagem</span></button><button class="secondary-button" type="button" data-modal="adjust"><i data-lucide="sliders-horizontal"></i><span>Ajustar saldo</span></button><button class="primary-button" type="button" data-modal="inventory"><i data-lucide="plus"></i><span>Novo insumo</span></button></div></div>
           <div class="inventory-summary" id="inventory-summary"></div>
-          <section class="panel table-panel"><div class="filter-row"><span class="field-label">Itens cadastrados</span><label class="search-field"><i data-lucide="search"></i><input id="inventory-search" type="search" placeholder="Buscar insumo" /></label></div><div class="table-scroll"><table><thead><tr><th>Insumo</th><th>Categoria</th><th>Saldo atual</th><th>Estoque mínimo</th><th>Custo médio</th><th>Status</th></tr></thead><tbody id="inventory-body"></tbody></table></div></section>
+          <section class="panel table-panel"><div class="filter-row"><span class="field-label">Itens cadastrados</span><label class="search-field"><i data-lucide="search"></i><input id="inventory-search" type="search" placeholder="Buscar insumo" /></label></div><div class="table-scroll"><table><thead><tr><th>Insumo</th><th>Categoria</th><th>Saldo atual</th><th>Estoque mínimo</th><th>Custo médio</th><th>Status</th><th class="align-right">Ações</th></tr></thead><tbody id="inventory-body"></tbody></table></div></section>
         </section>
 
         <section class="view" id="consumption" aria-labelledby="consumption-title">
@@ -133,7 +174,51 @@
 
           <section class="panel table-panel">
             <div class="panel-header"><div><p class="eyebrow">Registro</p><h2>Últimas movimentações</h2></div></div>
-            <div class="table-scroll"><table><thead><tr><th>Quando</th><th>Insumo</th><th>Movimento</th><th>Motivo</th><th class="align-right">Quantidade</th></tr></thead><tbody id="movement-body"></tbody></table></div>
+            <div class="table-scroll"><table><thead><tr><th>Quando</th><th>Insumo</th><th>Movimento</th><th>Motivo</th><th class="align-right">Quantidade</th><th class="align-right">Ações</th></tr></thead><tbody id="movement-body"></tbody></table></div>
+          </section>
+        </section>
+
+        <section class="view" id="planning" aria-labelledby="planning-title">
+          <div class="page-heading">
+            <div><p class="eyebrow">Produção e compra</p><h1 id="planning-title">Planejamento</h1><p class="page-description">Quanto preparar amanhã e quando pedir mais — decidido pela razão entre o custo de faltar e o de sobrar, não por intuição.</p></div>
+            <label class="period-control">Nível de serviço <select id="planning-service" aria-label="Nível de serviço da compra"><option value="0.8">80% dos períodos</option><option value="0.9" selected>90% dos períodos</option><option value="0.95">95% dos períodos</option></select></label>
+          </div>
+
+          <div class="metric-grid">
+            <article class="metric-card"><span class="metric-icon revenue"><i data-lucide="chef-hat"></i></span><p>Preparar amanhã</p><strong id="pl-production">--</strong><small id="pl-production-day">--</small></article>
+            <article class="metric-card"><span class="metric-icon orders"><i data-lucide="shopping-cart"></i></span><p>Pedir ao fornecedor</p><strong id="pl-purchase">--</strong><small id="pl-purchase-count">--</small></article>
+            <article class="metric-card"><span class="metric-icon ticket"><i data-lucide="calendar-range"></i></span><p>Dias de operação</p><strong id="pl-days">--</strong><small>base do cálculo, sem os dias fechados</small></article>
+            <article class="metric-card"><span class="metric-icon margin"><i data-lucide="shield-check"></i></span><p>Nível de serviço</p><strong id="pl-service">--</strong><small>cobertura da compra</small></article>
+          </div>
+
+          <section class="panel formula-panel">
+            <p class="eyebrow">Como a conta é feita</p>
+            <p class="formula">preparar = quantil<sub>Cu/(Cu+Co)</sub> da demanda × peso do dia da semana</p>
+            <p class="formula-note" id="pl-method"></p>
+            <p class="formula-note" id="pl-nofit"></p>
+          </section>
+
+          <section class="panel table-panel">
+            <div class="panel-header"><div><p class="eyebrow">Amanhã</p><h2 id="pl-production-title">Ficha de produção</h2></div><span class="soft-chip" id="pl-target">--</span></div>
+            <p class="panel-note">Cu é a margem que a venda perdida deixaria; Co é o insumo que vence. A razão entre os dois define em que percentil da demanda vale a pena parar de preparar.</p>
+            <div class="table-scroll"><table><thead><tr><th>Insumo</th><th class="align-right">Preparar</th><th class="align-right">Mediana</th><th class="align-right">Já pronto</th><th class="align-right">Fazer</th><th>Por quê</th></tr></thead><tbody id="pl-production-body"></tbody></table></div>
+          </section>
+
+          <section class="panel table-panel">
+            <div class="panel-header"><div><p class="eyebrow">Compra</p><h2>Ponto de pedido</h2></div><span class="soft-chip" id="pl-purchase-total">--</span></div>
+            <p class="panel-note">O ponto de pedido sai das somas móveis observadas no prazo de cada fornecedor — sem supor curva normal, que é justamente onde ela mais erra em prazo curto.</p>
+            <div class="table-scroll"><table><thead><tr><th>Insumo</th><th class="align-right">Saldo</th><th class="align-right">Ponto de pedido</th><th class="align-right">Segurança</th><th class="align-right">Comprar</th><th class="align-right">Custo</th><th>Situação</th></tr></thead><tbody id="pl-purchase-body"></tbody></table></div>
+          </section>
+
+          <section class="panel table-panel">
+            <div class="panel-header"><div><p class="eyebrow">Curva ABC/XYZ</p><h2>Onde vale contar todo dia</h2></div></div>
+            <p class="panel-note">ABC ordena pelo custo que o insumo consome; XYZ separa o previsível do que oscila. O item AZ — caro e imprevisível — é o que merece atenção humana.</p>
+            <div class="table-scroll"><table><thead><tr><th>Insumo</th><th>Classe</th><th class="align-right">Custo</th><th class="align-right">Acumulado</th><th class="align-right">Variação</th><th>Rotina sugerida</th></tr></thead><tbody id="pl-abc-body"></tbody></table></div>
+          </section>
+
+          <section class="panel table-panel" id="pl-blockers-panel">
+            <div class="panel-header"><div><p class="eyebrow">Limites</p><h2>O que o plano ainda não enxerga</h2></div><i data-lucide="unplug" class="heading-icon"></i></div>
+            <div class="insight-list" id="pl-blockers"></div>
           </section>
         </section>
 
@@ -186,12 +271,123 @@
         <section class="view" id="finance" aria-labelledby="finance-title">
           <div class="page-heading"><div><p class="eyebrow">Resultado e caixa</p><h1 id="finance-title">Financeiro</h1><p class="page-description">Veja o que a operação já gerou e o que ainda vence nos próximos dias.</p></div><button class="primary-button" type="button" data-modal="expense"><i data-lucide="plus"></i><span>Lançar despesa</span></button></div>
           <div class="finance-grid"><section class="panel result-panel"><p class="eyebrow">Resultado operacional</p><h2 id="finance-result">--</h2><p id="finance-result-copy">Aguardando dados financeiros</p><div class="result-lines"><span><i data-lucide="arrow-up-right"></i>Faturamento<strong id="finance-revenue">--</strong></span><span><i data-lucide="arrow-down-right"></i>Custos e despesas pagas<strong id="finance-cost">--</strong></span></div></section><section class="panel"><div class="panel-header"><div><p class="eyebrow">Pendências</p><h2>Próximos vencimentos</h2></div><span class="soft-chip" id="pending-count">--</span></div><div class="due-list" id="due-list"></div></section></div>
-          <section class="panel table-panel"><div class="panel-header"><div><p class="eyebrow">Lançamentos</p><h2>Despesas cadastradas</h2></div></div><div class="table-scroll"><table><thead><tr><th>Descrição</th><th>Categoria</th><th>Vencimento</th><th>Status</th><th class="align-right">Valor</th></tr></thead><tbody id="expenses-body"></tbody></table></div></section>
+          <section class="panel table-panel"><div class="panel-header"><div><p class="eyebrow">Lançamentos</p><h2>Despesas cadastradas</h2></div></div><div class="table-scroll"><table><thead><tr><th>Descrição</th><th>Categoria</th><th>Vencimento</th><th>Status</th><th class="align-right">Valor</th><th class="align-right">Ações</th></tr></thead><tbody id="expenses-body"></tbody></table></div></section>
+        </section>
+
+        <section class="view" id="delivery" aria-labelledby="delivery-title">
+          <div class="page-heading">
+            <div><p class="eyebrow">Entregadores e frete</p><h1 id="delivery-title">Entregas</h1><p class="page-description">Balcão é a maioria das vendas. Aqui fica só o que sai para entrega — e a conta que decide se ela se paga.</p></div>
+            <div class="heading-actions">
+              <label class="period-control">Período <select id="delivery-period" aria-label="Período"><option value="7">7 dias</option><option value="30" selected>30 dias</option><option value="90">90 dias</option></select></label>
+              <button class="secondary-button" type="button" data-modal="courier"><i data-lucide="user-plus"></i><span>Novo entregador</span></button>
+              <button class="primary-button" type="button" data-modal="delivery"><i data-lucide="plus"></i><span>Lançar turno</span></button>
+            </div>
+          </div>
+
+          <div class="metric-grid">
+            <article class="metric-card"><span class="metric-icon orders"><i data-lucide="package-check"></i></span><p>Entregas no período</p><strong id="dl-count">--</strong><small id="dl-per-shift">--</small></article>
+            <article class="metric-card"><span class="metric-icon revenue"><i data-lucide="banknote"></i></span><p>Frete arrecadado</p><strong id="dl-freight">--</strong><small id="dl-freight-each">--</small></article>
+            <article class="metric-card"><span class="metric-icon margin"><i data-lucide="hand-coins"></i></span><p>Pago aos entregadores</p><strong id="dl-payout">--</strong><small id="dl-cost-each">--</small></article>
+            <article class="metric-card"><span class="metric-icon ticket"><i data-lucide="scale"></i></span><p>A entrega se paga?</p><strong id="dl-result">--</strong><small id="dl-coverage">--</small></article>
+          </div>
+
+          <section class="panel" aria-labelledby="dl-reading-title">
+            <div class="panel-header"><div><p class="eyebrow">Leitura</p><h2 id="dl-reading-title">O que os números dizem</h2></div><i data-lucide="sparkles" class="heading-icon"></i></div>
+            <div class="insight-list" id="dl-readings"></div>
+          </section>
+
+          <section class="panel table-panel">
+            <div class="panel-header"><div><p class="eyebrow">Por entregador</p><h2>Quem entregou o quê</h2></div></div>
+            <div class="table-scroll"><table><thead><tr><th>Entregador</th><th class="align-right">Entregas</th><th class="align-right">Turnos</th><th class="align-right">Por turno</th><th class="align-right">Frete</th><th class="align-right">Recebeu</th><th class="align-right">Custo/entrega</th><th class="align-right">Resultado</th><th class="align-right">Ações</th></tr></thead><tbody id="dl-courier-body"></tbody></table></div>
+          </section>
+
+          <section class="panel table-panel">
+            <div class="panel-header"><div><p class="eyebrow">Lançamentos</p><h2>Turnos registrados</h2></div><span class="soft-chip" id="dl-entry-count">--</span></div>
+            <p class="panel-note">O acerto é por turno, como acontece no balcão no fim do dia. Cada linha mostra a conta aberta — clique para corrigir qualquer campo.</p>
+            <div class="table-scroll"><table><thead><tr><th>Dia</th><th>Entregador</th><th class="align-right">Entregas</th><th class="align-right">Frete</th><th>Como foi calculado</th><th class="align-right">Recebeu</th><th class="align-right">Ações</th></tr></thead><tbody id="dl-entry-body"></tbody></table></div>
+          </section>
+
+          <section class="panel table-panel">
+            <div class="panel-header"><div><p class="eyebrow">Conferência</p><h2>Turnos lançados × pedidos de entrega</h2></div></div>
+            <p class="panel-note">Divergência aqui quase nunca é problema de pessoa — quase sempre é pedido que entrou sem entregador marcado. Mas precisa ficar visível, senão o acerto do fim do mês vira palavra contra palavra.</p>
+            <div class="reconcile-grid" id="dl-reconcile"></div>
+          </section>
         </section>
 
         <section class="view" id="products" aria-labelledby="products-title">
-          <div class="page-heading"><div><p class="eyebrow">Preço e margem</p><h1 id="products-title">Cardápio</h1><p class="page-description">O custo de cada produto é calculado pela receita e atualizado com o custo dos insumos.</p></div><button class="primary-button" type="button" data-modal="product"><i data-lucide="plus"></i><span>Novo produto</span></button></div>
+          <div class="page-heading"><div><p class="eyebrow">Preço e margem</p><h1 id="products-title">Cardápio</h1><p class="page-description">O custo de cada produto é calculado pela receita e atualizado com o custo dos insumos.</p></div><div class="heading-actions"><button class="secondary-button" type="button" data-modal="simulate"><i data-lucide="flask-conical"></i><span>Simular novo</span></button><button class="primary-button" type="button" data-modal="product"><i data-lucide="plus"></i><span>Novo produto</span></button></div></div>
           <div class="product-grid" id="product-grid"></div>
+        </section>
+
+        <section class="view" id="channels" aria-labelledby="channels-title">
+          <div class="page-heading">
+            <div><p class="eyebrow">Distribuição</p><h1 id="channels-title">Canais</h1><p class="page-description">Cada canal cobra o seu preço. Aqui você cadastra a taxa real e vê quanto sobra depois dela.</p></div>
+            <button class="primary-button" type="button" data-modal="channel"><i data-lucide="plus"></i><span>Novo canal</span></button>
+          </div>
+
+          <div class="metric-grid">
+            <article class="metric-card"><span class="metric-icon revenue"><i data-lucide="banknote"></i></span><p>Faturamento por canais</p><strong id="ch-revenue">--</strong><small>últimos 30 dias</small></article>
+            <article class="metric-card"><span class="metric-icon margin"><i data-lucide="scissors"></i></span><p>Pago em taxas</p><strong id="ch-fee">--</strong><small id="ch-fee-share">--</small></article>
+            <article class="metric-card"><span class="metric-icon ticket"><i data-lucide="hand-coins"></i></span><p>Ficou na loja</p><strong id="ch-net">--</strong><small>depois das comissões</small></article>
+          </div>
+
+          <section class="panel table-panel">
+            <div class="panel-header"><div><p class="eyebrow">Desempenho</p><h2>O que cada canal deixa</h2></div></div>
+            <p class="panel-note">Faturamento não é o que decide onde investir: um canal pode liderar em receita e ficar em último em dinheiro que fica na loja.</p>
+            <div class="table-scroll"><table><thead><tr><th>Canal</th><th class="align-right">Pedidos</th><th class="align-right">Faturamento</th><th class="align-right">Taxa</th><th class="align-right">Líquido</th><th class="align-right">Ticket</th><th>Margem</th></tr></thead><tbody id="channel-performance-body"></tbody></table></div>
+          </section>
+
+          <section class="panel table-panel">
+            <div class="panel-header"><div><p class="eyebrow">Cadastro</p><h2>Canais e suas taxas</h2></div></div>
+            <div class="table-scroll"><table><thead><tr><th>Canal</th><th class="align-right">Taxa %</th><th class="align-right">Taxa fixa</th><th>Situação</th><th>Observação</th><th class="align-right">Ações</th></tr></thead><tbody id="channel-body"></tbody></table></div>
+          </section>
+        </section>
+
+        <section class="view" id="brand" aria-labelledby="brand-title">
+          <div class="page-heading">
+            <div><p class="eyebrow">Posicionamento</p><h1 id="brand-title">Marca e linhas</h1><p class="page-description">Cada linha medida em separado. Uma linha nova começa pequena — somada ao cardápio inteiro, ela some antes de mostrar o que faz.</p></div>
+            <button class="primary-button" type="button" data-modal="simulate"><i data-lucide="flask-conical"></i><span>Simular produto novo</span></button>
+          </div>
+
+          <div class="line-grid" id="line-grid"></div>
+
+          <section class="panel table-panel">
+            <div class="filter-row"><span class="field-label">Cardápio por linha</span><div class="media-filters" role="group" aria-label="Filtrar por linha" id="line-filters"></div></div>
+            <div class="table-scroll"><table><thead><tr><th>Produto</th><th>Linha</th><th class="align-right">Preço</th><th class="align-right">Custo</th><th class="align-right">Margem</th><th>Promessas</th><th class="align-right">Ações</th></tr></thead><tbody id="brand-catalog-body"></tbody></table></div>
+          </section>
+
+          <section class="panel brand-note">
+            <div class="panel-header"><div><p class="eyebrow">Limite desta tela</p><h2>O que o sistema não faz por você</h2></div><i data-lucide="info" class="heading-icon"></i></div>
+            <p>Identidade visual, tom de voz, parceria com academia e presença em evento esportivo são trabalho de marca — acontecem fora daqui. O que esta tela entrega é o lastro: quanto a linha Sport fatura, com que margem, em que canal e com qual promessa nutricional no rótulo. Sem esse número, investir na linha vira aposta.</p>
+          </section>
+        </section>
+
+        <section class="view" id="growth" aria-labelledby="growth-title">
+          <div class="page-heading">
+            <div><p class="eyebrow">Onde crescer</p><h1 id="growth-title">Oportunidades</h1><p class="page-description">Produtos, combos, serviços e ações de marketing tirados do que a sua loja vendeu — cada um com a conta aberta para você discordar.</p></div>
+            <label class="period-control">Base <select id="growth-period" aria-label="Período analisado"><option value="30">Últimos 30 dias</option><option value="90" selected>Últimos 90 dias</option><option value="180">Últimos 180 dias</option></select></label>
+          </div>
+
+          <div class="metric-grid">
+            <article class="metric-card"><span class="metric-icon revenue"><i data-lucide="target"></i></span><p>Potencial somado</p><strong id="growth-impact">--</strong><small id="growth-impact-note">por mês, nas premissas de cada sugestão</small></article>
+            <article class="metric-card"><span class="metric-icon orders"><i data-lucide="list-checks"></i></span><p>Sugestões</p><strong id="growth-count">--</strong><small id="growth-quantified">--</small></article>
+            <article class="metric-card"><span class="metric-icon ticket"><i data-lucide="receipt-text"></i></span><p>Base analisada</p><strong id="growth-orders">--</strong><small id="growth-coverage">--</small></article>
+            <article class="metric-card"><span class="metric-icon margin"><i data-lucide="users"></i></span><p>Clientes identificados</p><strong id="growth-identified">--</strong><small id="growth-identified-note">--</small></article>
+          </div>
+
+          <section class="panel">
+            <p class="panel-note growth-disclaimer"><i data-lucide="info"></i>Todo valor abaixo é estimativa sob a premissa escrita ao lado dele, não previsão. O número serve para ordenar o que fazer primeiro — não para virar meta antes de você conferir a conta.</p>
+          </section>
+
+          <div class="filter-row growth-filters-row"><span class="field-label">Filtrar por tipo</span><div class="media-filters" role="group" aria-label="Filtrar sugestões" id="growth-filters"></div></div>
+
+          <div class="growth-list" id="growth-list"></div>
+
+          <section class="panel table-panel" id="growth-blockers-panel">
+            <div class="panel-header"><div><p class="eyebrow">Antes de tudo</p><h2>O que está limitando as sugestões</h2></div><i data-lucide="unplug" class="heading-icon"></i></div>
+            <p class="panel-note">Cada item aqui é um pedaço da loja que o algoritmo não enxerga. Resolver um deles melhora todas as sugestões acima de uma vez.</p>
+            <div class="insight-list" id="growth-blockers"></div>
+          </section>
         </section>
 
         <section class="view" id="files" aria-labelledby="files-title">
@@ -199,26 +395,77 @@
           <div class="media-summary" id="media-summary"></div>
           <section class="media-browser"><div class="media-toolbar"><label class="search-field"><i data-lucide="search"></i><input id="media-search" type="search" placeholder="Buscar arquivo ou etiqueta" /></label><div class="media-filters" role="group" aria-label="Filtrar arquivos"><button type="button" class="filter-chip active" data-media-filter="all">Todos</button><button type="button" class="filter-chip" data-media-filter="image">Imagens</button><button type="button" class="filter-chip" data-media-filter="spreadsheet">Planilhas</button><button type="button" class="filter-chip" data-media-filter="document">Documentos</button></div></div><div class="media-grid" id="media-grid"></div></section>
         </section>
+        <section class="view" id="history" aria-labelledby="history-title">
+          <div class="page-heading">
+            <div><p class="eyebrow">Trilha de auditoria</p><h1 id="history-title">Histórico</h1><p class="page-description">Quem mexeu em quê, quando, e de qual valor para qual. Com tudo editável, é isso que mantém a correção auditável.</p></div>
+            <div class="heading-actions">
+              <label class="period-control">Mostrar <select id="history-limit" aria-label="Quantidade de registros"><option value="60" selected>60 últimos</option><option value="150">150 últimos</option><option value="300">300 últimos</option></select></label>
+              <button class="secondary-button" type="button" id="history-refresh"><i data-lucide="refresh-cw"></i><span>Atualizar</span></button>
+            </div>
+          </div>
+
+          <div class="filter-row"><span class="field-label">Filtrar por tipo</span><div class="media-filters" role="group" aria-label="Filtrar histórico" id="history-filters"></div></div>
+
+          <section class="panel table-panel">
+            <div class="filter-row"><span class="field-label">Alterações registradas</span><label class="search-field"><i data-lucide="search"></i><input id="history-search" type="search" placeholder="Buscar no histórico" /></label></div>
+            <div class="table-scroll"><table><thead><tr><th>Quando</th><th>O quê</th><th>Ação</th><th>Resumo</th><th>Mudanças</th></tr></thead><tbody id="history-body"></tbody></table></div>
+          </section>
+        </section>
+
+        <section class="view" id="settings" aria-labelledby="settings-title">
+          <div class="page-heading">
+            <div><p class="eyebrow">Configuração</p><h1 id="settings-title">Ajustes</h1><p class="page-description">As listas que aparecem nos campos de escolha do sistema. Renomear um item leva junto os registros que já o usam.</p></div>
+          </div>
+
+          <section class="panel">
+            <p class="panel-note growth-disclaimer"><i data-lucide="info"></i>Um item em uso não pode ser excluído — o registro antigo continuaria válido e sem opção correspondente. Quando o que você quer é trocar o nome, use renomear: os registros acompanham.</p>
+          </section>
+
+          <div class="catalog-grid" id="catalog-grid"></div>
+        </section>
+
       </main>
     </div>
 
     <div class="offline-banner" id="offline-banner" role="status" hidden>Sem conexao. Os dados serao atualizados quando a internet voltar.</div>
     <div class="modal-backdrop" id="modal-backdrop" hidden></div>
-    <dialog class="modal" id="sale-modal" aria-labelledby="sale-modal-title"><form method="dialog" class="modal-shell" id="sale-form"><header class="modal-header"><div><p class="eyebrow">Pedido rápido</p><h2 id="sale-modal-title">Registrar venda</h2></div><button class="icon-button" type="button" data-close-modal title="Fechar"><i data-lucide="x"></i></button></header><div class="modal-body sale-layout"><section><p class="section-label">Escolha os produtos</p><div id="sale-products" class="sale-products"></div></section><aside class="sale-cart"><p class="section-label">Resumo do pedido</p><div id="cart-lines" class="cart-lines"><p class="empty-state">Selecione um produto ao lado.</p></div><div class="cart-total"><span>Total</span><strong id="cart-total">R$ 0,00</strong></div><div class="form-grid"><label>Canal<select name="channel"><option>Balcao</option><option>Delivery</option><option>iFood</option><option>WhatsApp</option></select></label><label>Pagamento<select name="payment_method"><option>Pix</option><option>Credito</option><option>Debito</option><option>Dinheiro</option></select></label><label>Cliente <input name="customer_name" maxlength="80" placeholder="Opcional" /></label><label>Desconto <input name="discount" type="number" min="0" step="0.01" value="0" /></label></div></aside></div><footer class="modal-footer"><button class="secondary-button" type="button" data-close-modal>Cancelar</button><button class="primary-button" type="submit" id="submit-sale"><i data-lucide="check"></i><span>Concluir venda</span></button></footer></form></dialog>
+    <dialog class="modal" id="sale-modal" aria-labelledby="sale-modal-title"><form method="dialog" class="modal-shell" id="sale-form"><header class="modal-header"><div><p class="eyebrow">Pedido rápido</p><h2 id="sale-modal-title">Registrar venda</h2></div><input type="hidden" name="order_id" id="sale-order-id" /><button class="icon-button" type="button" data-close-modal title="Fechar"><i data-lucide="x"></i></button></header><div class="modal-body sale-layout"><section><p class="section-label">Escolha os produtos</p><div id="sale-products" class="sale-products"></div></section><aside class="sale-cart"><p class="section-label">Resumo do pedido</p><div id="cart-lines" class="cart-lines"><p class="empty-state">Selecione um produto ao lado.</p></div><div class="cart-total"><span>Total</span><strong id="cart-total">R$ 0,00</strong></div><div class="form-grid"><label>Canal<select name="channel" id="sale-channel"></select></label><label>Pagamento<select name="payment_method"><option>Pix</option><option>Credito</option><option>Debito</option><option>Dinheiro</option><option>Voucher</option><option>Outro</option></select></label><label>Cliente <input name="customer_name" maxlength="80" placeholder="Opcional" /></label><label>Desconto <input name="discount" type="number" min="0" step="0.01" value="0" /></label><label class="full">Data e hora do pedido <input name="occurred_at" type="datetime-local" id="sale-occurred" /><small class="field-hint">Deixe como está para agora, ou volte a data para lançar o movimento de outro dia.</small></label><label class="checkbox-field full"><input type="checkbox" name="is_delivery" id="sale-is-delivery" /><span>Sai para entrega<small>A maioria dos pedidos é balcão. Marque só quando um entregador levar.</small></span></label><label class="sale-delivery-field">Frete cobrado<input name="delivery_fee" type="number" min="0" step="0.01" value="0" /></label><label class="sale-delivery-field">Entregador<select name="courier_id" id="sale-courier"></select></label></div></aside></div><footer class="modal-footer"><button class="secondary-button" type="button" data-close-modal>Cancelar</button><button class="primary-button" type="submit" id="submit-sale"><i data-lucide="check"></i><span>Concluir venda</span></button></footer></form></dialog>
 
-    <dialog class="modal compact" id="expense-modal" aria-labelledby="expense-modal-title"><form method="dialog" class="modal-shell data-form" id="expense-form"><header class="modal-header"><div><p class="eyebrow">Financeiro</p><h2 id="expense-modal-title">Lançar despesa</h2></div><button class="icon-button" type="button" data-close-modal title="Fechar"><i data-lucide="x"></i></button></header><div class="modal-body form-grid two"><label>Descrição<input name="description" required maxlength="100" placeholder="Ex.: Compra de polpas" /></label><label>Categoria<select name="category"><option>Insumos</option><option>Fixo</option><option>Equipe</option><option>Marketing</option><option>Taxas</option><option>Outros</option></select></label><label>Valor<input name="amount" type="number" min="0.01" step="0.01" required /></label><label>Vencimento<input name="due_date" type="date" required /></label><label class="full">Situação<select name="status"><option value="Pendente">Pendente</option><option value="Paga">Paga</option></select></label></div><footer class="modal-footer"><button class="secondary-button" type="button" data-close-modal>Cancelar</button><button class="primary-button" type="submit"><i data-lucide="check"></i><span>Salvar despesa</span></button></footer></form></dialog>
+    <dialog class="modal compact" id="expense-modal" aria-labelledby="expense-modal-title"><form method="dialog" class="modal-shell data-form" id="expense-form"><header class="modal-header"><div><p class="eyebrow">Financeiro</p><h2 id="expense-modal-title">Lançar despesa</h2></div><input type="hidden" name="expense_id" id="expense-id" /><button class="icon-button" type="button" data-close-modal title="Fechar"><i data-lucide="x"></i></button></header><div class="modal-body form-grid two"><label>Descrição<input name="description" required maxlength="100" placeholder="Ex.: Compra de polpas" /></label><label>Categoria<select name="category"><option>Insumos</option><option>Fixo</option><option>Equipe</option><option>Marketing</option><option>Taxas</option><option>Outros</option></select></label><label>Valor<input name="amount" type="number" min="0.01" step="0.01" required /></label><label>Vencimento<input name="due_date" type="date" required /></label><label>Situação<select name="status"><option value="Pendente">Pendente</option><option value="Paga">Paga</option></select></label><label class="checkbox-field"><input type="checkbox" name="recurring" /><span>Despesa fixa<small>Aluguel, energia, equipe. Só as fixas entram no rateio do dossiê de custo.</small></span></label></div><footer class="modal-footer"><button class="secondary-button" type="button" data-close-modal>Cancelar</button><button class="primary-button" type="submit"><i data-lucide="check"></i><span>Salvar despesa</span></button></footer></form></dialog>
 
     <dialog class="modal compact" id="adjust-modal" aria-labelledby="adjust-modal-title"><form method="dialog" class="modal-shell data-form" id="adjust-form"><header class="modal-header"><div><p class="eyebrow">Controle de estoque</p><h2 id="adjust-modal-title">Ajustar saldo</h2></div><button class="icon-button" type="button" data-close-modal title="Fechar"><i data-lucide="x"></i></button></header><div class="modal-body form-grid"><label class="full">Insumo<select name="inventory_id" id="adjust-inventory" required></select></label><label>Variação<input name="quantity_delta" type="number" step="0.001" required placeholder="Ex.: 5 ou -0,5" /></label><label>Motivo<input name="reason" maxlength="120" required placeholder="Ex.: recebimento do fornecedor" /></label></div><footer class="modal-footer"><button class="secondary-button" type="button" data-close-modal>Cancelar</button><button class="primary-button" type="submit"><i data-lucide="check"></i><span>Aplicar ajuste</span></button></footer></form></dialog>
 
-    <dialog class="modal compact" id="inventory-modal" aria-labelledby="inventory-modal-title"><form method="dialog" class="modal-shell data-form" id="inventory-form"><header class="modal-header"><div><p class="eyebrow">Controle de estoque</p><h2 id="inventory-modal-title">Novo insumo</h2></div><button class="icon-button" type="button" data-close-modal title="Fechar"><i data-lucide="x"></i></button></header><div class="modal-body form-grid two"><label>Nome<input name="name" required maxlength="80" /></label><label>Categoria<input name="category" required maxlength="40" value="Insumos" /></label><label>Unidade<input name="unit" required maxlength="12" placeholder="kg, L ou un" /></label><label>Saldo inicial<input name="quantity" type="number" min="0" step="0.001" required /></label><label>Estoque mínimo<input name="minimum_quantity" type="number" min="0" step="0.001" required /></label><label>Custo por unidade<input name="unit_cost" type="number" min="0" step="0.01" required /></label></div><footer class="modal-footer"><button class="secondary-button" type="button" data-close-modal>Cancelar</button><button class="primary-button" type="submit"><i data-lucide="check"></i><span>Adicionar insumo</span></button></footer></form></dialog>
+    <dialog class="modal compact" id="inventory-modal" aria-labelledby="inventory-modal-title"><form method="dialog" class="modal-shell data-form" id="inventory-form"><header class="modal-header"><div><p class="eyebrow">Controle de estoque</p><h2 id="inventory-modal-title">Novo insumo</h2></div><input type="hidden" name="inventory_id" id="inventory-id" /><button class="icon-button" type="button" data-close-modal title="Fechar"><i data-lucide="x"></i></button></header><div class="modal-body form-grid two"><label>Nome<input name="name" required maxlength="80" /></label><label>Categoria<input name="category" required maxlength="40" value="Insumos" list="inventory-categories" /><datalist id="inventory-categories"></datalist></label><label>Unidade<input name="unit" required maxlength="12" placeholder="kg, L ou un" /></label><label id="inventory-quantity-field">Saldo inicial<input name="quantity" type="number" min="0" step="0.001" required /><small class="field-hint">Depois do cadastro, o saldo só muda por contagem ou ajuste — assim toda diferença fica registrada.</small></label><label>Estoque mínimo<input name="minimum_quantity" type="number" min="0" step="0.001" required /></label><label>Custo por unidade<input name="unit_cost" type="number" min="0" step="0.01" required /></label><label>Validade<input name="shelf_life_days" type="number" min="1" max="365" step="1" placeholder="dias" /><small class="field-hint">Quantos dias dura depois de preparado. Vazio = não perece. É o que coloca o item na ficha de produção.</small></label><label>Prazo do fornecedor<input name="lead_time_days" type="number" min="1" max="60" step="1" value="2" /><small class="field-hint">Dias entre pedir e receber. Define o ponto de pedido.</small></label></div><footer class="modal-footer"><button class="secondary-button" type="button" data-close-modal>Cancelar</button><button class="primary-button" type="submit"><i data-lucide="check"></i><span>Adicionar insumo</span></button></footer></form></dialog>
 
-    <dialog class="modal compact" id="product-modal" aria-labelledby="product-modal-title"><form method="dialog" class="modal-shell data-form" id="product-form"><header class="modal-header"><div><p class="eyebrow">Cardápio</p><h2 id="product-modal-title">Novo produto</h2></div><button class="icon-button" type="button" data-close-modal title="Fechar"><i data-lucide="x"></i></button></header><div class="modal-body form-grid two"><label>Nome<input name="name" required maxlength="80" /></label><label>Categoria<input name="category" required maxlength="40" value="Açaí" /></label><label class="full">Preço de venda<input name="price" type="number" min="0.01" step="0.01" required /></label><fieldset class="recipe-fieldset full"><legend>Ficha técnica</legend><div id="recipe-lines"></div><button class="text-button recipe-add" type="button" id="add-recipe-line"><i data-lucide="plus"></i>Adicionar insumo</button></fieldset></div><footer class="modal-footer"><button class="secondary-button" type="button" data-close-modal>Cancelar</button><button class="primary-button" type="submit"><i data-lucide="check"></i><span>Salvar produto</span></button></footer></form></dialog>
+    <dialog class="modal compact" id="product-modal" aria-labelledby="product-modal-title"><form method="dialog" class="modal-shell data-form" id="product-form"><header class="modal-header"><div><p class="eyebrow">Cardápio</p><h2 id="product-modal-title">Novo produto</h2></div><input type="hidden" name="product_id" id="product-id" /><button class="icon-button" type="button" data-close-modal title="Fechar"><i data-lucide="x"></i></button></header><div class="modal-body form-grid two"><label>Nome<input name="name" required maxlength="80" /></label><label>Categoria<input name="category" required maxlength="40" value="Açaí" /></label><label>Preço de venda<input name="price" type="number" min="0.01" step="0.01" required /></label><label>Linha da marca<select name="line"><option>Classico</option><option>Sport</option><option>Kids</option><option>Sazonal</option></select></label><label class="full">Promessas do rótulo<input name="claims" maxlength="180" placeholder="Ex.: sem açúcar, alto em proteína" /><small class="field-hint">Separe por vírgula. É o que a linha promete ao cliente — e o que a ficha técnica precisa sustentar.</small></label><fieldset class="recipe-fieldset full nutrition-fieldset"><legend>Informação nutricional por porção</legend><div class="form-grid four"><label>Calorias<input name="kcal" type="number" min="0" step="1" placeholder="kcal" /></label><label>Proteína<input name="protein_g" type="number" min="0" step="0.1" placeholder="g" /></label><label>Carboidrato<input name="carbs_g" type="number" min="0" step="0.1" placeholder="g" /></label><label>Fibra<input name="fiber_g" type="number" min="0" step="0.1" placeholder="g" /></label></div></fieldset><fieldset class="recipe-fieldset full"><legend>Ficha técnica</legend><div id="recipe-lines"></div><button class="text-button recipe-add" type="button" id="add-recipe-line"><i data-lucide="plus"></i>Adicionar insumo</button></fieldset></div><footer class="modal-footer"><button class="secondary-button" type="button" data-close-modal>Cancelar</button><button class="primary-button" type="submit"><i data-lucide="check"></i><span>Salvar produto</span></button></footer></form></dialog>
 
-    <dialog class="modal compact" id="media-modal" aria-labelledby="media-modal-title"><form method="dialog" class="modal-shell data-form" id="media-form"><header class="modal-header"><div><p class="eyebrow" id="media-kind-label">Arquivo</p><h2 id="media-modal-title">Organizar arquivo</h2></div><button class="icon-button" type="button" data-close-modal title="Fechar"><i data-lucide="x"></i></button></header><div class="modal-body"><div class="media-detail-preview" id="media-detail-preview"></div><div class="media-context" id="media-context" hidden></div><div class="form-grid two"><label>Nome para consulta<input name="title" required maxlength="120" /></label><label>Categoria<select name="category"><option>Financeiro</option><option>Precificação</option><option>Compras</option><option>Contratos</option><option>Planilhas</option><option>Documentos</option><option>Marketing</option><option>Operação</option></select></label><label class="full">Etiquetas<input name="tags" maxlength="180" placeholder="Ex.: fornecedor, julho, comprovante" /></label><label>Vincular a<select name="entity_type" id="media-entity-type"><option value="">Sem vínculo</option><option value="expense">Despesa</option><option value="product">Produto</option><option value="inventory">Insumo</option></select></label><label>Registro<select name="entity_id" id="media-entity-id" disabled><option value="">Selecione o tipo acima</option></select></label></div></div><footer class="modal-footer"><a class="secondary-button" id="media-open" href="#" target="_blank"><i data-lucide="external-link"></i><span>Abrir arquivo</span></a><span class="modal-footer-spacer"></span><button class="secondary-button" type="button" data-close-modal>Cancelar</button><button class="primary-button" type="submit"><i data-lucide="check"></i><span>Salvar organização</span></button></footer></form></dialog>
+    <dialog class="modal compact" id="media-modal" aria-labelledby="media-modal-title"><form method="dialog" class="modal-shell data-form" id="media-form"><header class="modal-header"><div><p class="eyebrow" id="media-kind-label">Arquivo</p><h2 id="media-modal-title">Organizar arquivo</h2></div><button class="icon-button" type="button" data-close-modal title="Fechar"><i data-lucide="x"></i></button></header><div class="modal-body"><div class="media-detail-preview" id="media-detail-preview"></div><div class="media-context" id="media-context" hidden></div><div class="form-grid two"><label>Nome para consulta<input name="title" required maxlength="120" /></label><label>Categoria<select name="category"><option>Financeiro</option><option>Precificação</option><option>Compras</option><option>Contratos</option><option>Planilhas</option><option>Documentos</option><option>Marketing</option><option>Operação</option></select></label><label class="full">Etiquetas<input name="tags" maxlength="180" placeholder="Ex.: fornecedor, julho, comprovante" /></label><label>Vincular a<select name="entity_type" id="media-entity-type"><option value="">Sem vínculo</option><option value="expense">Despesa</option><option value="product">Produto</option><option value="inventory">Insumo</option></select></label><label>Registro<select name="entity_id" id="media-entity-id" disabled><option value="">Selecione o tipo acima</option></select></label></div></div><footer class="modal-footer"><a class="secondary-button" id="media-open" href="#" target="_blank"><i data-lucide="external-link"></i><span>Abrir arquivo</span></a><button class="danger-button" type="button" id="media-delete"><i data-lucide="trash-2"></i><span>Excluir</span></button><span class="modal-footer-spacer"></span><button class="secondary-button" type="button" data-close-modal>Cancelar</button><button class="primary-button" type="submit"><i data-lucide="check"></i><span>Salvar organização</span></button></footer></form></dialog>
+
+    <dialog class="modal compact" id="count-modal" aria-labelledby="count-modal-title"><form method="dialog" class="modal-shell data-form" id="count-form"><header class="modal-header"><div><p class="eyebrow">Controle de estoque</p><h2 id="count-modal-title">Contagem física</h2></div><button class="icon-button" type="button" data-close-modal title="Fechar"><i data-lucide="x"></i></button></header><div class="modal-body form-grid"><input type="hidden" name="inventory_id" id="count-inventory-id" /><p class="modal-note full">Informe o que existe na prateleira agora. O sistema calcula a diferença e registra o acerto — você não precisa fazer a subtração.</p><label class="full">Insumo<select name="inventory_pick" id="count-inventory" required></select></label><label>Saldo no sistema<input id="count-current" type="text" readonly tabindex="-1" /></label><label>Contei<input name="quantity" type="number" min="0" step="0.001" required /></label><label class="full">Observação<input name="reason" maxlength="120" value="Contagem física" required /></label><p class="modal-result full" id="count-preview"></p></div><footer class="modal-footer"><button class="secondary-button" type="button" data-close-modal>Cancelar</button><button class="primary-button" type="submit"><i data-lucide="check"></i><span>Registrar contagem</span></button></footer></form></dialog>
+
+    <dialog class="modal compact" id="movement-modal" aria-labelledby="movement-modal-title"><form method="dialog" class="modal-shell data-form" id="movement-form"><header class="modal-header"><div><p class="eyebrow">Consumo</p><h2 id="movement-modal-title">Corrigir lançamento</h2></div><button class="icon-button" type="button" data-close-modal title="Fechar"><i data-lucide="x"></i></button></header><div class="modal-body form-grid"><input type="hidden" name="movement_id" id="movement-id" /><p class="modal-note full" id="movement-context"></p><label>Quantidade<input name="quantity_delta" type="number" step="0.001" required /><small class="field-hint">Negativo para saída, positivo para entrada.</small></label><label>Motivo<input name="reason" maxlength="120" required /></label></div><footer class="modal-footer"><button class="danger-button" type="button" id="movement-delete"><i data-lucide="undo-2"></i><span>Desfazer lançamento</span></button><span class="modal-footer-spacer"></span><button class="secondary-button" type="button" data-close-modal>Cancelar</button><button class="primary-button" type="submit"><i data-lucide="check"></i><span>Salvar correção</span></button></footer></form></dialog>
+
+    <dialog class="modal compact" id="channel-modal" aria-labelledby="channel-modal-title"><form method="dialog" class="modal-shell data-form" id="channel-form"><header class="modal-header"><div><p class="eyebrow">Distribuição</p><h2 id="channel-modal-title">Novo canal</h2></div><button class="icon-button" type="button" data-close-modal title="Fechar"><i data-lucide="x"></i></button></header><div class="modal-body form-grid two"><input type="hidden" name="channel_id" id="channel-id" /><label class="full">Nome do canal<input name="name" required maxlength="40" placeholder="Ex.: Rappi, Feira, Academia" /></label><label>Comissão<input name="fee_percent" type="number" min="0" max="100" step="0.01" value="0" /><small class="field-hint">% sobre o valor do pedido.</small></label><label>Taxa fixa<input name="fee_fixed" type="number" min="0" step="0.01" value="0" /><small class="field-hint">Valor por pedido, se houver.</small></label><label class="full">Observação<input name="note" maxlength="160" placeholder="Ex.: contrato renegociado em julho" /></label><label class="checkbox-field full"><input type="checkbox" name="active" checked /><span>Canal ativo<small>Canais inativos somem da tela de venda mas mantêm o histórico.</small></span></label></div><footer class="modal-footer"><button class="danger-button" type="button" id="channel-delete" hidden><i data-lucide="trash-2"></i><span>Remover</span></button><span class="modal-footer-spacer"></span><button class="secondary-button" type="button" data-close-modal>Cancelar</button><button class="primary-button" type="submit"><i data-lucide="check"></i><span>Salvar canal</span></button></footer></form></dialog>
+
+    <dialog class="modal" id="simulate-modal" aria-labelledby="simulate-modal-title"><form method="dialog" class="modal-shell data-form" id="simulate-form"><header class="modal-header"><div><p class="eyebrow">Expansão de cardápio</p><h2 id="simulate-modal-title">Simular produto novo</h2></div><button class="icon-button" type="button" data-close-modal title="Fechar"><i data-lucide="x"></i></button></header><div class="modal-body simulate-layout"><section><p class="modal-note">Nada é gravado. A conta vem antes do cardápio impresso: se o preço imaginado não paga o insumo mais a taxa do canal, dá para descobrir agora.</p><div class="form-grid two"><label class="full">Nome<input name="name" maxlength="80" placeholder="Ex.: Açaí proteico 500 ml" /></label><label>Preço pretendido<input name="price" type="number" min="0.01" step="0.01" required /></label><label>Margem-alvo<input name="target_margin" type="number" min="0" max="99" step="1" placeholder="%" /></label><label>Custo estimado extra<input name="extra_cost" type="number" min="0" step="0.01" placeholder="0,00" /><small class="field-hint">Insumo que a loja ainda não compra.</small></label><label>O que é esse extra<input name="extra_cost_label" maxlength="60" placeholder="Ex.: dose de whey" /></label><label class="full">Venda esperada por dia<input name="expected_daily_units" type="number" min="0" step="0.5" placeholder="unidades" /></label></div><fieldset class="recipe-fieldset"><legend>Ficha técnica estimada</legend><div id="simulate-recipe-lines"></div><button class="text-button recipe-add" type="button" id="add-simulate-line"><i data-lucide="plus"></i>Adicionar insumo</button></fieldset></section><aside class="simulate-result" id="simulate-result"><p class="empty-state">Preencha o preço e a ficha técnica e veja o resultado aqui.</p></aside></div><footer class="modal-footer"><button class="secondary-button" type="button" data-close-modal>Fechar</button><button class="primary-button" type="submit"><i data-lucide="calculator"></i><span>Calcular</span></button></footer></form></dialog>
+
+    <dialog class="modal" id="dossier-modal" aria-labelledby="dossier-modal-title"><div class="modal-shell"><header class="modal-header"><div><p class="eyebrow" id="dossier-line">Cardápio</p><h2 id="dossier-modal-title">Dossiê de custo</h2></div><button class="icon-button" type="button" data-close-modal title="Fechar"><i data-lucide="x"></i></button></header><div class="modal-body" id="dossier-body"><p class="empty-state">Carregando dossiê...</p></div><footer class="modal-footer"><label class="period-control">Margem-alvo <input type="number" id="dossier-target" min="0" max="99" step="1" placeholder="%" /></label><span class="modal-footer-spacer"></span><button class="secondary-button" type="button" data-close-modal>Fechar</button><button class="primary-button" type="button" id="dossier-edit"><i data-lucide="pencil"></i><span>Editar produto</span></button></footer></div></dialog>
+
+
+    <dialog class="modal compact" id="courier-modal" aria-labelledby="courier-modal-title"><form method="dialog" class="modal-shell data-form" id="courier-form"><header class="modal-header"><div><p class="eyebrow">Entregas</p><h2 id="courier-modal-title">Novo entregador</h2></div><button class="icon-button" type="button" data-close-modal title="Fechar"><i data-lucide="x"></i></button></header><div class="modal-body form-grid two"><input type="hidden" name="courier_id" id="courier-id" /><label>Nome<input name="name" required maxlength="80" /></label><label>Telefone<input name="phone" maxlength="30" placeholder="Opcional" /></label><label>Veículo<input name="vehicle" maxlength="30" placeholder="Ex.: moto, bicicleta" list="courier-vehicles" /><datalist id="courier-vehicles"></datalist></label><label class="checkbox-field"><input type="checkbox" name="active" checked /><span>Ativo<small>Inativos somem da tela de venda mas mantêm o histórico.</small></span></label><fieldset class="recipe-fieldset full"><legend>Como é a remuneração</legend><p class="modal-note">Os valores se somam. Combine só o que vale para esta pessoa — deixe zero no resto.</p><div class="form-grid two"><label>Por entrega<input name="fee_per_delivery" type="number" min="0" step="0.01" value="0" /><small class="field-hint">R$ por entrega feita.</small></label><label>Comissão sobre o frete<input name="commission_percent" type="number" min="0" max="100" step="0.01" value="0" /><small class="field-hint">% do frete arrecadado no turno.</small></label><label>Diária<input name="daily_rate" type="number" min="0" step="0.01" value="0" /><small class="field-hint">Valor por dia trabalhado.</small></label><label>Salário mensal<input name="monthly_salary" type="number" min="0" step="0.01" value="0" /><small class="field-hint">Fixo. Entra rateado no custo do período.</small></label></div></fieldset><label class="full">Observação<input name="note" maxlength="160" placeholder="Ex.: combinado revisto em agosto" /></label></div><footer class="modal-footer"><button class="danger-button" type="button" id="courier-delete" hidden><i data-lucide="trash-2"></i><span>Remover</span></button><span class="modal-footer-spacer"></span><button class="secondary-button" type="button" data-close-modal>Cancelar</button><button class="primary-button" type="submit"><i data-lucide="check"></i><span>Salvar entregador</span></button></footer></form></dialog>
+
+    <dialog class="modal compact" id="delivery-modal" aria-labelledby="delivery-modal-title"><form method="dialog" class="modal-shell data-form" id="delivery-form"><header class="modal-header"><div><p class="eyebrow">Entregas</p><h2 id="delivery-modal-title">Lançar turno</h2></div><button class="icon-button" type="button" data-close-modal title="Fechar"><i data-lucide="x"></i></button></header><div class="modal-body form-grid two"><input type="hidden" name="entry_id" id="delivery-entry-id" /><label>Entregador<select name="courier_id" id="delivery-courier" required></select></label><label>Dia<input name="date" type="date" id="delivery-date" required /></label><p class="modal-note full" id="delivery-suggestion"></p><label>Entregas<input name="deliveries" type="number" min="0" max="500" step="1" value="0" required /></label><label>Frete arrecadado<input name="freight_total" type="number" min="0" step="0.01" value="0" /></label><label>Bônus<input name="bonus" type="number" min="0" step="0.01" value="0" /></label><label>Desconto<input name="deduction" type="number" min="0" step="0.01" value="0" /></label><label class="checkbox-field full"><input type="checkbox" name="worked" checked /><span>Conta diária<small>Desmarque no dia em que o entregador não rodou.</small></span></label><p class="modal-result full" id="delivery-preview"></p><label class="full">Pagar valor diferente do calculado<input name="payout_override" type="number" min="0" step="0.01" placeholder="Deixe vazio para usar o combinado" /><small class="field-hint">Ao preencher, o motivo abaixo passa a ser obrigatório.</small></label><label class="full">Observação<input name="note" maxlength="160" placeholder="Ex.: adiantamento acertado" /></label></div><footer class="modal-footer"><button class="danger-button" type="button" id="delivery-delete" hidden><i data-lucide="trash-2"></i><span>Excluir turno</span></button><span class="modal-footer-spacer"></span><button class="secondary-button" type="button" data-close-modal>Cancelar</button><button class="primary-button" type="submit"><i data-lucide="check"></i><span>Salvar turno</span></button></footer></form></dialog>
+
+
+    <dialog class="modal compact" id="catalog-modal" aria-labelledby="catalog-modal-title"><form method="dialog" class="modal-shell data-form" id="catalog-form"><header class="modal-header"><div><p class="eyebrow" id="catalog-modal-list">Lista</p><h2 id="catalog-modal-title">Novo item</h2></div><button class="icon-button" type="button" data-close-modal title="Fechar"><i data-lucide="x"></i></button></header><div class="modal-body form-grid"><input type="hidden" name="catalog_id" id="catalog-id" /><input type="hidden" name="original" id="catalog-original" /><label class="full">Nome<input name="value" required maxlength="40" /></label><p class="modal-note full" id="catalog-hint"></p></div><footer class="modal-footer"><button class="danger-button" type="button" id="catalog-delete" hidden><i data-lucide="trash-2"></i><span>Excluir</span></button><span class="modal-footer-spacer"></span><button class="secondary-button" type="button" data-close-modal>Cancelar</button><button class="primary-button" type="submit"><i data-lucide="check"></i><span>Salvar</span></button></footer></form></dialog>
+
+    <dialog class="modal compact" id="import-modal" aria-labelledby="import-modal-title"><form method="dialog" class="modal-shell data-form" id="import-form"><header class="modal-header"><div><p class="eyebrow">Pedido importado</p><h2 id="import-modal-title">Corrigir pedido</h2></div><button class="icon-button" type="button" data-close-modal title="Fechar"><i data-lucide="x"></i></button></header><div class="modal-body form-grid two"><input type="hidden" name="order_id" id="import-order-id" /><p class="modal-note full">Este pedido veio importado sem os itens vendidos, então só o que a origem informou pode ser corrigido. A ficha técnica não tem como calcular custo aqui.</p><label>Valor total<input name="total" type="number" min="0" step="0.01" required /></label><label>Canal<select name="channel" id="import-channel"></select></label><label>Pagamento<select name="payment_method" id="import-payment"></select></label><label>Data e hora<input name="occurred_at" type="datetime-local" /></label><label class="checkbox-field full"><input type="checkbox" name="is_delivery" id="import-is-delivery" /><span>Saiu para entrega<small>Marque para acertar frete e entregador deste pedido.</small></span></label><label class="import-delivery-field">Frete cobrado<input name="delivery_fee" type="number" min="0" step="0.01" value="0" /></label><label class="import-delivery-field">Entregador<select name="courier_id" id="import-courier"></select></label><label class="full">Cliente<input name="customer_name" maxlength="80" placeholder="Opcional" /></label></div><footer class="modal-footer"><button class="secondary-button" type="button" data-close-modal>Cancelar</button><button class="primary-button" type="submit"><i data-lucide="check"></i><span>Salvar correção</span></button></footer></form></dialog>
+
     <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
     <script src="/static/vendor/lucide.js"></script>
     <script src="/static/pwa-register.js"></script>
     <script src="/static/firebase-auth.js"></script>
     <script src="/static/app.js"></script>
+    <script src="/static/manage.js"></script>
   </body>
 </html>

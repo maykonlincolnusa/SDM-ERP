@@ -47,6 +47,9 @@ class LocalMediaStorage:
     def read(self, key: str) -> bytes:
         return self.path(key).read_bytes()
 
+    def delete(self, key: str) -> None:
+        self.path(key).unlink(missing_ok=True)
+
 
 class FirebaseMediaStorage:
     mode = "firebase"
@@ -67,6 +70,11 @@ class FirebaseMediaStorage:
 
     def read(self, key: str) -> bytes:
         return self.bucket.blob(key).download_as_bytes()
+
+    def delete(self, key: str) -> None:  # pragma: no cover - depende do bucket
+        blob = self.bucket.blob(key)
+        if blob.exists():
+            blob.delete()
 
 
 class MediaService:
@@ -109,7 +117,12 @@ class MediaService:
         self.settings.data_raw_path.mkdir(parents=True, exist_ok=True)
         self.settings.media_inbox_path.mkdir(parents=True, exist_ok=True)
         added = updated = skipped = 0
+        dispensados = {row["id"] for row in self.store.list("media_dismissed")}
         for path, source in self._source_files():
+            # Arquivo dispensado pelo gestor nao volta na sincronizacao.
+            if _file_hash(path) in dispensados:
+                skipped += 1
+                continue
             outcome = self._ingest_file(path, source)
             if outcome == "added":
                 added += 1
@@ -157,6 +170,39 @@ class MediaService:
         record["updated_at"] = _now()
         self.store.put("media", media_id, record)
         return record
+
+    def delete(self, media_id: str) -> dict[str, str]:
+        """Tira o arquivo do acervo e apaga a copia do sistema.
+
+        O original do usuario em `data/raw` nunca e tocado: o ERP catalogou o
+        arquivo, nao virou dono dele. Mas o checksum entra numa lista de
+        dispensados, senao a proxima sincronizacao traria tudo de volta e a
+        exclusao pareceria nao ter funcionado.
+        """
+
+        record = self.store.get("media", media_id)
+        if not record:
+            raise ValueError("Arquivo não encontrado.")
+        try:
+            self.storage.delete(record["storage_key"])
+        except OSError as error:  # pragma: no cover - falha de disco
+            raise ValueError(f"Não foi possível remover o arquivo armazenado: {error}") from error
+        self.store.delete("media", media_id)
+        if record.get("source") != "upload":
+            self.store.put("media_dismissed", record["checksum"], {
+                "id": record["checksum"],
+                "original_name": record.get("original_name"),
+                "dismissed_at": _now(),
+            })
+        return {
+            "id": media_id,
+            "status": "excluido",
+            "detail": (
+                "Arquivo removido do acervo. O original na pasta de origem não foi apagado, "
+                "mas ele não volta na próxima sincronização."
+                if record.get("source") != "upload" else "Arquivo removido do acervo."
+            ),
+        }
 
     def get(self, media_id: str) -> dict[str, Any] | None:
         return self.store.get("media", media_id)
