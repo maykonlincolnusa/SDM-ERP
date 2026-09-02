@@ -139,4 +139,6 @@ Known limits, stated plainly:
 
 ## Licence
 
-No licence file yet — all rights reserved by default. If you want to use, extend or deploy this, get in touch first.
+[MIT](LICENSE). Use it, change it, ship it — commercially included. Keep the copyright notice, and understand it comes with no warranty.
+
+If you run a shop and want help putting it to work, or you are building something adjacent and want to compare notes, get in touch.
