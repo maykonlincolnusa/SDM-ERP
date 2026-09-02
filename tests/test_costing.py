@@ -5,11 +5,14 @@ testes aqui fixam as tres perguntas que ela nao respondia: quanto e embalagem,
 quanto sobra em cada canal e a partir de que preco o produto paga a estrutura.
 """
 
+from datetime import datetime, timedelta
+
 import pytest
 
 from app.repositories.store import DemoStore
 from app.schemas import ExpenseCreate, OrderCreate, OrderLine, ProductSimulation, ProductUpdate, RecipeLine
 from app.services import CostingService, ERPService
+from app.services.erp import FUSO_LOJA
 
 
 @pytest.fixture
@@ -188,6 +191,85 @@ def test_breakeven_reads_in_units_the_store_understands(loja):
     assert estrutura >= 1800, "o aluguel lancado precisa entrar na estrutura"
     assert dossie["breakeven"]["units_per_month"] == round(estrutura / contribuicao, 1)
     assert dossie["breakeven"]["units_per_day"] == round(estrutura / contribuicao / 30, 1)
+
+
+def test_structure_does_not_grow_with_each_month_recorded(loja):
+    """Seis meses de aluguel sao seis meses, nao um aluguel seis vezes maior.
+
+    Era o defeito mais caro do dossie: somar tudo que ja foi lancado fazia a
+    estrutura crescer a cada mes de uso, e o ponto de equilibrio subia junto.
+    O erro nao aparecia no primeiro mes — so quando a loja ja dependia do numero.
+    """
+
+    erp, costing = loja
+    for expense in erp.expenses():
+        erp.delete_expense(expense["id"])
+    # Seis lancamentos avulsos, um por mes, como quem digita a conta quando ela
+    # chega. A categoria Fixo ja basta para entrar no rateio; marcar como
+    # recorrente abriria uma serie, que e o caminho testado em
+    # tests/test_expense_recurrence.py.
+    for mes in range(3, 9):
+        erp.create_expense(ExpenseCreate(
+            description="Aluguel", category="Fixo", amount=1800,
+            due_date=f"2026-0{mes}-05", status="Paga",
+        ))
+
+    fixo = costing.dossier("acai-500")["fixed"]
+
+    assert fixo["monthly"] == 1800, "a estrutura mensal e a media dos meses, nao a soma deles"
+    assert fixo["months"] == 6
+    assert fixo["partial"] is False
+    assert "03/2026" in fixo["expense_basis"] and "08/2026" in fixo["expense_basis"]
+
+
+def test_structure_averages_the_closed_months(loja):
+    """A luz de um mes quente nao pode virar a conta de luz de todo mes."""
+
+    erp, costing = loja
+    for expense in erp.expenses():
+        erp.delete_expense(expense["id"])
+    erp.create_expense(ExpenseCreate(description="Energia", category="Fixo", amount=200, due_date="2026-07-10"))
+    erp.create_expense(ExpenseCreate(description="Energia", category="Fixo", amount=400, due_date="2026-08-10"))
+
+    fixo = costing.dossier("acai-500")["fixed"]
+
+    assert fixo["monthly"] == 300
+    assert fixo["expenses"] == 2
+
+
+def test_open_month_is_used_only_when_no_month_has_closed(loja):
+    """Primeiro mes de uso ainda merece um numero — desde que marcado como parcial."""
+
+    erp, costing = loja
+    for expense in erp.expenses():
+        erp.delete_expense(expense["id"])
+    hoje = datetime.now(FUSO_LOJA).date()
+    erp.create_expense(ExpenseCreate(
+        description="Aluguel", category="Fixo", amount=1800,
+        due_date=hoje.replace(day=1).isoformat(),
+    ))
+
+    fixo = costing.dossier("acai-500")["fixed"]
+
+    assert (fixo["monthly"], fixo["months"], fixo["partial"]) == (1800, 0, True)
+    assert any("ainda aberto" in alerta["title"] for alerta in costing.dossier("acai-500")["alerts"])
+
+
+def test_closed_month_wins_over_the_open_one(loja):
+    """Aberto o mes novo, a estrutura para de ser a soma dos dois."""
+
+    erp, costing = loja
+    for expense in erp.expenses():
+        erp.delete_expense(expense["id"])
+    hoje = datetime.now(FUSO_LOJA).date()
+    fechado = (hoje.replace(day=1) - timedelta(days=1)).replace(day=5)
+    erp.create_expense(ExpenseCreate(description="Aluguel", category="Fixo", amount=1800, due_date=fechado.isoformat()))
+    erp.create_expense(ExpenseCreate(description="Aluguel", category="Fixo", amount=1800, due_date=hoje.replace(day=1).isoformat()))
+
+    fixo = costing.dossier("acai-500")["fixed"]
+
+    assert fixo["monthly"] == 1800, "o mes corrente nao se soma ao fechado"
+    assert fixo["partial"] is False
 
 
 def test_only_fixed_expenses_enter_the_allocation(loja):

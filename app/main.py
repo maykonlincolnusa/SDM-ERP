@@ -1,5 +1,6 @@
 from contextlib import asynccontextmanager
 from pathlib import Path
+from tempfile import NamedTemporaryFile
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, UploadFile, status
 from fastapi.responses import FileResponse, Response
@@ -8,6 +9,8 @@ from fastapi.staticfiles import StaticFiles
 from app.config import Settings, get_settings
 from app.repositories.store import Store, build_store
 from app.schemas import (
+    AddonCreate,
+    AddonUpdate,
     CatalogItem,
     CatalogOrder,
     CatalogRename,
@@ -18,11 +21,14 @@ from app.schemas import (
     DeliveryEntryCreate,
     DeliveryEntryUpdate,
     ExpenseCreate,
+    ExpenseSeriesUpdate,
     ExpenseUpdate,
+    FixedCostSetup,
     InventoryAdjustment,
     InventoryCount,
     InventoryItemCreate,
     InventoryItemUpdate,
+    InventoryPurchase,
     MediaUpdate,
     MovementUpdate,
     OrderCancel,
@@ -42,6 +48,7 @@ from app.services import (
     MediaService,
     PlanningService,
 )
+from scripts.import_anota_ai import importar as importar_anota_ai, ler_relatorio as ler_relatorio_anota_ai
 
 BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
@@ -67,7 +74,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="SDM",
     description="ERP operacional para gestão de lojas de açaí.",
-    version="1.2.0",
+    version="1.3.0",
     lifespan=lifespan,
 )
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
@@ -293,8 +300,44 @@ def update_product(
 
 
 @app.delete("/api/products/{product_id}")
-def delete_product(product_id: str, service: ERPService = Depends(erp), _: dict = Depends(current_user)) -> dict:
-    return _run(lambda: service.delete_product(product_id))
+def delete_product(
+    product_id: str,
+    permanent: bool = Query(default=False, description="Remove do cadastro mesmo com vendas no histórico."),
+    service: ERPService = Depends(erp),
+    _: dict = Depends(current_user),
+) -> dict:
+    return _run(lambda: service.delete_product(product_id, permanent))
+
+
+# ----------------------------------------------------------------------
+# Complementos
+# ----------------------------------------------------------------------
+
+
+@app.get("/api/addons")
+def addons(service: ERPService = Depends(erp), _: dict = Depends(current_user)) -> list[dict]:
+    """Banana, calda, granola: o que entra no copo por escolha do cliente."""
+    return service.addons()
+
+
+@app.post("/api/addons", status_code=status.HTTP_201_CREATED)
+def create_addon(payload: AddonCreate, service: ERPService = Depends(erp), _: dict = Depends(current_user)) -> dict:
+    return _run(lambda: service.create_addon(payload))
+
+
+@app.patch("/api/addons/{addon_id}")
+def update_addon(
+    addon_id: str,
+    payload: AddonUpdate,
+    service: ERPService = Depends(erp),
+    _: dict = Depends(current_user),
+) -> dict:
+    return _run(lambda: service.update_addon(addon_id, payload))
+
+
+@app.delete("/api/addons/{addon_id}")
+def delete_addon(addon_id: str, service: ERPService = Depends(erp), _: dict = Depends(current_user)) -> dict:
+    return _run(lambda: service.delete_addon(addon_id))
 
 
 # ----------------------------------------------------------------------
@@ -314,6 +357,16 @@ def inventory_consumption(
     _: dict = Depends(current_user),
 ) -> dict:
     return service.consumption(days)
+
+
+@app.get("/api/inventory/crossing")
+def inventory_crossing(
+    days: int = Query(default=30, ge=1, le=365),
+    service: ERPService = Depends(erp),
+    _: dict = Depends(current_user),
+) -> dict:
+    """Cruzamento das vendas com o estoque, separando receita de complemento."""
+    return service.ingredient_crossing(days)
 
 
 @app.post("/api/inventory", status_code=status.HTTP_201_CREATED)
@@ -339,6 +392,17 @@ def delete_movement(movement_id: str, service: ERPService = Depends(erp), _: dic
 @app.post("/api/inventory/{inventory_id}/adjust")
 def adjust_inventory(inventory_id: str, payload: InventoryAdjustment, service: ERPService = Depends(erp), _: dict = Depends(current_user)) -> dict:
     return _run(lambda: service.adjust_inventory(inventory_id, payload))
+
+
+@app.post("/api/inventory/{inventory_id}/purchases", status_code=status.HTTP_201_CREATED)
+def register_inventory_purchase(
+    inventory_id: str,
+    payload: InventoryPurchase,
+    service: ERPService = Depends(erp),
+    _: dict = Depends(current_user),
+) -> dict:
+    """Registra uma compra recebida e atualiza saldo e custo médio."""
+    return _run(lambda: service.register_inventory_purchase(inventory_id, payload))
 
 
 @app.post("/api/inventory/{inventory_id}/count")
@@ -411,6 +475,53 @@ def delete_order(order_id: str, service: ERPService = Depends(erp), _: dict = De
 # ----------------------------------------------------------------------
 
 
+@app.get("/api/finance/operating")
+def operating_result(
+    days: int = Query(default=30, ge=1, le=365),
+    service: ERPService = Depends(erp),
+    delivery: DeliveryService = Depends(delivery_service),
+    _: dict = Depends(current_user),
+) -> dict:
+    """Lucro operacional sem mascarar pedidos que ainda não têm custo."""
+    delivery_cost = delivery.performance(days)["totals"]["payout"]
+    return service.operating_result(days, delivery_cost)
+
+
+@app.post("/api/imports/anota-ai")
+async def import_anota_ai_report(
+    report: UploadFile = File(...),
+    overwrite: bool = Query(default=False),
+    database: Store = Depends(store),
+    _: dict = Depends(current_user),
+) -> dict:
+    """Importa o relatório XLSX da Anota AI com deduplicação por pedido."""
+    if not (report.filename or "").lower().endswith(".xlsx"):
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Envie o relatório da Anota AI em formato .xlsx.")
+    content = await report.read()
+    if len(content) > 10 * 1024 * 1024:
+        raise HTTPException(status_code=status.HTTP_413_CONTENT_TOO_LARGE, detail="O relatório excede o limite de 10 MB.")
+
+    temp_path: Path | None = None
+    try:
+        with NamedTemporaryFile(suffix=".xlsx", delete=False) as temporary:
+            temporary.write(content)
+            temp_path = Path(temporary.name)
+        orders, discarded = ler_relatorio_anota_ai(temp_path)
+        result = importar_anota_ai(orders, database, sobrescrever=overwrite)
+        return {
+            **result,
+            "orders_read": len(orders),
+            "revenue": round(sum(order["total"] for order in orders), 2),
+            "discarded": discarded,
+            "detail": "Pedidos importados. Itens que não vierem no relatório continuam sem custo até serem detalhados.",
+        }
+    except ValueError as error:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error)) from error
+    finally:
+        if temp_path:
+            temp_path.unlink(missing_ok=True)
+
+
 @app.get("/api/expenses")
 def expenses(service: ERPService = Depends(erp), _: dict = Depends(current_user)) -> list[dict]:
     return service.expenses()
@@ -419,6 +530,45 @@ def expenses(service: ERPService = Depends(erp), _: dict = Depends(current_user)
 @app.post("/api/expenses", status_code=status.HTTP_201_CREATED)
 def create_expense(payload: ExpenseCreate, service: ERPService = Depends(erp), _: dict = Depends(current_user)) -> dict:
     return _run(lambda: service.create_expense(payload))
+
+
+@app.get("/api/expenses/recurring")
+def expense_series(service: ERPService = Depends(erp), _: dict = Depends(current_user)) -> list[dict]:
+    """As despesas que se repetem todo mês, com o próximo vencimento de cada uma."""
+    return service.expense_series()
+
+
+@app.get("/api/expenses/fixed-cost")
+def fixed_monthly_cost(
+    month: str | None = Query(default=None, description="AAAA-MM. Vazio = mês corrente."),
+    service: ERPService = Depends(erp),
+    _: dict = Depends(current_user),
+) -> dict:
+    """Custo fixo do mês pelas regras cadastradas — a base do lucro projetado."""
+    return _run(lambda: service.recurring_monthly_cost(month))
+
+
+@app.post("/api/expenses/recurring", status_code=status.HTTP_201_CREATED)
+def setup_fixed_costs(payload: FixedCostSetup, service: ERPService = Depends(erp), _: dict = Depends(current_user)) -> dict:
+    """Monta o custo fixo da loja de uma vez: cada linha vira uma despesa mensal."""
+    return _run(lambda: service.setup_fixed_costs(payload))
+
+
+@app.patch("/api/expenses/recurring/{series_id}")
+def update_expense_series(
+    series_id: str,
+    payload: ExpenseSeriesUpdate,
+    service: ERPService = Depends(erp),
+    _: dict = Depends(current_user),
+) -> dict:
+    """Muda a regra dos meses que ainda serão lançados; o passado fica como está."""
+    return _run(lambda: service.update_expense_series(series_id, payload))
+
+
+@app.delete("/api/expenses/recurring/{series_id}")
+def stop_expense_series(series_id: str, service: ERPService = Depends(erp), _: dict = Depends(current_user)) -> dict:
+    """Para de repetir, mantendo no histórico os meses já lançados."""
+    return _run(lambda: service.stop_expense_series(series_id))
 
 
 @app.patch("/api/expenses/{expense_id}")

@@ -17,11 +17,13 @@ from __future__ import annotations
 
 import unicodedata
 from collections import Counter, defaultdict
+from datetime import date, datetime
+from statistics import fmean
 from typing import Any
 
 from app.repositories.store import Store
 from app.schemas import ProductSimulation
-from app.services.erp import ERPService, is_active_order
+from app.services.erp import FUSO_LOJA, ERPService, is_active_order, month_index, month_label, month_name
 
 # Categorias de insumo que sao embalagem, nao ingrediente. A separacao importa
 # porque embalagem escala com o numero de copos e ingrediente escala com o
@@ -31,6 +33,11 @@ PACKAGING_HINTS = ("embalagem", "descartavel", "copo", "tampa", "colher", "sacol
 # Despesa que se paga todo mes independente de vender. So essas entram no
 # rateio: rateio de insumo seria contar o custo duas vezes.
 FIXED_CATEGORIES = ("fixo", "fixa", "equipe", "aluguel", "estrutura")
+
+# Quantos meses fechados entram na media do custo fixo. Um ano acomoda a conta
+# de luz de verao e a de inverno sem deixar um aluguel de dois anos atras
+# puxando a media de hoje.
+FIXED_COST_MONTHS = 12
 
 
 def _fold(value: str) -> str:
@@ -350,20 +357,60 @@ class CostingService:
         return result
 
     def _fixed_allocation(self, days: int, units: float | None) -> dict[str, Any]:
-        """Rateia a estrutura por unidade vendida.
+        """Rateia a estrutura de UM mes por unidade vendida.
 
-        Usa as despesas fixas cadastradas e o volume real do periodo. Sem
-        volume, devolve `per_unit` nulo em vez de dividir por zero ou chutar um
-        denominador: o dossie diz "falta base" e a loja sabe o que fazer.
+        O custo fixo sai da media dos meses fechados, nunca da soma de tudo que
+        ja foi lancado. Somar tudo trataria o aluguel de cada mes como se fosse
+        do mesmo mes: no sexto mes de uso a loja leria "estrutura de seis
+        alugueis", e o ponto de equilibrio subiria junto — um erro que piora
+        exatamente na medida em que o gestor usa mais o sistema.
+
+        O mes corrente fica de fora da media porque quase sempre ainda tem
+        conta por lancar; entrar nela faria a estrutura parecer barata no comeco
+        de todo mes. Ele so e usado quando nao ha nenhum mes fechado, e ai o
+        resultado vem marcado como parcial.
+
+        Sem volume de venda, `per_unit` fica nulo em vez de dividir por zero ou
+        chutar um denominador: o dossie diz "falta base" e a loja sabe o que
+        fazer.
         """
 
-        fixed = [expense for expense in self.store.list("expenses") if is_fixed_expense(expense)]
-        monthly = round(sum(expense["amount"] for expense in fixed), 2)
+        by_month, records = self._fixed_by_month()
+        current_index = month_index(datetime.now(FUSO_LOJA).date().strftime("%Y-%m"))
+        window = [month_label(index) for index in range(current_index - FIXED_COST_MONTHS, current_index)]
+        closed = [month for month in window if by_month.get(month)]
+
+        if closed:
+            monthly = round(fmean(by_month[month] for month in closed), 2)
+            months, partial = len(closed), False
+            counted = sum(records[month] for month in closed)
+            if len(closed) == 1:
+                expense_basis = f"o mês fechado de {month_name(closed[0])}"
+            else:
+                expense_basis = f"média dos {len(closed)} meses fechados entre {month_name(closed[0])} e {month_name(closed[-1])}"
+        elif by_month.get(month_label(current_index)):
+            # Primeiro mes de uso: nao ha mes fechado para medir. Usar o
+            # corrente e melhor do que devolver zero, desde que fique dito que
+            # ele ainda esta em formacao.
+            month = month_label(current_index)
+            monthly = round(by_month[month], 2)
+            months, partial = 0, True
+            counted = records[month]
+            expense_basis = f"o mês corrente ({month_name(month)}), que ainda pode receber lançamentos"
+        else:
+            monthly, months, partial, counted = 0.0, 0, False, 0
+            expense_basis = "nenhuma despesa fixa lançada"
+
         monthly_units = round((units or 0) / days * 30, 1) if units else 0.0
         per_unit = round(monthly / monthly_units, 4) if monthly and monthly_units else None
         return {
             "monthly": monthly,
-            "expenses": len(fixed),
+            "expenses": counted,
+            # Quantos meses fechados sustentam o valor. Zero significa que a
+            # conta veio do mes corrente, ainda incompleto.
+            "months": months,
+            "partial": partial,
+            "expense_basis": expense_basis,
             "monthly_units": monthly_units,
             "per_unit": per_unit,
             "basis": (
@@ -372,6 +419,27 @@ class CostingService:
                 else "sem volume de vendas no período para ratear a estrutura"
             ),
         }
+
+    def _fixed_by_month(self) -> tuple[dict[str, float], dict[str, int]]:
+        """Agrupa a despesa fixa pelo mes de vencimento, que e a competencia dela."""
+
+        total: dict[str, float] = defaultdict(float)
+        count: dict[str, int] = defaultdict(int)
+        # Via ERP e nao direto no store: a leitura precisa vir depois de as
+        # despesas que se repetem terem lancado o mes que venceu, senao o
+        # rateio ficaria olhando meses vazios.
+        for expense in self.erp.expenses():
+            if not is_fixed_expense(expense):
+                continue
+            try:
+                month = date.fromisoformat(str(expense["due_date"])[:10]).strftime("%Y-%m")
+            except (KeyError, TypeError, ValueError):
+                # Sem vencimento legivel nao da para dizer de que mes a conta e,
+                # e chuta-la no mes corrente inflaria a estrutura deste mes.
+                continue
+            total[month] += float(expense.get("amount", 0))
+            count[month] += 1
+        return total, count
 
     def _product_sales(self, product_id: str, days: int) -> dict[str, Any]:
         start = self.erp._window_start(days)
@@ -444,6 +512,15 @@ class CostingService:
                 "type": "info",
                 "title": "Despesas fixas não cadastradas",
                 "description": "Lance aluguel, energia e equipe no Financeiro para o dossiê mostrar a margem depois da estrutura, e não só sobre o insumo.",
+            })
+        elif fixed["partial"]:
+            alerts.append({
+                "type": "info",
+                "title": "Estrutura medida num mês ainda aberto",
+                "description": (
+                    f"Não há mês fechado com despesa fixa, então a estrutura de {self._money(fixed['monthly'])} veio do mês corrente, "
+                    "que ainda pode receber contas. O ponto de equilíbrio tende a subir quando o mês fechar."
+                ),
             })
         if not channels:
             alerts.append({

@@ -20,12 +20,18 @@
     "edit-expense": (id) => editExpense(id),
     "pay-expense": (id) => payExpense(id),
     "delete-expense": (id) => deleteExpense(id),
+    "edit-recurring": (id) => editRecurring(id),
+    "stop-recurring": (id) => stopRecurring(id),
     "edit-inventory": (id) => editInventory(id),
     "delete-inventory": (id) => deleteInventory(id),
+    "purchase-item": (id) => openPurchase(id),
     "count-item": (id) => openCount(id),
     "edit-movement": (id) => editMovement(id),
     "edit-product": (id) => editProduct(id),
     "delete-product": (id) => deleteProduct(id),
+    "purge-product": (id) => deleteProduct(id, true),
+    "edit-addon": (id) => editAddon(id),
+    "delete-addon": (id) => deleteAddon(id),
     "dossier": (id) => openDossier(id),
     "edit-channel": (id) => editChannel(id),
     "delete-channel": (id) => deleteChannel(id),
@@ -48,7 +54,10 @@
     document.getElementById("movement-delete").addEventListener("click", undoMovement);
     document.getElementById("channel-form").addEventListener("submit", submitChannel);
     document.getElementById("channel-delete").addEventListener("click", () => deleteChannel(document.getElementById("channel-id").value));
+    document.getElementById("addon-delete").addEventListener("click", () => deleteAddon(document.getElementById("addon-id").value));
     document.getElementById("catalog-form").addEventListener("submit", submitCatalogItem);
+    document.getElementById("recurring-form").addEventListener("submit", submitRecurring);
+    document.getElementById("recurring-stop").addEventListener("click", () => stopRecurring(document.getElementById("recurring-id").value));
     document.getElementById("catalog-delete").addEventListener("click", deleteCatalogItem);
     document.getElementById("import-form").addEventListener("submit", submitImportedOrder);
     document.getElementById("import-is-delivery").addEventListener("change", toggleImportDelivery);
@@ -142,7 +151,15 @@
     }
     const form = document.getElementById("sale-form");
     state.cart.clear();
-    order.items.forEach((item) => state.cart.set(item.product_id, item.quantity));
+    state.cartAddons.clear();
+    order.items.forEach((item) => {
+      state.cart.set(item.product_id, item.quantity);
+      // O complemento volta como foi vendido, não como está no cadastro hoje:
+      // corrigir a quantidade não pode reescrever o que o cliente pediu.
+      if (item.addons?.length) {
+        state.cartAddons.set(item.product_id, new Map(item.addons.map((chosen) => [chosen.addon_id, chosen.quantity])));
+      }
+    });
     renderSaleProducts();
     renderCart();
     populateChannelSelect();
@@ -196,6 +213,9 @@
     form.elements.due_date.value = String(expense.due_date).slice(0, 10);
     setSelectValue(form.elements.status, expense.status);
     form.elements.recurring.checked = Boolean(expense.recurring);
+    // Ligar o interruptor aqui abriria uma segunda série para a mesma conta.
+    form.elements.recurring.disabled = Boolean(expense.series_id);
+    toggleExpenseRepeat();
     setText("#expense-modal-title", "Editar despesa");
     openDialog("expense-modal");
   }
@@ -356,11 +376,91 @@
     openDialog("product-modal");
   }
 
-  async function deleteProduct(productId) {
+  async function deleteProduct(productId, permanent = false) {
     const product = state.products.find((row) => row.id === productId);
     if (!product) return;
-    if (!confirm(`Tirar "${product.name}" do cardápio?\n\nSe ele já tem vendas, o registro é mantido no histórico e o produto apenas deixa de aparecer para venda.`)) return;
-    await send(`/api/products/${productId}`, "DELETE", null, "Produto removido do cardápio.");
+    // Sai em duas etapas de propósito: o primeiro clique tira do balcão, o
+    // segundo tira do cadastro. Assim ninguém apaga por engano o produto que
+    // responde pelo faturamento do mês passado.
+    const pergunta = permanent
+      ? `Excluir "${product.name}" do cadastro de vez?\n\nOs pedidos antigos continuam com nome, preço e custo do dia da venda, mas o dossiê de custo e a previsão deste produto deixam de existir.`
+      : `Tirar "${product.name}" do cardápio?\n\nSe ele já tem vendas, o registro é mantido no histórico e o produto apenas deixa de aparecer para venda.`;
+    if (!confirm(pergunta)) return;
+    const rota = permanent ? `/api/products/${productId}?permanent=true` : `/api/products/${productId}`;
+    await send(rota, "DELETE", null, permanent ? "Produto excluído do cadastro." : "Produto removido do cardápio.");
+  }
+
+  // --------------------------------------------------------- complementos
+
+  function editAddon(addonId) {
+    const addon = state.addons.find((row) => row.id === addonId);
+    if (!addon) return;
+    const form = document.getElementById("addon-form");
+    form.reset();
+    populateAddonInventory();
+    form.elements.addon_id.value = addon.id;
+    form.elements.name.value = addon.name;
+    setSelectValue(form.elements.inventory_id, addon.inventory_id);
+    form.elements.quantity.value = addon.quantity;
+    form.elements.price.value = addon.price;
+    form.elements.category.value = addon.category || "Complemento";
+    form.elements.active.checked = addon.active !== false;
+    document.getElementById("addon-delete").hidden = false;
+    refreshAddonPreview();
+    setText("#addon-modal-title", `Editar ${addon.name}`);
+    openDialog("addon-modal");
+  }
+
+  async function deleteAddon(addonId) {
+    const addon = state.addons.find((row) => row.id === addonId);
+    if (!addon) return;
+    if (!confirm(`Remover o complemento "${addon.name}"?\n\nSe ele já foi vendido, fica apenas desativado — os pedidos antigos precisam continuar explicando o que saiu do estoque.`)) return;
+    await send(`/api/addons/${addonId}`, "DELETE", null, "Complemento removido.");
+  }
+
+  // ------------------------------------------------------ despesas fixas
+
+  function editRecurring(seriesId) {
+    const serie = state.expenseSeries.find((row) => row.id === seriesId);
+    if (!serie) return;
+    const form = document.getElementById("recurring-form");
+    form.reset();
+    form.elements.series_id.value = serie.id;
+    form.elements.description.value = serie.description;
+    form.elements.category.value = serie.category;
+    form.elements.amount.value = serie.amount;
+    form.elements.day.value = serie.day;
+    form.elements.repeat_until.value = serie.ends_on || "";
+    document.getElementById("recurring-stop").hidden = !serie.active;
+    setText(
+      "#recurring-preview",
+      serie.active
+        ? `Já lançou ${serie.released} mês(es).${serie.next_due ? ` Próximo vencimento em ${formatDate(serie.next_due)}.` : ""}`
+        : `Parou de repetir. Os ${serie.released} mês(es) lançados continuam no histórico.`,
+    );
+    setText("#recurring-modal-title", `Editar ${serie.description}`);
+    openDialog("recurring-modal");
+  }
+
+  async function submitRecurring(event) {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    const payload = {
+      description: form.get("description"),
+      category: form.get("category"),
+      amount: Number(form.get("amount")),
+      day: Number(form.get("day")),
+    };
+    // Só envia o fim quando ele existe: mandar vazio apagaria o "sem fim previsto".
+    if (form.get("repeat_until")) payload.repeat_until = form.get("repeat_until");
+    await send(`/api/expenses/recurring/${form.get("series_id")}`, "PATCH", payload, "Regra atualizada. Vale para os próximos meses.");
+  }
+
+  async function stopRecurring(seriesId) {
+    const serie = state.expenseSeries.find((row) => row.id === seriesId);
+    if (!serie) return;
+    if (!confirm(`Parar de lançar "${serie.description}" todo mês?\n\nOs ${serie.released} mês(es) já lançados continuam no histórico. O custo fixo da projeção cai ${currency.format(serie.amount)}.`)) return;
+    await send(`/api/expenses/recurring/${seriesId}`, "DELETE", null, "Não será mais lançada nos próximos meses.");
   }
 
   // --------------------------------------------------------------- canais
@@ -546,7 +646,7 @@
         </section>
         <section class="dossier-section">
           <p class="section-label">Estrutura e ponto de equilíbrio</p>
-          <p class="formula-note">Despesas fixas do mês: <b>${currency.format(data.fixed.monthly)}</b> em ${data.fixed.expenses} lançamento${data.fixed.expenses === 1 ? "" : "s"}. Rateio: ${escapeHtml(data.fixed.basis)}.</p>
+          <p class="formula-note">Despesas fixas do mês: <b>${currency.format(data.fixed.monthly)}</b> em ${data.fixed.expenses} lançamento${data.fixed.expenses === 1 ? "" : "s"}${data.fixed.partial ? " <b>(mês ainda aberto)</b>" : ""}. Base: ${escapeHtml(data.fixed.expense_basis)}. Rateio: ${escapeHtml(data.fixed.basis)}.</p>
           <p class="formula-note">${escapeHtml(data.breakeven.note)}</p>
         </section>
       </div>
@@ -924,6 +1024,13 @@
     if (name === "product") {
       document.getElementById("product-id").value = "";
       setText("#product-modal-title", "Novo produto");
+    }
+    if (name === "addon") {
+      document.getElementById("addon-form").reset();
+      document.getElementById("addon-id").value = "";
+      document.getElementById("addon-form").elements.active.checked = true;
+      document.getElementById("addon-delete").hidden = true;
+      setText("#addon-modal-title", "Novo complemento");
     }
     if (name === "channel") {
       document.getElementById("channel-form").reset();

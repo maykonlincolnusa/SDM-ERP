@@ -4,6 +4,8 @@ const state = {
   inventory: [],
   orders: [],
   expenses: [],
+  expenseSeries: [],
+  operating: null,
   media: [],
   mediaSummary: null,
   consumption: null,
@@ -12,7 +14,14 @@ const state = {
   selectedMediaId: null,
   mediaObjectUrl: null,
   cart: new Map(),
+  // Complementos escolhidos por linha do carrinho: produto -> (complemento -> porções
+  // por unidade). Fica fora de `cart` para o passo a passo de quantidade continuar
+  // sendo um número simples na hora de somar o pedido.
+  cartAddons: new Map(),
+  addons: [],
+  crossing: null,
   period: 7,
+  operatingPeriod: 30,
   channels: [],
   channelPerformance: null,
   salesDay: null,
@@ -58,6 +67,10 @@ async function init() {
   document.getElementById("period-select").addEventListener("change", async (event) => {
     state.period = Number(event.target.value);
     await loadDashboard();
+  });
+  document.getElementById("finance-period").addEventListener("change", async (event) => {
+    state.operatingPeriod = Number(event.target.value);
+    await loadOperatingResult();
   });
   document.getElementById("order-search").addEventListener("input", renderOrders);
   document.getElementById("closing-date").addEventListener("change", async (event) => {
@@ -163,15 +176,19 @@ function setMobileNavigation(open) {
 async function loadAll() {
   setRefreshing(true);
   try {
-    const [config, dashboard, consumption, forecast, products, inventory, orders, expenses, mediaSummary, media, channels, channelPerformance, lines, salesDay, growth, planning, couriers, deliveries, deliveryPerformance, catalogs, history] = await Promise.all([
+    const [config, dashboard, consumption, crossing, forecast, products, addons, inventory, orders, expenses, expenseSeries, operating, mediaSummary, media, channels, channelPerformance, lines, salesDay, growth, planning, couriers, deliveries, deliveryPerformance, catalogs, history] = await Promise.all([
       api("/api/config"),
       api(`/api/dashboard?days=${state.period}`),
       api(`/api/inventory/consumption?days=${state.period}`),
+      api(`/api/inventory/crossing?days=${state.operatingPeriod}`),
       api("/api/forecast?horizon=7"),
       api("/api/products"),
+      api("/api/addons"),
       api("/api/inventory"),
       api("/api/orders"),
       api("/api/expenses"),
+      api("/api/expenses/recurring"),
+      api(`/api/finance/operating?days=${state.operatingPeriod}`),
       api("/api/media/summary"),
       api("/api/media"),
       api("/api/channels"),
@@ -188,11 +205,15 @@ async function loadAll() {
     ]);
     state.dashboard = dashboard;
     state.consumption = consumption;
+    state.crossing = crossing;
     state.forecast = forecast;
     state.products = products;
+    state.addons = addons;
     state.inventory = inventory;
     state.orders = orders;
     state.expenses = expenses;
+    state.expenseSeries = expenseSeries;
+    state.operating = operating;
     state.mediaSummary = mediaSummary;
     state.media = media;
     state.channels = channels;
@@ -217,16 +238,35 @@ async function loadAll() {
 
 async function loadDashboard() {
   try {
-    const [dashboard, consumption] = await Promise.all([
+    const [dashboard, consumption, operating] = await Promise.all([
       api(`/api/dashboard?days=${state.period}`),
       api(`/api/inventory/consumption?days=${state.period}`),
+      api(`/api/finance/operating?days=${state.operatingPeriod}`),
     ]);
     state.dashboard = dashboard;
     state.consumption = consumption;
+    state.operating = operating;
     renderDashboard();
     renderConsumption();
+    renderFinance();
   } catch (error) {
     toast(error.message, "error");
+  }
+}
+
+async function loadOperatingResult() {
+  try {
+    const [operating, crossing] = await Promise.all([
+      api(`/api/finance/operating?days=${state.operatingPeriod}`),
+      api(`/api/inventory/crossing?days=${state.operatingPeriod}`),
+    ]);
+    state.operating = operating;
+    state.crossing = crossing;
+    state.expenseSeries = await api("/api/expenses/recurring");
+    renderFinance();
+    renderCrossing();
+  } catch (error) {
+    toast(error.message || "Não foi possível calcular o resultado operacional.", "error");
   }
 }
 
@@ -236,10 +276,12 @@ function renderAll() {
   renderOrders();
   renderInventory();
   renderConsumption();
+  renderCrossing();
   renderPlanning();
   renderForecast();
   renderFinance();
   renderProducts();
+  renderAddons();
   renderChannelsView();
   renderDelivery();
   renderBrand();
@@ -393,6 +435,7 @@ function renderInventory() {
     const dot = negative ? "negative" : low ? "low" : uncounted ? "idle" : "";
     const minimum = item.minimum_quantity ? `${number.format(item.minimum_quantity)} ${escapeHtml(item.unit)}` : "não definido";
     return `<tr><td><strong>${escapeHtml(item.name)}</strong></td><td>${escapeHtml(item.category)}</td><td><span class="stock-level"><i class="stock-dot ${dot}"></i><span class="stock-amount">${number.format(item.quantity)} ${escapeHtml(item.unit)}</span></span></td><td class="muted-value">${minimum}</td><td>${currency.format(item.unit_cost)}</td><td><span class="status-pill ${status.css}">${status.label}</span></td><td class="align-right"><div class="row-actions">
+      <button class="row-action" type="button" data-purchase-item="${item.id}" title="Registrar compra"><i data-lucide="shopping-cart"></i></button>
       <button class="row-action" type="button" data-count-item="${item.id}" title="Contagem física"><i data-lucide="clipboard-check"></i></button>
       <button class="row-action" type="button" data-edit-inventory="${item.id}" title="Editar cadastro"><i data-lucide="pencil"></i></button>
       <button class="row-action danger" type="button" data-delete-inventory="${item.id}" title="Excluir insumo"><i data-lucide="trash-2"></i></button>
@@ -424,14 +467,14 @@ function renderConsumption() {
   }).join("") : emptyRow(6, "Nenhuma saída de insumo no período.");
 
   document.getElementById("movement-body").innerHTML = data.history.length ? data.history.map((row) => {
-    const labels = { venda: "Venda", perda: "Baixa", entrada: "Entrada", estorno: "Estorno" };
-    const css = { venda: "success", perda: "pending", entrada: "neutral", estorno: "neutral" };
+    const labels = { venda: "Venda", perda: "Baixa", entrada: "Entrada", compra: "Compra", estorno: "Estorno" };
+    const css = { venda: "success", perda: "pending", entrada: "neutral", compra: "success", estorno: "neutral" };
     const signal = row.quantity_delta > 0 ? "+" : "";
     // Baixa de venda só muda pelo pedido: oferecer o lápis aqui separaria o
     // pedido do estoque, que é exatamente o que a edição precisa evitar.
     const actions = row.editable
       ? `<div class="row-actions"><button class="row-action" type="button" data-edit-movement="${row.id}" title="Corrigir lançamento"><i data-lucide="pencil"></i></button></div>`
-      : `<span class="muted-value" title="Esta baixa veio de uma venda. Edite o pedido para corrigi-la.">—</span>`;
+      : `<span class="muted-value" title="Esta movimentação é vinculada a uma venda, estorno ou compra.">—</span>`;
     return `<tr><td class="muted-value">${escapeHtml(formatDateTime(row.created_at))}</td><td><strong>${escapeHtml(row.name)}</strong></td><td><span class="status-pill ${css[row.kind]}">${labels[row.kind]}</span></td><td>${escapeHtml(row.reason)}</td><td class="align-right"><strong>${signal}${number.format(row.quantity_delta)} ${escapeHtml(row.unit)}</strong></td><td class="align-right">${actions}</td></tr>`;
   }).join("") : emptyRow(6, "Nenhuma movimentação registrada.");
   refreshIcons();
@@ -505,6 +548,38 @@ function renderForecast() {
       <tr><td><strong>${escapeHtml(i.name)}</strong></td><td class="align-right">${number.format(i.needed)} ${escapeHtml(i.unit)}</td><td class="align-right muted-value">${number.format(i.in_stock)} ${escapeHtml(i.unit)}</td><td class="align-right">${i.to_buy > 0 ? `<strong>${number.format(i.to_buy)} ${escapeHtml(i.unit)}</strong>` : '<span class="muted-value">tem o bastante</span>'}</td><td class="align-right">${i.cost > 0 ? currency.format(i.cost) : "—"}</td></tr>`).join("") : emptyRow(5, "Sem receita cadastrada para converter a previsão em insumo.");
   }
 
+  const projecao = compra.operating_projection;
+  const painelOperacional = document.getElementById("fc-operating-panel");
+  painelOperacional.hidden = !projecao;
+  if (projecao) {
+    const aviso = document.getElementById("fc-operating-warning");
+    if (!projecao.available) {
+      setText("#fc-operating-profit", "Aguardando dados");
+      setText("#fc-operating-note", projecao.reason);
+      aviso.innerHTML = "";
+      document.getElementById("fc-operating-body").innerHTML = emptyRow(3, "O lucro previsto precisa de todas as vendas com itens e ficha tecnica.");
+      document.getElementById("fc-operating-product-body").innerHTML = emptyRow(5, "Sem cruzamento completo de produto e insumo.");
+    } else {
+      const totals = projecao.totals;
+      setText("#fc-operating-profit", currency.format(totals.operating_profit));
+      setText("#fc-operating-note", `${projecao.note} Cobertura dos itens vendidos: ${number.format(projecao.coverage)}%.`);
+      const rows = [
+        ["Receita de produtos", "Unidades previstas x preco atual do cardapio", totals.product_revenue, "positive"],
+        ["Frete previsto", "Media dos fretes nos pedidos do historico", totals.freight_revenue, "positive"],
+        ["Taxas de canal", "Taxa media efetiva dos canais", -totals.channel_fees, "negative"],
+        ["Custo dos insumos", "Receita de cada produto x custo atual de polpa, frutas, caldas e complementos", -totals.cost_of_goods, "negative"],
+        ["Custo de entregas", "Media dos fechamentos de entregadores", -totals.delivery_cost, "negative"],
+        ["Despesas operacionais", "Media das despesas, sem comprar insumo duas vezes", -totals.operating_expenses, "negative"],
+        ["Lucro operacional previsto", `Margem operacional: ${number.format(totals.operating_margin)}%`, totals.operating_profit, totals.operating_profit >= 0 ? "positive" : "negative"],
+      ];
+      document.getElementById("fc-operating-body").innerHTML = rows.map(([name, note, value, css]) => `
+        <tr><td><strong>${escapeHtml(name)}</strong></td><td class="muted-value">${escapeHtml(note)}</td><td class="align-right ${css}"><strong>${currency.format(value)}</strong></td></tr>`).join("");
+      document.getElementById("fc-operating-product-body").innerHTML = projecao.products.map((product) => `
+        <tr><td><strong>${escapeHtml(product.name)}</strong></td><td class="align-right">${number.format(product.units)}</td><td class="align-right">${currency.format(product.revenue)}</td><td class="align-right muted-value">${currency.format(product.cost)}</td><td class="align-right ${product.contribution >= 0 ? "positive" : "negative"}"><strong>${currency.format(product.contribution)}</strong></td></tr>`).join("");
+      aviso.innerHTML = (projecao.warnings || []).map((warning) => `<p class="panel-note">${escapeHtml(warning)}</p>`).join("");
+    }
+  }
+
   const painelProduto = document.getElementById("fc-product-panel");
   painelProduto.hidden = f.product_trend.length === 0;
   document.getElementById("fc-product-body").innerHTML = f.product_trend.map((p) => {
@@ -516,14 +591,39 @@ function renderForecast() {
 }
 
 function renderFinance() {
-  const metrics = state.dashboard?.metrics;
-  if (!metrics) return;
-  const paid = state.expenses.filter(expense => expense.status === "Paga").reduce((sum, expense) => sum + expense.amount, 0);
-  const result = metrics.gross_profit - paid;
-  setText("#finance-result", currency.format(result));
-  setText("#finance-result-copy", result >= 0 ? "Resultado depois das despesas marcadas como pagas." : "As despesas pagas superam a margem do período selecionado.");
-  setText("#finance-revenue", currency.format(metrics.revenue));
-  setText("#finance-cost", currency.format(metrics.revenue - metrics.gross_profit + paid));
+  const report = state.operating;
+  if (!report) return;
+  const totals = report.totals;
+  const result = totals.operating_profit;
+  setText("#finance-result", result === null ? "—" : currency.format(result));
+  setText("#finance-revenue", currency.format(totals.revenue));
+  setText("#finance-cost", currency.format(totals.total_operating_cost));
+  setText("#finance-coverage", `${number.format(report.cost_coverage)}% com custo medido`);
+  const missingCost = totals.revenue_without_cost;
+  const resultCopy = report.complete
+    ? `${result >= 0 ? "Lucro" : "Prejuízo"} operacional de ${currency.format(Math.abs(result))} no período: venda menos taxas, insumos vendidos, perdas, entregas e despesas.`
+    : `Lucro ainda não fechado: ${currency.format(missingCost)} em vendas importadas não têm itens nem custo. O teto do resultado, antes desse custo, é ${currency.format(totals.profit_upper_bound)}.`;
+  setText("#finance-result-copy", resultCopy);
+
+  const rows = [
+    ["Faturamento", "Pedidos concluídos no período", totals.revenue, "positive"],
+    ["Taxas de canal", "Comissões do iFood e demais canais", -totals.channel_fees, "negative"],
+    ["Custo dos produtos vendidos", "Receitas dos produtos × unidades vendidas", -totals.cost_of_goods, "negative"],
+    ["Perdas de estoque", "Quebras, vencimentos e acertos negativos", -totals.inventory_losses, "negative"],
+    ["Custo de entregas", "Pagamentos de turnos e salário rateado", -totals.delivery_cost, "negative"],
+    ["Despesas operacionais", "Despesas do período, exceto compras de insumo", -totals.operating_expenses, "negative"],
+  ];
+  if (totals.inventory_purchase_cash) rows.push(["Compra para estoque", "Sai do caixa, mas só vira custo quando o insumo é vendido", -totals.inventory_purchase_cash, "neutral"]);
+  rows.push([report.complete ? "Lucro operacional" : "Teto antes do custo pendente", report.complete ? "Resultado fechado" : "Ainda falta custo de pedidos importados", report.complete ? result : totals.profit_upper_bound, report.complete ? (result >= 0 ? "positive" : "negative") : "pending"]);
+  document.getElementById("finance-operating-body").innerHTML = rows.map(([name, note, value, css]) => `
+    <tr><td><strong>${escapeHtml(name)}</strong></td><td class="muted-value">${escapeHtml(note)}</td><td class="align-right ${css}"><strong>${value >= 0 && name === "Faturamento" ? "+" : ""}${currency.format(value)}</strong></td></tr>`).join("");
+  const note = report.blockers.length
+    ? report.blockers.join(" ")
+    : `Período de ${formatDate(report.from)} a ${formatDate(report.to)}. Compras de estoque ficam fora desta equação para não duplicar o custo dos insumos.`;
+  setText("#finance-operating-note", note);
+  document.getElementById("finance-product-body").innerHTML = report.products.length ? report.products.map((product) => `
+    <tr><td><strong>${escapeHtml(product.name)}</strong></td><td class="align-right">${number.format(product.units)}</td><td class="align-right">${currency.format(product.revenue)}</td><td class="align-right muted-value">${currency.format(product.cost)}</td><td class="align-right ${product.contribution >= 0 ? "positive" : "negative"}"><strong>${currency.format(product.contribution)}</strong></td><td class="align-right"><strong>${number.format(product.margin)}%</strong></td></tr>`).join("") : emptyRow(6, "Nenhum produto com itens detalhados no período.");
+
   const pending = state.expenses.filter(expense => expense.status === "Pendente").sort((a, b) => a.due_date.localeCompare(b.due_date));
   setText("#pending-count", `${pending.length} pendente${pending.length === 1 ? "" : "s"}`);
   document.getElementById("due-list").innerHTML = pending.length ? pending.slice(0, 4).map(expense => {
@@ -537,7 +637,36 @@ function renderFinance() {
       <button class="row-action danger" type="button" data-delete-expense="${expense.id}" title="Excluir despesa"><i data-lucide="trash-2"></i></button>
     </div></td></tr>
   `).join("") : emptyRow(6, "Nenhuma despesa cadastrada.");
+  renderExpenseSeries();
   refreshIcons();
+}
+
+// As regras que se repetem. É o que separa "quanto gastei" de "quanto vou
+// gastar": o custo fixo do mês que vem está aqui, não numa média do passado.
+function renderExpenseSeries() {
+  const rows = state.expenseSeries || [];
+  const ativas = rows.filter((row) => row.active);
+  const mensal = ativas.reduce((soma, row) => soma + row.amount, 0);
+  setText("#recurring-total", ativas.length
+    ? `${currency.format(mensal)} por mês em ${ativas.length} despesa${ativas.length === 1 ? "" : "s"}`
+    : "nenhuma cadastrada");
+  document.getElementById("recurring-body").innerHTML = rows.length ? rows.map((row) => `
+    <tr class="${row.active ? "" : "cancelled-row"}">
+      <td><strong>${escapeHtml(row.description)}</strong>${row.active ? "" : '<span class="row-note">parou de repetir</span>'}</td>
+      <td>${escapeHtml(row.category)}</td>
+      <td class="align-right"><strong>${currency.format(row.amount)}</strong></td>
+      <td>${row.next_due ? escapeHtml(formatDate(row.next_due)) : '<span class="muted-value">—</span>'}</td>
+      <td class="muted-value">${row.ends_on ? escapeHtml(monthLabel(row.ends_on)) : "sem fim previsto"}</td>
+      <td class="align-right">${number.format(row.released)}</td>
+      <td class="align-right"><div class="row-actions">
+        <button class="row-action" type="button" data-edit-recurring="${row.id}" title="Editar regra"><i data-lucide="pencil"></i></button>
+        ${row.active ? `<button class="row-action danger" type="button" data-stop-recurring="${row.id}" title="Parar de repetir"><i data-lucide="ban"></i></button>` : ""}
+      </div></td>
+    </tr>`).join("") : emptyRow(7, "Nenhuma despesa se repete ainda. Use <b>Custo fixo</b> no topo da tela para lançar aluguel, equipe e contas de uma vez — sem essa base a projeção de lucro não fecha.");
+}
+
+function monthLabel(month) {
+  return `${month.slice(5)}/${month.slice(0, 4)}`;
 }
 
 function renderProducts() {
@@ -552,12 +681,122 @@ function renderProducts() {
         <button class="text-button" type="button" data-dossier="${product.id}"><i data-lucide="file-search"></i>Dossiê de custo</button>
         <span class="row-actions">
           <button class="row-action" type="button" data-edit-product="${product.id}" title="Editar produto"><i data-lucide="pencil"></i></button>
-          <button class="row-action danger" type="button" data-delete-product="${product.id}" title="Tirar do cardápio"><i data-lucide="trash-2"></i></button>
+          ${product.active === false
+            ? `<button class="row-action danger" type="button" data-purge-product="${product.id}" title="Excluir do cadastro"><i data-lucide="trash-2"></i></button>`
+            : `<button class="row-action danger" type="button" data-delete-product="${product.id}" title="Tirar do cardápio"><i data-lucide="trash-2"></i></button>`}
         </span>
       </div>
     </article>
   `).join("");
   refreshIcons();
+}
+
+function renderAddons() {
+  const rows = state.addons;
+  document.getElementById("addon-body").innerHTML = rows.length ? rows.map((addon) => {
+    const semInsumo = !addon.inventory_name;
+    return `<tr class="${addon.active === false ? "cancelled-row" : ""}">
+      <td><strong>${escapeHtml(addon.name)}</strong><span class="row-note">${escapeHtml(addon.category || "Complemento")}${addon.active === false ? " · fora do balcão" : ""}</span></td>
+      <td>${semInsumo ? '<span class="status-pill danger">insumo removido</span>' : escapeHtml(addon.inventory_name)}</td>
+      <td class="align-right">${number.format(addon.quantity)} ${escapeHtml(addon.unit || "")}</td>
+      <td class="align-right">${addon.price ? currency.format(addon.price) : '<span class="muted-value">cortesia</span>'}</td>
+      <td class="align-right muted-value">${currency.format(addon.cost)}</td>
+      <td class="align-right ${addon.contribution >= 0 ? "positive" : "negative"}"><strong>${currency.format(addon.contribution)}</strong></td>
+      <td class="align-right">${addon.portions_available === null || addon.portions_available === undefined ? "—" : `${number.format(addon.portions_available)} porções`}</td>
+      <td class="align-right"><div class="row-actions">
+        <button class="row-action" type="button" data-edit-addon="${addon.id}" title="Editar complemento"><i data-lucide="pencil"></i></button>
+        <button class="row-action danger" type="button" data-delete-addon="${addon.id}" title="Remover complemento"><i data-lucide="trash-2"></i></button>
+      </div></td></tr>`;
+  }).join("") : emptyRow(8, "Nenhum complemento cadastrado. Sem eles, a banana e a calda saem da prateleira sem aparecer no custo do pedido.");
+  refreshIcons();
+}
+
+// Cruzamento: o que cada venda tirou do estoque, separando o que a receita
+// mandou tirar do que o cliente pediu por cima.
+function renderCrossing() {
+  const data = state.crossing;
+  if (!data) return;
+  const totals = data.totals;
+  setText("#crossing-coverage", `${number.format(data.coverage)}% das vendas com itens`);
+  setText("#crossing-note", `${data.orders} pedido(s) e ${number.format(data.units)} unidades nos últimos ${data.period_days} dias. ${data.note}`);
+  setText("#crossing-recipe-cost", currency.format(totals.recipe_cost));
+  setText("#crossing-addon-cost", currency.format(totals.addon_cost));
+  setText("#crossing-addon-revenue", totals.addon_revenue
+    ? `${currency.format(totals.addon_revenue)} cobrados — sobra ${currency.format(totals.addon_contribution)}`
+    : "nenhum complemento cobrado no período");
+  setText("#crossing-cost-share", `${number.format(totals.cost_share)}%`);
+  setText("#crossing-contribution", `sobra ${currency.format(totals.contribution)} depois do insumo`);
+
+  document.getElementById("crossing-body").innerHTML = data.items.length ? data.items.map((item) => `
+    <tr>
+      <td><strong>${escapeHtml(item.name)}</strong><span class="row-note">${escapeHtml(item.category)}</span></td>
+      <td class="align-right">${number.format(item.recipe_quantity)} ${escapeHtml(item.unit)}</td>
+      <td class="align-right">${item.addon_quantity ? `${number.format(item.addon_quantity)} ${escapeHtml(item.unit)} <span class="muted-value">(${number.format(item.addon_share)}%)</span>` : '<span class="muted-value">—</span>'}</td>
+      <td class="align-right"><strong>${number.format(item.quantity)} ${escapeHtml(item.unit)}</strong></td>
+      <td class="align-right">${currency.format(item.cost)}</td>
+      <td class="align-right ${item.in_stock < 0 ? "negative" : "muted-value"}">${number.format(item.in_stock)} ${escapeHtml(item.unit)}</td>
+      <td>${item.days_left === null ? '<span class="muted-value">—</span>' : `<span class="status-pill ${item.days_left <= 3 ? "danger" : item.days_left <= 7 ? "pending" : "success"}">${number.format(item.days_left)} dias</span>`}</td>
+    </tr>`).join("") : emptyRow(7, "Nenhuma venda com itens detalhados no período.");
+
+  document.getElementById("crossing-addon-body").innerHTML = data.addons.length ? data.addons.map((addon) => `
+    <tr>
+      <td><strong>${escapeHtml(addon.name)}</strong>${addon.registered ? "" : '<span class="row-note">fora do cadastro atual</span>'}</td>
+      <td class="align-right">${number.format(addon.portions)}</td>
+      <td class="align-right muted-value">${number.format(addon.quantity)} ${escapeHtml(addon.unit || "")}</td>
+      <td class="align-right">${currency.format(addon.revenue)}</td>
+      <td class="align-right muted-value">${currency.format(addon.cost)}</td>
+      <td class="align-right ${addon.contribution >= 0 ? "positive" : "negative"}"><strong>${currency.format(addon.contribution)}</strong></td>
+      <td class="align-right">${number.format(addon.attach)}% dos copos</td>
+    </tr>`).join("") : emptyRow(7, "Nenhum complemento marcado nas vendas do período.");
+
+  document.getElementById("crossing-blockers").innerHTML = data.blockers.map((blocker) => `
+    <article class="insight-item attention"><i data-lucide="circle-alert"></i><div><strong>Falta para fechar a conta</strong><p>${escapeHtml(blocker)}</p></div></article>`).join("");
+  refreshIcons();
+}
+
+function populateAddonInventory() {
+  const select = document.getElementById("addon-inventory");
+  const current = select.value;
+  select.innerHTML = state.inventory.map((item) => `<option value="${item.id}">${escapeHtml(item.name)} (${escapeHtml(item.unit)} · ${currency.format(item.unit_cost)})</option>`).join("");
+  if (current && state.inventory.some((item) => item.id === current)) select.value = current;
+  refreshAddonPreview();
+}
+
+function refreshAddonPreview() {
+  const form = document.getElementById("addon-form");
+  const item = state.inventory.find((row) => row.id === form.elements.inventory_id.value);
+  const portion = Number(form.elements.quantity.value || 0);
+  const price = Number(form.elements.price.value || 0);
+  setText("#addon-unit-hint", item ? `Quanto sai do estoque por porção, em ${item.unit}.` : "Quanto sai do estoque por porção.");
+  if (!item || portion <= 0) {
+    setText("#addon-preview", "");
+    return;
+  }
+  const cost = item.unit_cost * portion;
+  const cabem = item.quantity > 0 ? Math.floor(item.quantity / portion) : 0;
+  setText(
+    "#addon-preview",
+    `Cada porção custa ${currency.format(cost)} e deixa ${currency.format(price - cost)}. O saldo de hoje (${number.format(item.quantity)} ${item.unit}) dá para ${number.format(cabem)} porções.`,
+  );
+}
+
+async function submitAddon(event) {
+  event.preventDefault();
+  const form = new FormData(event.currentTarget);
+  const addonId = form.get("addon_id");
+  const payload = {
+    name: form.get("name"),
+    inventory_id: form.get("inventory_id"),
+    quantity: Number(form.get("quantity")),
+    price: Number(form.get("price") || 0),
+    category: form.get("category") || "Complemento",
+    active: form.get("active") === "on",
+  };
+  if (addonId) {
+    await submitData(`/api/addons/${addonId}`, payload, "Complemento atualizado.", "PATCH");
+    return;
+  }
+  await submitData("/api/addons", payload, "Complemento cadastrado.");
 }
 
 function renderMedia() {
@@ -622,10 +861,13 @@ function bindModals() {
 function openModal(name) {
   const dialog = document.getElementById(`${name}-modal`);
   if (!dialog) return;
-  if (name === "sale") { state.cart.clear(); renderSaleProducts(); renderCart(); }
+  if (name === "sale") { clearCart(); renderSaleProducts(); renderCart(); }
+  if (name === "addon") { document.getElementById("addon-form").reset(); populateAddonInventory(); }
   if (name === "adjust") populateAdjustSelect();
+  if (name === "purchase") { openPurchase(); return; }
   if (name === "product") { document.getElementById("product-form").reset(); document.getElementById("recipe-lines").innerHTML = ""; addRecipeLine(); }
-  if (name === "expense") { document.getElementById("expense-form").reset(); document.querySelector('#expense-form [name="due_date"]').value = dateInputValue(new Date()); }
+  if (name === "fixed-cost") renderFixedCostSetup();
+  if (name === "expense") { document.getElementById("expense-form").reset(); document.querySelector('#expense-form [name="due_date"]').value = dateInputValue(new Date()); toggleExpenseRepeat(); }
   dialog.showModal();
   document.getElementById("modal-backdrop").hidden = false;
   refreshIcons();
@@ -647,9 +889,41 @@ function bindForms() {
     renderSaleProducts();
     renderCart();
   });
+  // O complemento é escolhido na linha já montada: clicar percorre 0, 1, 2, 3
+  // porções e volta a zero. Um passo a passo por complemento encheria o resumo
+  // do pedido de botões e deixaria a venda mais lenta que o balcão.
+  document.getElementById("cart-lines").addEventListener("click", (event) => {
+    const chip = event.target.closest("[data-addon-toggle]");
+    if (!chip) return;
+    const { productId, addonToggle } = chip.dataset;
+    const chosen = state.cartAddons.get(productId) || new Map();
+    const portions = ((chosen.get(addonToggle) || 0) + 1) % 4;
+    if (portions) chosen.set(addonToggle, portions); else chosen.delete(addonToggle);
+    if (chosen.size) state.cartAddons.set(productId, chosen); else state.cartAddons.delete(productId);
+    renderCart();
+  });
   document.getElementById("sale-form").addEventListener("submit", submitSale);
+  document.getElementById("addon-form").addEventListener("submit", submitAddon);
+  document.getElementById("addon-inventory").addEventListener("change", refreshAddonPreview);
+  document.querySelector('#addon-form [name="quantity"]').addEventListener("input", refreshAddonPreview);
+  document.querySelector('#addon-form [name="price"]').addEventListener("input", refreshAddonPreview);
   document.getElementById("expense-form").addEventListener("submit", submitExpense);
+  // O campo "repetir até" só existe quando a despesa se repete.
+  document.getElementById("expense-recurring").addEventListener("change", toggleExpenseRepeat);
+  document.getElementById("fixed-cost-form").addEventListener("submit", submitFixedCost);
+  document.getElementById("fixed-cost-list").addEventListener("input", refreshFixedCostSum);
+  document.getElementById("import-anota-report").addEventListener("click", () => document.getElementById("anota-report-file").click());
+  document.getElementById("anota-report-file").addEventListener("change", importAnotaReport);
   document.getElementById("adjust-form").addEventListener("submit", submitAdjustment);
+  document.getElementById("purchase-form").addEventListener("submit", submitPurchase);
+  document.getElementById("purchase-inventory").addEventListener("change", (event) => {
+    const item = state.inventory.find((row) => row.id === event.target.value);
+    const form = document.getElementById("purchase-form");
+    form.elements.purchase_unit.value = item?.unit || "";
+    form.elements.units_per_purchase.value = 1;
+    refreshPurchasePreview();
+  });
+  ["purchase_quantity", "purchase_unit", "units_per_purchase", "purchase_unit_cost"].forEach((field) => document.querySelector(`#purchase-form [name="${field}"]`).addEventListener("input", refreshPurchasePreview));
   document.getElementById("inventory-form").addEventListener("submit", submitInventory);
   document.getElementById("product-form").addEventListener("submit", submitProduct);
   document.getElementById("add-recipe-line").addEventListener("click", addRecipeLine);
@@ -683,10 +957,53 @@ function renderSaleProducts() {
   refreshIcons();
 }
 
+function clearCart() {
+  state.cart.clear();
+  state.cartAddons.clear();
+}
+
+// Preço e custo da linha com o que foi marcado por cima. O custo aparece na
+// venda de propósito: é o momento em que dá para perceber que a terceira dose
+// de calda comeu a margem do copo.
+function cartLine(productId, quantity) {
+  const product = state.products.find((row) => row.id === productId);
+  if (!product) return null;
+  const chosen = state.cartAddons.get(productId) || new Map();
+  const addons = [...chosen.entries()]
+    .map(([id, portions]) => ({ addon: state.addons.find((row) => row.id === id), portions }))
+    .filter((row) => row.addon);
+  const addonsPrice = addons.reduce((sum, row) => sum + row.addon.price * row.portions, 0);
+  const addonsCost = addons.reduce((sum, row) => sum + row.addon.cost * row.portions, 0);
+  return {
+    product,
+    quantity,
+    addons,
+    total: (product.price + addonsPrice) * quantity,
+    cost: (product.cost + addonsCost) * quantity,
+  };
+}
+
 function renderCart() {
-  const rows = [...state.cart.entries()].map(([id, quantity]) => ({ product: state.products.find(product => product.id === id), quantity })).filter(row => row.product);
-  const total = rows.reduce((sum, row) => sum + row.product.price * row.quantity, 0);
-  document.getElementById("cart-lines").innerHTML = rows.length ? rows.map(row => `<div class="cart-line"><span>${row.quantity}x ${escapeHtml(row.product.name)}</span><strong>${currency.format(row.quantity * row.product.price)}</strong></div>`).join("") : '<p class="empty-state">Selecione um produto ao lado.</p>';
+  const rows = [...state.cart.entries()].map(([id, quantity]) => cartLine(id, quantity)).filter(Boolean);
+  const total = rows.reduce((sum, row) => sum + row.total, 0);
+  const available = state.addons.filter((addon) => addon.active !== false);
+  document.getElementById("cart-hint").hidden = !rows.length || !available.length;
+  document.getElementById("cart-lines").innerHTML = rows.length ? rows.map(row => {
+    const chosen = state.cartAddons.get(row.product.id) || new Map();
+    const chips = available.map((addon) => {
+      const portions = chosen.get(addon.id) || 0;
+      const price = addon.price ? ` ${currency.format(addon.price)}` : "";
+      return `<button type="button" class="addon-chip ${portions ? "active" : ""}" data-addon-toggle="${addon.id}" data-product-id="${row.product.id}" title="${escapeHtml(addon.inventory_name || "")}">${escapeHtml(addon.name)}${portions > 1 ? ` ×${portions}` : ""}${portions ? "" : price}</button>`;
+    }).join("");
+    const detail = row.addons.length
+      ? `<small class="cart-line-addons">${row.addons.map((item) => `${escapeHtml(item.addon.name)}${item.portions > 1 ? ` ×${item.portions}` : ""}`).join(", ")}</small>`
+      : "";
+    return `<div class="cart-line-block">
+      <div class="cart-line"><span>${row.quantity}x ${escapeHtml(row.product.name)}${detail}</span><strong>${currency.format(row.total)}</strong></div>
+      ${chips ? `<div class="addon-chips">${chips}</div>` : ""}
+      <small class="cart-line-cost">Custo do insumo nesta linha: ${currency.format(row.cost)}</small>
+    </div>`;
+  }).join("") : '<p class="empty-state">Selecione um produto ao lado.</p>';
   setText("#cart-total", currency.format(total));
 }
 
@@ -695,7 +1012,11 @@ async function submitSale(event) {
   if (!state.cart.size) return toast("Selecione pelo menos um produto.", "error");
   const form = new FormData(event.currentTarget);
   const payload = {
-    items: [...state.cart.entries()].map(([product_id, quantity]) => ({ product_id, quantity })),
+    items: [...state.cart.entries()].map(([product_id, quantity]) => ({
+      product_id,
+      quantity,
+      addons: [...(state.cartAddons.get(product_id) || new Map()).entries()].map(([addon_id, portions]) => ({ addon_id, quantity: portions })),
+    })),
     channel: form.get("channel"),
     payment_method: form.get("payment_method"),
     customer_name: form.get("customer_name") || null,
@@ -717,6 +1038,73 @@ async function submitSale(event) {
   await submitData("/api/orders", payload, "Venda registrada e estoque atualizado.");
 }
 
+// As contas que uma loja de acai paga todo mes, no vocabulario da propria
+// planilha da loja. Nao ha de onde importar isso — o aluguel esta no contrato,
+// nao num relatorio — entao o que da para fazer e reduzir a digitacao a uma
+// tela so, uma vez.
+const CUSTO_FIXO_SUGERIDO = [
+  { description: "Funcionários", category: "Equipe", day: 5, note: "Folha do mês, incluindo encargos." },
+  { description: "Entregadores", category: "Entregas", day: 5, note: "Só o valor fixo mensal. Diária e valor por entrega já entram pelo módulo de Entregas — lançar aqui contaria duas vezes." },
+  { description: "Aluguel", category: "Fixo", day: 5, note: "Ponto comercial." },
+  { description: "MEI", category: "Taxas", day: 20, note: "DAS mensal." },
+  { description: "Luz", category: "Fixo", day: 10, note: "Use a média das últimas contas." },
+  { description: "Internet", category: "Fixo", day: 10, note: "" },
+  { description: "Segurança", category: "Fixo", day: 10, note: "Alarme, monitoramento." },
+  { description: "Marketing", category: "Marketing", day: 5, note: "Material, brindes, parcerias." },
+  { description: "Tráfego pago", category: "Marketing", day: 5, note: "Anúncios no Instagram e no Google." },
+  { description: "Anota Aí", category: "Taxas", day: 5, note: "Mensalidade da plataforma." },
+];
+
+function renderFixedCostSetup() {
+  const registradas = new Map(
+    (state.expenseSeries || [])
+      .filter((row) => row.active)
+      .map((row) => [row.description.toLocaleLowerCase("pt-BR"), row]),
+  );
+  document.querySelector('#fixed-cost-form [name="starts_on"]').value = new Date().toISOString().slice(0, 7);
+  document.getElementById("fixed-cost-list").innerHTML = CUSTO_FIXO_SUGERIDO.map((linha, indice) => {
+    const existente = registradas.get(linha.description.toLocaleLowerCase("pt-BR"));
+    const nota = existente ? "Já se repete todo mês. Edite pela tabela de despesas fixas." : linha.note;
+    return `<div class="fixed-cost-row ${existente ? "done" : ""}">
+      <span class="fixed-cost-name">${escapeHtml(linha.description)}${nota ? `<small>${escapeHtml(nota)}</small>` : ""}</span>
+      <label>Valor por mês<input type="number" min="0" step="0.01" placeholder="0,00" data-fixed-index="${indice}" value="${existente ? existente.amount : ""}" ${existente ? "disabled" : ""} /></label>
+      <label>Dia<input type="number" min="1" max="31" value="${existente ? existente.day : linha.day}" data-fixed-day="${indice}" ${existente ? "disabled" : ""} /></label>
+    </div>`;
+  }).join("");
+  refreshFixedCostSum();
+}
+
+function refreshFixedCostSum() {
+  const total = [...document.querySelectorAll("#fixed-cost-list [data-fixed-index]")]
+    .reduce((soma, campo) => soma + (Number(campo.value) || 0), 0);
+  setText("#fixed-cost-sum", currency.format(total));
+}
+
+async function submitFixedCost(event) {
+  event.preventDefault();
+  const items = [];
+  document.querySelectorAll("#fixed-cost-list [data-fixed-index]").forEach((campo) => {
+    if (campo.disabled) return;
+    const valor = Number(campo.value);
+    if (!(valor > 0)) return;
+    const linha = CUSTO_FIXO_SUGERIDO[Number(campo.dataset.fixedIndex)];
+    const dia = document.querySelector(`#fixed-cost-list [data-fixed-day="${campo.dataset.fixedIndex}"]`);
+    items.push({ description: linha.description, category: linha.category, amount: valor, day: Number(dia.value) || linha.day });
+  });
+  if (!items.length) return toast("Preencha ao menos uma conta para montar o custo fixo.", "error");
+  await submitData("/api/expenses/recurring", {
+    items,
+    starts_on: document.querySelector('#fixed-cost-form [name="starts_on"]').value || null,
+    past_paid: document.querySelector('#fixed-cost-form [name="past_paid"]').checked,
+  }, `${items.length} despesa(s) passam a ser lançadas todo mês.`);
+}
+
+function toggleExpenseRepeat() {
+  const repete = document.getElementById("expense-recurring").checked;
+  document.querySelectorAll(".expense-repeat-field").forEach((campo) => { campo.hidden = !repete; });
+  if (!repete) document.querySelector('#expense-form [name="repeat_until"]').value = "";
+}
+
 async function submitExpense(event) {
   event.preventDefault();
   const form = new FormData(event.currentTarget);
@@ -725,6 +1113,8 @@ async function submitExpense(event) {
   delete payload.expense_id;
   payload.amount = Number(payload.amount);
   payload.recurring = form.get("recurring") === "on";
+  // String vazia viraria um mês inválido no servidor; ausente significa "sem fim".
+  payload.repeat_until = payload.recurring && payload.repeat_until ? payload.repeat_until : null;
   if (expenseId) {
     await submitData(`/api/expenses/${expenseId}`, payload, "Despesa atualizada.", "PATCH");
     return;
@@ -732,11 +1122,95 @@ async function submitExpense(event) {
   await submitData("/api/expenses", payload, "Despesa lançada no financeiro.");
 }
 
+async function importAnotaReport(event) {
+  const file = event.target.files?.[0];
+  if (!file) return;
+  const body = new FormData();
+  body.append("report", file);
+  try {
+    const result = await api("/api/imports/anota-ai", { method: "POST", body });
+    const detail = `${number.format(result.criados)} pedido(s) importado(s)${result.ignorados ? `; ${number.format(result.ignorados)} já existia(m)` : ""}.`;
+    toast(detail, "success");
+    await loadAll();
+  } catch (error) {
+    toast(error.message || "Não foi possível importar o relatório da Anota AI.", "error");
+  } finally {
+    event.target.value = "";
+  }
+}
+
 async function submitAdjustment(event) {
   event.preventDefault();
   const form = new FormData(event.currentTarget);
   const inventoryId = form.get("inventory_id");
   await submitData(`/api/inventory/${inventoryId}/adjust`, { quantity_delta: Number(form.get("quantity_delta")), reason: form.get("reason") }, "Saldo de estoque atualizado.");
+}
+
+function openPurchase(inventoryId = "") {
+  const form = document.getElementById("purchase-form");
+  form.reset();
+  const select = document.getElementById("purchase-inventory");
+  select.innerHTML = state.inventory.map((item) => `<option value="${item.id}">${escapeHtml(item.name)} (${number.format(item.quantity)} ${escapeHtml(item.unit)})</option>`).join("");
+  if (inventoryId && state.inventory.some((item) => item.id === inventoryId)) select.value = inventoryId;
+  const item = state.inventory.find((row) => row.id === select.value);
+  form.elements.purchase_unit.value = item?.unit || "";
+  form.elements.units_per_purchase.value = 1;
+  form.elements.received_at.value = localDateTimeValue(new Date());
+  form.elements.received_at.max = localDateTimeValue(new Date());
+  refreshPurchasePreview();
+  openDialog("purchase-modal");
+}
+
+function refreshPurchasePreview() {
+  const form = document.getElementById("purchase-form");
+  const item = state.inventory.find((row) => row.id === form.elements.inventory_id.value);
+  const current = document.getElementById("purchase-current");
+  const preview = document.getElementById("purchase-preview");
+  if (!item) {
+    current.value = "";
+    preview.textContent = "";
+    return;
+  }
+  current.value = `${number.format(item.quantity)} ${item.unit} a ${currency.format(item.unit_cost)}/${item.unit}`;
+  document.getElementById("purchase-content-hint").textContent = `Quanto há em cada unidade, em ${item.unit}.`;
+  const purchaseQuantity = Number(form.elements.purchase_quantity.value || 0);
+  const unitsPerPurchase = Number(form.elements.units_per_purchase.value || 0);
+  const purchaseUnitCost = Number(form.elements.purchase_unit_cost.value || 0);
+  if (!purchaseQuantity || !unitsPerPurchase || !purchaseUnitCost) {
+    preview.textContent = "Informe a quantidade, o conteúdo e o custo da unidade comprada.";
+    preview.className = "modal-result full neutral";
+    return;
+  }
+  const quantity = purchaseQuantity * unitsPerPurchase;
+  const unitCost = purchaseUnitCost / unitsPerPurchase;
+  const resultingQuantity = item.quantity + quantity;
+  const resultingCost = item.quantity > 0
+    ? ((item.quantity * item.unit_cost) + (quantity * unitCost)) / resultingQuantity
+    : unitCost;
+  const resetCost = item.quantity <= 0
+    ? " Como o saldo atual não é positivo, o custo da compra passa a ser a nova referência."
+    : "";
+  const purchaseUnit = form.elements.purchase_unit.value.trim() || "unidade";
+  preview.textContent = `${number.format(purchaseQuantity)} ${purchaseUnit}${purchaseQuantity === 1 ? "" : "s"} = ${number.format(quantity)} ${item.unit} · ${currency.format(purchaseUnitCost)} por ${purchaseUnit} · total: ${currency.format(purchaseQuantity * purchaseUnitCost)} · saldo: ${number.format(resultingQuantity)} ${item.unit} · custo médio: ${currency.format(resultingCost)}.${resetCost}`;
+  preview.className = "modal-result full positive";
+}
+
+async function submitPurchase(event) {
+  event.preventDefault();
+  const form = new FormData(event.currentTarget);
+  const inventoryId = form.get("inventory_id");
+  const receivedAt = form.get("received_at");
+  const payload = {
+    purchase_quantity: Number(form.get("purchase_quantity")),
+    purchase_unit: form.get("purchase_unit"),
+    units_per_purchase: Number(form.get("units_per_purchase")),
+    purchase_unit_cost: Number(form.get("purchase_unit_cost")),
+    supplier: form.get("supplier") || null,
+    invoice_number: form.get("invoice_number") || null,
+    received_at: receivedAt || null,
+    note: form.get("note") || null,
+  };
+  await submitData(`/api/inventory/${inventoryId}/purchases`, payload, "Compra recebida e estoque atualizado.");
 }
 
 async function submitInventory(event) {
@@ -965,6 +1439,11 @@ function paymentLabel(value) { return { Credito: "Crédito", Debito: "Débito", 
 function formatDate(value) { return new Intl.DateTimeFormat("pt-BR", { day: "2-digit", month: "short", year: "numeric" }).format(new Date(`${value.slice(0, 10)}T12:00:00`)); }
 function formatDateTime(value) { return new Intl.DateTimeFormat("pt-BR", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" }).format(new Date(value)); }
 function dateInputValue(date) { return date.toISOString().slice(0, 10); }
+
+function localDateTimeValue(date) {
+  const local = new Date(date.getTime() - date.getTimezoneOffset() * 60_000);
+  return local.toISOString().slice(0, 16);
+}
 function emptyRow(columns, message) { return `<tr><td colspan="${columns}" class="muted-value">${message}</td></tr>`; }
 function setText(selector, value) { const element = document.querySelector(selector); if (element) element.textContent = value; }
 function escapeHtml(value) { return String(value ?? "").replace(/[&<>'"]/g, char => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" }[char])); }
@@ -1133,6 +1612,9 @@ function renderBrand() {
     <tr class="${row.active ? "" : "cancelled-row"}"><td><strong>${escapeHtml(row.name)}</strong></td><td><span class="line-pill line-${escapeHtml(String(row.line).toLowerCase())}">${escapeHtml(row.line)}</span></td><td class="align-right">${currency.format(row.price)}</td><td class="align-right muted-value">${currency.format(row.cost)}</td><td class="align-right"><strong>${number.format(row.margin)}%</strong></td><td class="muted-value">${(row.claims || []).length ? escapeHtml(row.claims.join(", ")) : "—"}</td><td class="align-right"><div class="row-actions">
       <button class="row-action" type="button" data-dossier="${row.id}" title="Dossiê de custo"><i data-lucide="file-search"></i></button>
       <button class="row-action" type="button" data-edit-product="${row.id}" title="Editar produto"><i data-lucide="pencil"></i></button>
+      ${row.active
+        ? `<button class="row-action danger" type="button" data-delete-product="${row.id}" title="Tirar do cardápio"><i data-lucide="trash-2"></i></button>`
+        : `<button class="row-action danger" type="button" data-purge-product="${row.id}" title="Excluir do cadastro"><i data-lucide="trash-2"></i></button>`}
     </div></td></tr>`).join("") : emptyRow(7, "Nenhum produto nesta linha.");
   refreshIcons();
 }
@@ -1517,6 +1999,7 @@ const HISTORY_ENTITIES = {
   order: { label: "Pedido", icon: "receipt-text" },
   product: { label: "Produto", icon: "cup-soda" },
   inventory: { label: "Insumo", icon: "package-search" },
+  purchase: { label: "Compra", icon: "shopping-cart" },
   movement: { label: "Movimentação", icon: "clipboard-list" },
   expense: { label: "Despesa", icon: "wallet-cards" },
   channel: { label: "Canal", icon: "route" },
@@ -1600,6 +2083,8 @@ function fieldLabel(field) {
     due_date: "vencimento", description: "descrição", category: "categoria",
     unit_cost: "custo", minimum_quantity: "mínimo", quantity_delta: "quantidade",
     reason: "motivo", price: "preço", line: "linha", name: "nome", active: "ativo",
+    "quantidade comprada": "quantidade comprada", "conteúdo por unidade": "conteúdo por unidade", "custo da compra": "custo da compra", "custo da unidade comprada": "custo da unidade comprada", "custo médio": "custo médio",
+    fornecedor: "fornecedor", documento: "documento",
     fee_percent: "taxa %", fee_fixed: "taxa fixa", fee_per_delivery: "por entrega",
     commission_percent: "comissão", daily_rate: "diária", monthly_salary: "salário",
     deliveries: "entregas", freight_total: "frete", worked: "diária contada",

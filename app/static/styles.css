@@ -540,12 +540,58 @@ td strong.negative { color: var(--orange-ink); }
 .cart-total strong { color: var(--ink); font-size: 22px; font-weight: 700; letter-spacing: -0.01em; }
 .empty-state { margin: 12px 0; color: var(--faint); font-size: 12px; }
 
+/* Complementos no resumo do pedido. A escolha fica na propria linha porque e
+   la que o cliente decide: "esse com banana e calda". Chip em vez de select
+   porque o balcao escolhe com o polegar, nao com o teclado. */
+.cart-line-block { padding-bottom: 10px; border-bottom: 1px solid var(--line-strong); }
+.cart-line-block .cart-line { border-bottom: none; padding-bottom: 4px; }
+.cart-line-addons { display: block; margin-top: 2px; color: var(--accent); font-size: 10.5px; font-weight: 600; }
+.cart-line-cost { display: block; margin-top: 6px; color: var(--faint); font-size: 10.5px; font-weight: 500; }
+.addon-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 2px; }
+.addon-chip {
+  min-height: 30px; padding: 0 10px; border: 1px solid var(--line-strong); border-radius: var(--r-pill);
+  background: var(--paper); color: var(--ink-soft); font-size: 11px; font-weight: 600; cursor: pointer;
+}
+.addon-chip:hover { color: var(--ink); }
+.addon-chip.active { border-color: var(--accent); background: var(--accent); color: var(--on-accent); }
+.cart-hint { display: block; margin: 8px 0 0; }
+
+/* Tres cartoes num painel que ja esta dentro de outra secao: a grade de quatro
+   colunas do topo da pagina apertaria demais os numeros aqui. */
+.metric-grid.compact { grid-template-columns: repeat(3, minmax(0, 1fr)); margin: 4px 0 16px; }
+.metric-grid.compact .metric-card { min-height: 0; padding: 16px; }
+.metric-grid.compact .metric-card strong { font-size: 21px; }
+
 .form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 15px; margin-top: 16px; }
 .modal-body > .form-grid { margin-top: 0; }
 .form-grid label { display: grid; gap: 6px; color: var(--muted); font-size: 12px; font-weight: 600; }
 .form-grid input, .form-grid select { width: 100%; height: var(--tap-size); padding: 0 14px; border: 1px solid transparent; border-radius: var(--r-md); background: var(--canvas); color: var(--ink); font-weight: 500; transition: background 140ms ease, box-shadow 140ms ease; }
 .form-grid input:focus, .form-grid select:focus { background: var(--paper); box-shadow: 0 0 0 3px var(--accent-soft), inset 0 0 0 1px var(--accent); }
 .form-grid .full { grid-column: 1 / -1; }
+/* Campo que so existe quando a despesa se repete: sem esta regra o display:grid
+   do label venceria o atributo hidden e o campo ficaria visivel do mesmo jeito. */
+.form-grid label[hidden] { display: none; }
+
+/* Montagem do custo fixo. Uma linha por conta que chega todo mes: o trabalho
+   inteiro cabe numa tela, e nao em dez idas ao formulario de despesa. */
+.fixed-cost-start { display: grid; gap: 6px; max-width: 260px; margin-bottom: 18px; color: var(--muted); font-size: 12px; font-weight: 600; }
+.fixed-cost-start input { height: var(--tap-size); padding: 0 14px; border: 1px solid transparent; border-radius: var(--r-md); background: var(--canvas); color: var(--ink); font-weight: 500; }
+.fixed-cost-paid { margin: -8px 0 18px; }
+.fixed-cost-list { display: grid; gap: 8px; }
+.fixed-cost-row { display: grid; grid-template-columns: minmax(0, 1fr) 132px 82px; align-items: center; gap: 12px; padding: 10px 14px; border: 1px solid var(--line); border-radius: var(--r-md); }
+.fixed-cost-row.done { border-style: dashed; opacity: .72; }
+.fixed-cost-name { display: grid; gap: 2px; color: var(--ink); font-size: 13px; font-weight: 600; }
+.fixed-cost-name small { color: var(--faint); font-size: 10.5px; font-weight: 500; line-height: 1.35; }
+.fixed-cost-row label:not(.fixed-cost-name) { display: grid; gap: 4px; color: var(--muted); font-size: 10.5px; font-weight: 600; }
+.fixed-cost-row input { height: 38px; padding: 0 10px; border: 1px solid transparent; border-radius: var(--r-sm, 8px); background: var(--canvas); color: var(--ink); font-weight: 500; }
+.fixed-cost-row input:disabled { color: var(--faint); }
+.fixed-cost-total { display: flex; align-items: baseline; justify-content: space-between; margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--line-strong); }
+.fixed-cost-total span { color: var(--ink-soft); font-size: 13px; font-weight: 600; }
+.fixed-cost-total strong { color: var(--ink); font-size: 22px; font-weight: 700; letter-spacing: -.01em; }
+@media (max-width: 640px) {
+  .fixed-cost-row { grid-template-columns: minmax(0, 1fr) 92px; }
+  .fixed-cost-name { grid-column: 1 / -1; }
+}
 
 .recipe-fieldset { min-width: 0; margin: 0; padding: 14px; border: 1px solid var(--line); border-radius: var(--r-md); }
 .recipe-fieldset legend { padding: 0 6px; color: var(--ink-soft); font-size: 11px; font-weight: 700; }
@@ -609,6 +655,7 @@ td strong.negative { color: var(--orange-ink); }
   .workspace { grid-column: 2; }
   .topbar, .view { padding-right: 30px; padding-left: 30px; }
   .metric-grid, .inventory-summary, .media-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+  .metric-grid.compact { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .dashboard-grid { grid-template-columns: 1fr; }
   .sales-panel { min-height: 290px; }
   .lower-grid { grid-template-columns: 1fr 1fr; }

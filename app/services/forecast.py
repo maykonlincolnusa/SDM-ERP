@@ -16,6 +16,10 @@ from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from statistics import fmean
 from typing import Any
+import unicodedata
+
+from app.services.delivery import DeliveryService
+from app.services.erp import ERPService
 
 # O Brasil nao usa mais horario de verao desde 2019, entao o fuso da loja e um
 # deslocamento fixo. Isso evita depender do pacote tzdata no Windows e mantem o
@@ -110,7 +114,7 @@ class ForecastService:
             "trend": tendencia,
             "accuracy": erro,
             "daily_forecast": self._projetar(ultimo, horizon, media_diaria, pesos, tendencia, centro, dias_cobertos - 1),
-            "purchase_plan": self._plano_de_compra(unidades_por_dia, nomes_produto, serie, pesos, tendencia, horizon),
+            "purchase_plan": self._plano_de_compra(unidades_por_dia, nomes_produto, serie, pesos, tendencia, horizon, pedidos),
             "product_trend": self._tendencia_por_produto(unidades_por_dia, nomes_produto, serie),
             "explanation": {
                 "formula": "previsão do dia = média diária × peso do dia da semana × tendência",
@@ -259,6 +263,7 @@ class ForecastService:
         pesos: list[dict[str, Any]],
         tendencia: dict[str, Any],
         horizonte: int,
+        pedidos: list[dict[str, Any]],
     ) -> dict[str, Any]:
         """Converte a previsao de venda em insumo, pela ficha tecnica ja cadastrada."""
 
@@ -284,6 +289,11 @@ class ForecastService:
         produtos = self.store.list("products")
         receitas = {p["id"]: p.get("recipe", []) for p in produtos}
         estoque = {i["id"]: i for i in self.store.list("inventory")}
+        # Quantas porcoes de cada complemento saem por unidade vendida. Sem
+        # isso a previsao pede polpa e copo e esquece banana e calda, que sao
+        # justamente os insumos que somem primeiro num sabado cheio.
+        complementos = self._complementos_por_produto(pedidos)
+        cadastro_complementos = {addon["id"]: addon for addon in self.store.list("addons")}
 
         previsao_produto = []
         necessidade: dict[str, float] = defaultdict(float)
@@ -299,6 +309,10 @@ class ForecastService:
             })
             for linha in receitas.get(produto_id, []):
                 necessidade[linha["inventory_id"]] += linha["quantity"] * previsto
+            for addon_id, taxa in complementos.get(produto_id, {}).items():
+                addon = cadastro_complementos.get(addon_id)
+                if addon:
+                    necessidade[addon["inventory_id"]] += addon["quantity"] * taxa * previsto
 
         itens = []
         for inventory_id, quantidade in sorted(necessidade.items(), key=lambda kv: kv[1], reverse=True):
@@ -323,8 +337,226 @@ class ForecastService:
             "products": previsao_produto[:8],
             "items": itens,
             "total_cost": round(sum(i["cost"] for i in itens), 2),
+            # A compra sugerida responde "quanto preciso repor". O resultado
+            # operacional usa outra conta: custo de todo o insumo que sera
+            # consumido, inclusive o que ja esta no estoque hoje.
+            "operating_projection": self._projecao_operacional(
+                previsao_produto, produtos, estoque, pedidos, horizonte, dias,
+                complementos, cadastro_complementos,
+            ),
             "note": f"Projeção para os próximos {horizonte} dias, já descontando o saldo atual do estoque.",
         }
+
+    @staticmethod
+    def _complementos_por_produto(pedidos: list[dict[str, Any]]) -> dict[str, dict[str, float]]:
+        """Porcoes de cada complemento por unidade vendida do produto.
+
+        E a taxa de adesao observada: se em 100 copos de 500 ml sairam 62
+        porcoes de banana, cada copo previsto carrega 0,62 porcao. Projetar por
+        taxa, e nao por "quantas bananas sairam por dia", faz o complemento
+        crescer junto com o produto que o carrega, que e como ele se comporta.
+        """
+
+        unidades: dict[str, float] = defaultdict(float)
+        porcoes: dict[str, dict[str, float]] = defaultdict(lambda: defaultdict(float))
+        for pedido in pedidos:
+            for item in pedido.get("items", []):
+                unidades[item["product_id"]] += item["quantity"]
+                for escolhido in item.get("addons", []):
+                    porcoes[item["product_id"]][escolhido["addon_id"]] += escolhido["quantity"] * item["quantity"]
+        return {
+            produto: {addon: total / unidades[produto] for addon, total in mapa.items()}
+            for produto, mapa in porcoes.items()
+            if unidades.get(produto)
+        }
+
+    def _projecao_operacional(
+        self,
+        previsao_produto: list[dict[str, Any]],
+        produtos: list[dict[str, Any]],
+        estoque: dict[str, dict[str, Any]],
+        pedidos: list[dict[str, Any]],
+        horizonte: int,
+        dias_historico: int,
+        complementos: dict[str, dict[str, float]] | None = None,
+        cadastro_complementos: dict[str, dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        """Traduz o mix previsto em uma DRE futura, sem chutar itens ausentes.
+
+        A previsao de demanda ja sabe quantas unidades de cada produto devem
+        sair. Aqui cada unidade percorre a ficha tecnica: 500 ml com banana e
+        calda, por exemplo, baixa polpa, banana e calda nas quantidades da
+        receita. Assim o custo nao e uma porcentagem generica do faturamento.
+        """
+
+        receita_historica = sum(float(pedido.get("total", 0)) for pedido in pedidos)
+        pedidos_com_itens = [pedido for pedido in pedidos if pedido.get("items")]
+        receita_com_itens = sum(float(pedido.get("total", 0)) for pedido in pedidos_com_itens)
+        cobertura = round(receita_com_itens / receita_historica * 100, 1) if receita_historica else 100.0
+        if receita_com_itens < receita_historica:
+            faltante = receita_historica - receita_com_itens
+            return {
+                "available": False,
+                "coverage": cobertura,
+                "reason": (
+                    f"{self._reais(faltante)} das vendas historicas nao tem os itens vendidos. "
+                    "Importe ou registre os itens da Anota AI antes de projetar o lucro sem lacunas."
+                ),
+                "products": [],
+            }
+
+        produtos_por_id = {produto["id"]: produto for produto in produtos}
+        complementos = complementos or {}
+        cadastro_complementos = cadastro_complementos or {}
+        linhas: list[dict[str, Any]] = []
+        sem_receita: list[str] = []
+        for previsto in previsao_produto:
+            produto = produtos_por_id.get(previsto["product_id"])
+            if not produto or not produto.get("recipe"):
+                sem_receita.append(previsto["name"])
+                continue
+            custo_unitario = sum(
+                estoque.get(item["inventory_id"], {}).get("unit_cost", 0) * item["quantity"]
+                for item in produto["recipe"]
+            )
+            unidades = previsto["forecast_units"]
+            # O complemento entra pelas duas pontas: cobra do cliente e come
+            # insumo. Deixar so o custo subestimaria a margem; so a receita, o
+            # contrario. Preco e custo sao os de hoje, como no resto da conta.
+            receita_complementos = custo_complementos = 0.0
+            for addon_id, taxa in complementos.get(produto["id"], {}).items():
+                addon = cadastro_complementos.get(addon_id)
+                if not addon:
+                    continue
+                porcoes = taxa * unidades
+                receita_complementos += addon["price"] * porcoes
+                custo_complementos += estoque.get(addon["inventory_id"], {}).get("unit_cost", 0) * addon["quantity"] * porcoes
+            receita = produto["price"] * unidades + receita_complementos
+            custo = custo_unitario * unidades + custo_complementos
+            linhas.append({
+                "product_id": produto["id"], "name": produto["name"],
+                "units": round(unidades, 1), "revenue": round(receita, 2),
+                "addons_revenue": round(receita_complementos, 2),
+                "addons_cost": round(custo_complementos, 2),
+                "cost": round(custo, 2), "contribution": round(receita - custo, 2),
+            })
+
+        if sem_receita:
+            return {
+                "available": False,
+                "coverage": cobertura,
+                "reason": (
+                    "Cadastre a ficha tecnica de " + ", ".join(sem_receita[:3]) +
+                    " para cruzar essas vendas com polpa, frutas, caldas e os demais insumos."
+                ),
+                "products": linhas,
+            }
+
+        # Vendas de produto nao incluem o frete. O frete e projetado pela media
+        # dos pedidos de entrega e o pagamento do entregador pela media dos
+        # fechamentos, para cada um entrar uma unica vez na equacao.
+        frete_historico = sum(float(pedido.get("delivery_fee") or 0) for pedido in pedidos)
+        entrega = DeliveryService(self.store).performance(dias_historico)["totals"]
+        frete_previsto = frete_historico / dias_historico * horizonte
+        custo_entrega = entrega["payout"] / dias_historico * horizonte
+        tem_entrega_sem_fechamento = frete_historico > 0 and entrega["payout"] == 0
+
+        canais = {canal["name"]: canal for canal in self.store.list("channels")}
+        taxas_historicas = 0.0
+        taxa_estimativa = False
+        for pedido in pedidos:
+            taxa = pedido.get("channel_fee")
+            if taxa is None:
+                canal = canais.get(pedido.get("channel"), {})
+                taxa = pedido["total"] * (canal.get("fee_percent", 0) / 100) + canal.get("fee_fixed", 0)
+                taxa_estimativa = True
+            taxas_historicas += float(taxa)
+        taxa_media = taxas_historicas / receita_historica if receita_historica else 0.0
+
+        # Despesa fixa e a unica coisa desta conta que nao precisa ser
+        # estimada: o aluguel do mes que vem esta escrito no contrato. Ela vem
+        # da regra cadastrada, e so o que sobra — a despesa avulsa — segue a
+        # media do historico.
+        custo_fixo_mensal = ERPService(self.store).recurring_monthly_cost()["total"]
+        despesa_fixa = custo_fixo_mensal / 30 * horizonte
+        despesas_variaveis = self._despesas_variaveis(dias_historico)
+        receita_produtos = sum(linha["revenue"] for linha in linhas)
+        custo_produtos = sum(linha["cost"] for linha in linhas)
+        receita_total = receita_produtos + frete_previsto
+        taxas_canais = receita_total * taxa_media
+        despesas = despesa_fixa + despesas_variaveis / dias_historico * horizonte
+        lucro = receita_total - custo_produtos - taxas_canais - custo_entrega - despesas
+        avisos: list[str] = []
+        if taxa_estimativa:
+            avisos.append("Parte da taxa de canal usa a tabela atual, pois alguns pedidos antigos nao guardaram a taxa do dia.")
+        if tem_entrega_sem_fechamento:
+            avisos.append("Ha frete em pedidos, mas nenhum fechamento de entregador no historico; o custo projetado de entrega ficou zerado.")
+        if not custo_fixo_mensal:
+            avisos.append(
+                "Nenhuma despesa fixa cadastrada como recorrente. Aluguel, energia e equipe entram na projecao "
+                "pela media do historico, que muda de valor conforme a janela escolhida."
+            )
+
+        return {
+            "available": True,
+            "coverage": cobertura,
+            "horizon_days": horizonte,
+            "products": sorted(linhas, key=lambda linha: linha["revenue"], reverse=True),
+            "warnings": avisos,
+            "note": (
+                "Preco e ficha tecnica atuais x unidades previstas, com os complementos na taxa de adesao observada; "
+                "despesas, frete e custos de entrega seguem a media do historico usado."
+            ),
+            "totals": {
+                "product_revenue": round(receita_produtos, 2),
+                "addons_revenue": round(sum(linha["addons_revenue"] for linha in linhas), 2),
+                "addons_cost": round(sum(linha["addons_cost"] for linha in linhas), 2),
+                "freight_revenue": round(frete_previsto, 2),
+                "revenue": round(receita_total, 2),
+                "cost_of_goods": round(custo_produtos, 2),
+                "channel_fees": round(taxas_canais, 2),
+                "delivery_cost": round(custo_entrega, 2),
+                "operating_expenses": round(despesas, 2),
+                # Separadas porque tem confiabilidade diferente: a fixa vem do
+                # contrato, a variavel vem de media.
+                "fixed_expenses": round(despesa_fixa, 2),
+                "variable_expenses": round(despesas - despesa_fixa, 2),
+                "fixed_monthly_cost": round(custo_fixo_mensal, 2),
+                "operating_profit": round(lucro, 2),
+                "operating_margin": round(lucro / receita_total * 100, 1) if receita_total else 0.0,
+            },
+        }
+
+    def _despesas_variaveis(self, dias: int) -> float:
+        """Despesa que nao se repete todo mes, e por isso so pode vir da media.
+
+        A fixa sai fora daqui porque ja entra na projecao pelo valor do
+        contrato. Somar as duas contaria o aluguel duas vezes; usar so a media
+        faria o custo fixo mudar de tamanho conforme a janela escolhida.
+        Despesa de insumo tambem fica fora: ela ja esta no custo da receita.
+        """
+
+        inicio = datetime.now(FUSO_LOJA).date() - timedelta(days=dias - 1)
+        fim = datetime.now(FUSO_LOJA).date()
+        total = 0.0
+        for despesa in self.store.list("expenses"):
+            if despesa.get("series_id"):
+                continue
+            try:
+                vencimento = datetime.fromisoformat(str(despesa["due_date"])[:10]).date()
+            except (KeyError, TypeError, ValueError):
+                continue
+            if not inicio <= vencimento <= fim:
+                continue
+            categoria = self._texto_normalizado(despesa.get("category", ""))
+            if "insumo" in categoria or "compra" in categoria:
+                continue
+            total += float(despesa.get("amount", 0))
+        return total
+
+    @staticmethod
+    def _texto_normalizado(valor: Any) -> str:
+        return unicodedata.normalize("NFKD", str(valor)).encode("ascii", "ignore").decode("ascii").lower()
 
     def _tendencia_por_produto(self, unidades: dict[Any, dict[str, float]], nomes: dict[str, str], serie: list[tuple[Any, float]]) -> list[dict[str, Any]]:
         """Compara a primeira metade do periodo com a segunda, produto a produto."""

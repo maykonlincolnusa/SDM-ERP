@@ -17,6 +17,7 @@ from app.schemas import (
     InventoryAdjustment,
     InventoryCount,
     InventoryItemUpdate,
+    InventoryPurchase,
     MovementUpdate,
     OrderCreate,
     OrderLine,
@@ -152,6 +153,111 @@ def test_count_without_difference_writes_no_movement(service):
     assert len(service.store.list("inventory_movements")) == antes, "contagem que confere nao e movimento"
 
 
+def test_purchase_adds_stock_recalculates_average_cost_and_keeps_the_receipt(service):
+    """Compra tem quantidade e custo proprio; nao pode virar ajuste generico."""
+
+    compra = service.register_inventory_purchase(
+        "granola",
+        InventoryPurchase(
+            quantity=3.2,
+            unit_cost=35.0,
+            supplier="Cerealista Central",
+            invoice_number="NF 1234",
+            note="Caixas conferidas",
+        ),
+    )
+
+    item = next(row for row in service.inventory() if row["id"] == "granola")
+    assert item["quantity"] == 7.0
+    assert item["unit_cost"] == pytest.approx((3.8 * 27 + 3.2 * 35) / 7, abs=0.0001)
+    assert compra["total_cost"] == 112.0
+    assert compra["supplier"] == "Cerealista Central"
+    assert compra["invoice_number"] == "NF 1234"
+
+    movimento = next(row for row in service.consumption(7)["history"] if row["id"] == compra["id"])
+    assert movimento["kind"] == "compra"
+    assert movimento["cost"] == 112.0
+    assert movimento["editable"] is False
+
+
+def test_purchase_after_negative_balance_uses_received_cost_as_new_reference(service):
+    item = service.store.get("inventory", "banana")
+    item["quantity"] = -1.0
+    item["unit_cost"] = 6.9
+    service.store.put("inventory", item["id"], item)
+
+    service.register_inventory_purchase("banana", InventoryPurchase(quantity=4.0, unit_cost=9.5))
+
+    banana = next(row for row in service.inventory() if row["id"] == "banana")
+    assert (banana["quantity"], banana["unit_cost"]) == (3.0, 9.5)
+
+
+def test_purchase_keeps_the_bought_unit_and_converts_it_to_stock_unit(service):
+    compra = service.register_inventory_purchase(
+        "granola",
+        InventoryPurchase(
+            purchase_quantity=2,
+            purchase_unit="caixa",
+            units_per_purchase=5,
+            purchase_unit_cost=120,
+        ),
+    )
+
+    granola = next(row for row in service.inventory() if row["id"] == "granola")
+    assert compra["quantity_delta"] == 10
+    assert compra["unit_cost"] == 24
+    assert compra["total_cost"] == 240
+    assert (compra["purchase_quantity"], compra["purchase_unit"], compra["units_per_purchase"]) == (2, "caixa", 5)
+    assert granola["quantity"] == 13.8
+    assert granola["unit_cost"] == pytest.approx((3.8 * 27 + 10 * 24) / 13.8, abs=0.0001)
+
+
+def test_purchase_cannot_be_edited_as_a_generic_adjustment_or_be_future_dated(service):
+    compra = service.register_inventory_purchase("banana", InventoryPurchase(quantity=1.0, unit_cost=9.5))
+
+    with pytest.raises(ValueError, match="compra"):
+        service.update_movement(compra["id"], MovementUpdate(quantity_delta=2.0))
+    with pytest.raises(ValueError, match="compra.*futuro"):
+        service.register_inventory_purchase(
+            "banana",
+            InventoryPurchase(quantity=1.0, unit_cost=9.5, received_at=datetime.now(timezone.utc) + timedelta(days=1)),
+        )
+
+
+def test_operating_result_uses_sold_units_costs_and_operating_expenses(service):
+    service.create_expense(ExpenseCreate(
+        description="Compra de polpa", category="Insumos", amount=120.0,
+        due_date=datetime.now(timezone(timedelta(hours=-3))).date().isoformat(), status="Paga",
+    ))
+    report = service.operating_result(days=30, delivery_cost=42.0)
+    totals = report["totals"]
+
+    assert report["complete"] is True
+    assert report["products"] and sum(row["units"] for row in report["products"]) > 0
+    assert totals["operating_profit"] == pytest.approx(
+        totals["revenue"] - totals["cost_of_goods"] - totals["channel_fees"]
+        - totals["inventory_losses"] - totals["delivery_cost"] - totals["operating_expenses"],
+        abs=0.01,
+    )
+    assert totals["inventory_purchase_expenses"] > 0, "compra de insumo nao pode ser somada de novo na DRE"
+
+
+def test_operating_result_refuses_to_call_anota_revenue_without_items_profit(service):
+    now = datetime.now(timezone.utc).isoformat()
+    service.store.put("orders", "anota-sem-itens", {
+        "id": "anota-sem-itens", "number": "anota-42", "created_at": now,
+        "channel": "Balcao", "source": "anota-ai", "payment_method": "Pix",
+        "total": 50.0, "cost": None, "status": "Concluido", "items": [],
+    })
+
+    report = service.operating_result(days=30)
+
+    assert report["complete"] is False
+    assert report["totals"]["operating_profit"] is None
+    assert report["totals"]["revenue_without_cost"] == 50.0
+    assert report["blockers"]
+
+
 def test_correcting_a_manual_movement_fixes_the_balance(service):
     """Lancou 5 kg quando foram 0,5: a correcao devolve a diferenca ao saldo."""
 
@@ -264,6 +370,30 @@ def test_product_with_sales_is_deactivated_instead_of_deleted(service):
 
     assert resultado["status"] == "inativado"
     assert service.store.get("products", "acai-300")["active"] is False
+
+
+def test_product_already_out_of_the_menu_asks_for_the_permanent_delete(service):
+    """Repetir o mesmo clique nao pode parecer que nao fez nada."""
+
+    service.create_order(OrderCreate(items=[OrderLine(product_id="acai-300", quantity=1)]))
+    service.delete_product("acai-300")
+
+    with pytest.raises(ValueError, match="exclusão definitiva"):
+        service.delete_product("acai-300")
+
+
+def test_sold_product_can_be_purged_and_the_order_keeps_its_snapshot(service):
+    """O historico sobrevive porque cada linha guarda nome, preco e custo do dia."""
+
+    pedido = service.create_order(OrderCreate(items=[OrderLine(product_id="acai-300", quantity=2)]))
+
+    resultado = service.delete_product("acai-300", permanent=True)
+
+    assert resultado["status"] == "excluido"
+    assert service.store.get("products", "acai-300") is None
+    gravado = next(row for row in service.orders() if row["id"] == pedido["id"])
+    assert gravado["items"][0]["name"] == "Açaí 300 ml"
+    assert gravado["total"] == pedido["total"]
 
 
 def test_product_edit_keeps_untouched_fields(service):

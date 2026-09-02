@@ -49,17 +49,49 @@ que nao ter edicao.
   denuncia lancamento feito muito depois do fato.
 - **Estoque** — `PATCH /api/inventory/{id}` edita o cadastro, mas nao o saldo.
   Saldo muda por `POST /api/inventory/{id}/count` (contagem fisica: informe o
-  que existe, o sistema calcula a diferenca) ou por ajuste. Assim toda diferenca
-  tem um movimento explicando de onde veio. Insumo usado em receita nao pode ser
-  excluido.
+  que existe, o sistema calcula a diferenca), por `POST
+  /api/inventory/{id}/purchases` (compra recebida: quantidade, unidade comprada,
+  conteudo por unidade, custo, fornecedor, documento e data) ou por ajuste. A
+  compra converte, por exemplo, `2 caixas x 5 kg` para 10 kg e recalcula o custo
+  medio ponderado; o historico continua mostrando as duas caixas. Ajuste fica
+  reservado para perda, quebra, degustacao e outros acertos. Assim toda
+  diferenca tem um movimento explicando de onde veio. Insumo usado em receita
+  ou como porcao de complemento nao pode ser excluido.
 - **Consumo** — `PATCH`/`DELETE /api/inventory/movements/{id}` corrige ou desfaz
   um lancamento manual, acertando o saldo. Baixa de venda e estorno de
   cancelamento sao recusados: eles existem porque um pedido existe, e so mudam
   pelo pedido.
-- **Despesa, produto e canal** — `PATCH` e `DELETE` proprios. Produto com venda
-  no historico e inativado em vez de apagado; canal com venda tambem.
+- **Despesa que se repete** — marcar `recurring` deixou de ser um rotulo e
+  passou a abrir uma serie: o sistema lanca sozinho cada mes que vence, de
+  `starts_on` ate o mes corrente. E idempotente (o id do lancamento e a serie
+  mais o mes), nunca materializa mes futuro, e o mes apagado nao volta na
+  proxima geracao. `GET /api/expenses/recurring` lista as regras,
+  `PATCH /api/expenses/recurring/{id}` muda o que ainda sera lancado — o passado
+  nao se reescreve — e `DELETE` para de repetir mantendo o historico.
+  `GET /api/expenses/fixed-cost` devolve o custo fixo do mes pelas regras: e ele
+  que a projecao de lucro usa, em vez de uma media do passado.
+- **Despesa, produto, complemento e canal** — `PATCH` e `DELETE` proprios.
+  Produto com venda no historico sai em duas etapas: o primeiro `DELETE` apenas
+  tira do cardapio, e `DELETE /api/products/{id}?permanent=true` remove do
+  cadastro. O pedido antigo sobrevive porque cada linha guarda nome, preco e
+  custo do dia da venda; o que se perde e o dossie e a previsao daquele produto,
+  e por isso a segunda etapa e explicita. Complemento e canal com venda sao
+  inativados.
 - **Rastro** — toda alteracao grava em `audit_log` com o que mudou, de que valor
   para qual. `GET /api/audit?entity=&entity_id=`.
+
+### Lucro operacional
+
+`GET /api/finance/operating?days=30` fecha a equacao operacional: faturamento
+menos taxa de canal, custo das receitas efetivamente vendidas, perdas de
+estoque, custo dos entregadores e despesas operacionais no periodo. Compra de
+insumo sai do caixa, mas nao entra duas vezes no lucro: ela vira custo quando o
+insumo e vendido. A tela Financeiro tambem mostra unidades, receita, custo e
+margem por produto.
+
+Pedido importado sem itens nao recebe custo estimado. Enquanto houver esse tipo
+de venda, o resultado aparece como **nao fechado**, com o valor cuja composicao
+ainda falta — um lucro parcialmente calculado poderia parecer melhor do que e.
 
 ### Dia da loja
 
@@ -85,6 +117,61 @@ percentual e taxa fixa. Cada pedido grava `channel_fee`, e
 taxa — que e o numero que responde "vale a pena vender por aqui", diferente do
 faturamento por canal.
 
+### Custo fixo da loja
+
+Aluguel, folha, luz, MEI, mensalidade da plataforma. Nao ha de onde importar
+isso: a planilha `Financeiro 2026.xlsx` tem os nomes certos e os valores em
+branco, e o relatorio da Anota Ai so traz venda. O custo fixo esta no contrato e
+no boleto, e o unico caminho honesto e digita-lo — o que da para fazer e digitar
+**uma vez**.
+
+`POST /api/expenses/recurring` recebe a lista inteira de uma vez e cria uma
+despesa que se repete para cada linha preenchida. A tela (botao **Custo fixo**,
+em Financeiro) ja vem com as contas de uma loja de acai preenchidas como rotulo;
+o gestor so escreve os valores. `starts_on` define o primeiro mes cobrado —
+apontar para o mes de abertura coloca o historico inteiro em dia numa tacada.
+Linha que ja existe como despesa ativa e pulada em vez de duplicada, entao
+reabrir a tela para acrescentar a conta que faltava e seguro.
+
+`past_paid` (marcado por padrao) grava como pagos os meses ja vencidos, que e o
+caso de quem esta colocando o historico em dia; o mes corrente fica pendente de
+qualquer forma. Quem esta cadastrando conta em atraso desmarca.
+
+**Entregador conta uma vez so.** Despesa na categoria Entregas e retirada da DRE
+quando ha fechamento de turno no periodo, porque o que a loja pagou ao entregador
+ja entrou por `delivery_cost`; o valor retirado aparece em `blockers` e em
+`courier_expenses_excluded`. Sem nenhum fechamento lancado, a despesa fica — ela
+e o unico registro do custo.
+
+### Complementos e cruzamento com o estoque
+
+Acai com banana, com calda de chocolate, no copo de 500 ml. A ficha tecnica
+responde pelo copo, mas o que o cliente pede por cima muda a cada pedido — e
+enquanto isso nao era cadastrado, a banana e a calda saiam da prateleira sem
+nenhum lancamento e o pedido ficava registrado por menos do que custou.
+
+`GET`/`POST`/`PATCH`/`DELETE /api/addons` cadastram cada complemento com tres
+numeros: de qual insumo ele sai, quanto sai por porcao (na unidade do estoque) e
+quanto e cobrado. O cadastro devolve tambem o custo da porcao pelo estoque de
+hoje e quantas porcoes o saldo ainda aguenta.
+
+Na venda, cada item de `POST /api/orders` aceita `addons: [{addon_id,
+quantity}]`, onde `quantity` sao porcoes por unidade do produto — dois copos com
+calda dupla baixam quatro doses. O pedido grava o complemento com a porcao, o
+preco e o custo do dia, entao editar ou cancelar devolve exatamente o que saiu,
+mesmo que o cadastro mude depois.
+
+`GET /api/inventory/crossing?days=30` faz o cruzamento: por insumo, quanto saiu
+pela ficha tecnica e quanto saiu por complemento, com custo, saldo e duracao; por
+complemento, porcoes, receita, custo e taxa de adesao. E a conta que separa duas
+decisoes diferentes — mexer na receita ou mexer no preco do complemento — e que
+mostra qual delas esta comendo a margem.
+
+A previsao usa a mesma adesao observada: `GET /api/forecast` projeta as porcoes
+de cada complemento junto com as unidades do produto que as carrega, soma o
+insumo delas na compra sugerida e leva receita e custo para a projecao de lucro
+operacional.
+
 ### Dossie de custo
 
 `GET /api/products/{id}/dossier` abre a conta inteira de um produto: custo
@@ -92,6 +179,13 @@ insumo a insumo com embalagem separada dos ingredientes, quanto sobra em cada
 canal depois da comissao, rateio das despesas fixas por unidade vendida, preco
 para cada margem-alvo e ponto de equilibrio. Sem volume no periodo, o rateio
 volta nulo em vez de dividir por um denominador inventado.
+
+O custo fixo do rateio e a **media dos meses fechados** (ate doze), nunca a soma
+de tudo que ja foi lancado: somar trataria o aluguel de cada mes como se fosse do
+mesmo mes, e a estrutura cresceria a cada mes de uso do sistema. O mes corrente
+fica de fora porque quase sempre ainda tem conta por lancar; ele so entra quando
+nao ha nenhum mes fechado, e ai o dossie devolve `partial: true` e avisa na tela.
+`expense_basis` diz de quais meses o numero saiu.
 
 ### Simulador de produto novo
 
@@ -162,6 +256,12 @@ serve para ele: ela exige produtos. A tela propria corrige o que a origem
 informou — valor, canal, pagamento, data, cliente — e tambem **entrega, frete e
 entregador**, que e o que permite acertar as 390 entregas importadas com a
 pessoa que as fez.
+
+Na tela **Financeiro**, o botao **Importar Anota AI** recebe o `.xlsx` exportado
+pela plataforma e chama `POST /api/imports/anota-ai`. A importacao deduplica por
+numero e data do pedido; reenvie o mesmo relatorio sem receio de dobrar o
+faturamento. Sincronizacao direta por API depende das credenciais e do acesso
+contratado na conta Anota AI.
 
 ### Entregas e entregadores
 

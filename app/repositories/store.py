@@ -216,6 +216,17 @@ def _seed_data() -> dict[str, list[dict[str, Any]]]:
         _inventory("copo-300", "Copo 300 ml", "un", 94, 80, 0.72, "Embalagens"),
         _inventory("copo-500", "Copo 500 ml", "un", 126, 80, 0.88, "Embalagens"),
         _inventory("copo-700", "Copo 700 ml", "un", 61, 60, 1.05, "Embalagens"),
+        _inventory("calda-chocolate", "Calda de chocolate", "L", 4.1, 1, 18.4, "Complementos"),
+    ]
+    # Complementos: o que o cliente pede por cima do copo. Ficam fora da ficha
+    # tecnica porque mudam a cada pedido, e sem cadastro proprio a banana e a
+    # calda sairiam da prateleira sem aparecer no custo da venda.
+    addons = [
+        _addon("addon-banana", "Banana", "banana", 0.04, 2.0, "Frutas"),
+        _addon("addon-morango", "Morango", "morango", 0.04, 4.0, "Frutas"),
+        _addon("addon-calda-chocolate", "Calda de chocolate", "calda-chocolate", 0.02, 3.0, "Caldas"),
+        _addon("addon-granola", "Granola", "granola", 0.03, 2.5, "Complementos"),
+        _addon("addon-leite-po", "Leite em pó", "leite-po", 0.02, 2.5, "Complementos"),
     ]
     products = [
         _product("acai-300", "Açaí 300 ml", "Açaí", 16.0, [("acai", 0.28), ("guarana", 0.02), ("banana", 0.06), ("granola", 0.035), ("copo-300", 1)]),
@@ -239,11 +250,15 @@ def _seed_data() -> dict[str, list[dict[str, Any]]]:
         # criado deixa de ser o mais recente da lista.
         created = min(created, now - timedelta(minutes=index))
         orders.append({"id": f"seed-{index}", "number": 1000 + index, "created_at": created.isoformat(), "channel": channel, "payment_method": payment, "customer_name": None, "discount": 0, "total": round(product["price"] * quantity, 2), "cost": round(unit_cost * quantity, 2), "status": "Concluido", "items": [{"product_id": product_id, "name": product["name"], "quantity": quantity, "unit_price": product["price"], "unit_cost": unit_cost, "line_total": round(product["price"] * quantity, 2)}]})
-    return {"products": products, "inventory": inventory, "orders": orders, "expenses": [{"id": "expense-1", "description": "Aluguel", "category": "Fixo", "amount": 1800.0, "due_date": today.replace(day=min(5, today.day)).isoformat(), "status": "Paga", "created_at": now.isoformat()}, {"id": "expense-2", "description": "Compra de frutas", "category": "Insumos", "amount": 486.5, "due_date": (today + timedelta(days=2)).isoformat(), "status": "Pendente", "created_at": now.isoformat()}, {"id": "expense-3", "description": "Energia elétrica", "category": "Fixo", "amount": 278.4, "due_date": (today + timedelta(days=5)).isoformat(), "status": "Pendente", "created_at": now.isoformat()}], "inventory_movements": []}
+    return {"products": products, "inventory": inventory, "addons": addons, "orders": orders, "expenses": [{"id": "expense-1", "description": "Aluguel", "category": "Fixo", "amount": 1800.0, "due_date": today.replace(day=min(5, today.day)).isoformat(), "status": "Paga", "created_at": now.isoformat()}, {"id": "expense-2", "description": "Compra de frutas", "category": "Insumos", "amount": 486.5, "due_date": (today + timedelta(days=2)).isoformat(), "status": "Pendente", "created_at": now.isoformat()}, {"id": "expense-3", "description": "Energia elétrica", "category": "Fixo", "amount": 278.4, "due_date": (today + timedelta(days=5)).isoformat(), "status": "Pendente", "created_at": now.isoformat()}], "inventory_movements": []}
 
 
 def _inventory(item_id: str, name: str, unit: str, quantity: float, minimum: float, unit_cost: float, category: str, shelf_life: int | None = None, lead_time: int = 2) -> dict[str, Any]:
     return {"id": item_id, "name": name, "unit": unit, "quantity": quantity, "minimum_quantity": minimum, "unit_cost": unit_cost, "category": category, "shelf_life_days": shelf_life, "lead_time_days": lead_time, "updated_at": datetime.now(timezone.utc).isoformat()}
+
+
+def _addon(item_id: str, name: str, inventory_id: str, quantity: float, price: float, category: str) -> dict[str, Any]:
+    return {"id": item_id, "name": name, "inventory_id": inventory_id, "quantity": quantity, "price": price, "category": category, "active": True}
 
 
 def _product(item_id: str, name: str, category: str, price: float, recipe: list[tuple[str, float]]) -> dict[str, Any]:

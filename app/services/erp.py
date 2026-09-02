@@ -1,5 +1,6 @@
 import re
 import unicodedata
+from calendar import monthrange
 from collections import Counter, defaultdict
 from datetime import date, datetime, time, timedelta, timezone
 from typing import Any
@@ -7,14 +8,19 @@ from uuid import uuid4
 
 from app.repositories.store import Store, StoreTransaction
 from app.schemas import (
+    AddonCreate,
+    AddonUpdate,
     ChannelCreate,
     ChannelUpdate,
     ExpenseCreate,
+    ExpenseSeriesUpdate,
     ExpenseUpdate,
+    FixedCostSetup,
     InventoryAdjustment,
     InventoryCount,
     InventoryItemCreate,
     InventoryItemUpdate,
+    InventoryPurchase,
     MovementUpdate,
     OrderCreate,
     OrderUpdate,
@@ -25,6 +31,10 @@ from app.schemas import (
 # Marca os movimentos gerados pela venda. Todo o resto e lancamento manual:
 # perda, quebra, degustacao ou recebimento.
 SALE_REASON = "Venda registrada"
+
+# Compra é diferente de uma entrada por ajuste: além de aumentar o saldo, o
+# custo recebido atualiza a média usada pela ficha técnica e pela reposição.
+PURCHASE_REASON = "Compra recebida"
 
 # Movimento que desfaz outro. Nao conta como perda nem como venda no consumo,
 # senao editar um pedido apareceria na tela como se a loja tivesse jogado
@@ -46,6 +56,22 @@ DEFAULT_CHANNELS = (
     ("iFood", 27.0, 0.0, "Comissão do marketplace. Confirme o percentual do seu contrato."),
     ("WhatsApp", 0.0, 0.0, "Pedido direto pelo WhatsApp."),
 )
+
+
+def month_index(month: str) -> int:
+    """Converte AAAA-MM num numero, para contar meses sem cair em aritmetica de data."""
+
+    return int(month[:4]) * 12 + int(month[5:7]) - 1
+
+
+def month_label(index: int) -> str:
+    return f"{index // 12:04d}-{index % 12 + 1:02d}"
+
+
+def month_name(month: str) -> str:
+    """AAAA-MM como a loja escreve: 08/2026."""
+
+    return f"{month[5:7]}/{month[:4]}"
 
 
 def needs_restock(item: dict[str, Any]) -> bool:
@@ -114,6 +140,7 @@ class ERPService:
         return sorted(values, key=lambda item: self._timestamp(item["created_at"]), reverse=True)
 
     def expenses(self) -> list[dict[str, Any]]:
+        self.materialize_recurring_expenses()
         return sorted(self.store.list("expenses"), key=lambda item: (item["status"] == "Paga", item["due_date"]))
 
     def channels(self) -> list[dict[str, Any]]:
@@ -228,6 +255,173 @@ class ERPService:
             "low_stock": low_stock,
             "recent_orders": current_orders[:6],
             "insights": self._insights(current_orders, inventory, product_sales, channels),
+        }
+
+    def operating_result(self, days: int = 30, delivery_cost: float = 0.0) -> dict[str, Any]:
+        """DRE operacional curta, calculada somente com custos comprovados.
+
+        Compra de estoque nao entra duas vezes: ela atualiza o valor do insumo
+        e passa ao resultado quando uma venda consome a receita. Pedidos
+        importados sem itens continuam no faturamento, mas deixam o lucro em
+        aberto em vez de receberem um custo inventado.
+        """
+
+        days = max(1, min(days, 365))
+        # O aluguel de cada mes da janela precisa existir antes de a conta ser
+        # feita. Sem isso o trimestre mostraria um aluguel onde ha tres.
+        self.materialize_recurring_expenses()
+        start = self._window_start(days)
+        first_day = start.astimezone(FUSO_LOJA).date()
+        last_day = datetime.now(FUSO_LOJA).date()
+        orders = [
+            order for order in self.store.list("orders")
+            if is_active_order(order) and self._timestamp(order["created_at"]) >= start
+        ]
+        channels = {channel["name"]: channel for channel in self.channels()}
+        inventory = {item["id"]: item for item in self.store.list("inventory")}
+
+        revenue = sum(order["total"] for order in orders)
+        measured_orders = [order for order in orders if order.get("cost") is not None]
+        unmeasured_orders = [order for order in orders if order.get("cost") is None]
+        measured_revenue = sum(order["total"] for order in measured_orders)
+        cost_of_goods = sum(order["cost"] for order in measured_orders)
+        estimated_channel_fees = 0.0
+        channel_fees = 0.0
+        products: dict[str, dict[str, Any]] = {}
+        for order in orders:
+            stored_fee = order.get("channel_fee")
+            if stored_fee is None:
+                fee = self._channel_fee(channels.get(order.get("channel"), {}), order["total"])
+                estimated_channel_fees += fee
+            else:
+                fee = stored_fee
+            channel_fees += fee
+            for line in order.get("items", []):
+                row = products.setdefault(line["product_id"], {
+                    "product_id": line["product_id"], "name": line["name"],
+                    "units": 0, "revenue": 0.0, "cost": 0.0,
+                })
+                row["units"] += line["quantity"]
+                row["revenue"] += line["line_total"]
+                row["cost"] += line.get("unit_cost", 0) * line["quantity"]
+
+        losses = 0.0
+        for movement in self.store.list("inventory_movements"):
+            if self._timestamp(movement["created_at"]) < start:
+                continue
+            if movement["quantity_delta"] >= 0 or movement["reason"] == SALE_REASON:
+                continue
+            if movement["reason"].startswith(REVERSAL_PREFIX):
+                continue
+            item = inventory.get(movement["inventory_id"])
+            if item:
+                losses += movement.get("total_cost", abs(movement["quantity_delta"]) * item["unit_cost"])
+
+        recognised_expenses: list[dict[str, Any]] = []
+        inventory_purchases_expense = 0.0
+        courier_expense = 0.0
+        paid_expenses = 0.0
+        pending_expenses = 0.0
+        for expense in self.store.list("expenses"):
+            try:
+                due_date = date.fromisoformat(str(expense["due_date"])[:10])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if not first_day <= due_date <= last_day:
+                continue
+            category = self._normalized_text(expense.get("category", ""))
+            # Compras de polpa, fruta e embalagem ja entram no custo da receita
+            # quando vendidas. Somar a despesa aqui duplicaria o mesmo insumo.
+            if "insumo" in category or "compra" in category:
+                inventory_purchases_expense += expense["amount"]
+                continue
+            # Mesma logica para a entrega: quando ha fechamento de turno no
+            # periodo, o que a loja pagou ao entregador ja entrou por
+            # `delivery_cost`. Sem fechamento nenhum, esta despesa e o unico
+            # registro do custo e precisa ficar.
+            if "entrega" in category and delivery_cost > 0:
+                courier_expense += expense["amount"]
+                continue
+            recognised_expenses.append(expense)
+            if expense.get("status") == "Paga":
+                paid_expenses += expense["amount"]
+            else:
+                pending_expenses += expense["amount"]
+
+        operating_expenses = sum(expense["amount"] for expense in recognised_expenses)
+        purchase_cash = sum(
+            movement.get("total_cost", 0)
+            for movement in self.store.list("inventory_movements")
+            if movement.get("kind") == "compra" and self._timestamp(movement["created_at"]) >= start
+        )
+        delivery_cost = max(0.0, delivery_cost)
+        direct_cost = cost_of_goods + channel_fees + losses + delivery_cost
+        upper_bound = revenue - direct_cost - operating_expenses
+        cost_coverage = round(measured_revenue / revenue * 100, 1) if revenue else 100.0
+        complete = not unmeasured_orders
+        product_rows = []
+        for row in products.values():
+            contribution = row["revenue"] - row["cost"]
+            product_rows.append({
+                **row,
+                "revenue": round(row["revenue"], 2),
+                "cost": round(row["cost"], 2),
+                "contribution": round(contribution, 2),
+                "margin": self._margin(row["revenue"], row["cost"]),
+            })
+        product_rows.sort(key=lambda row: row["revenue"], reverse=True)
+
+        blockers: list[str] = []
+        if unmeasured_orders:
+            blockers.append(
+                f"{len(unmeasured_orders)} pedido(s), somando {self._money(sum(order['total'] for order in unmeasured_orders))}, "
+                "vieram da Anota AI sem os itens vendidos. Registre os itens para fechar o custo e o lucro."
+            )
+        if estimated_channel_fees:
+            blockers.append(
+                "Parte das taxas foi estimada com a tabela atual de canais porque o pedido importado nao trouxe a taxa gravada no dia."
+            )
+        if inventory_purchases_expense:
+            blockers.append(
+                f"{self._money(inventory_purchases_expense)} em despesas de insumo ficaram fora da DRE para nao duplicar o custo vendido."
+            )
+        if courier_expense:
+            blockers.append(
+                f"{self._money(courier_expense)} em despesas de entrega ficaram fora da DRE porque os turnos lancados em Entregas ja respondem por esse custo."
+            )
+
+        return {
+            "period_days": days,
+            "from": first_day.isoformat(),
+            "to": last_day.isoformat(),
+            "complete": complete,
+            "cost_coverage": cost_coverage,
+            "products": product_rows,
+            "blockers": blockers,
+            "totals": {
+                "revenue": round(revenue, 2),
+                "measured_revenue": round(measured_revenue, 2),
+                "revenue_without_cost": round(revenue - measured_revenue, 2),
+                "orders": len(orders),
+                "orders_without_cost": len(unmeasured_orders),
+                "cost_of_goods": round(cost_of_goods, 2),
+                "channel_fees": round(channel_fees, 2),
+                "estimated_channel_fees": round(estimated_channel_fees, 2),
+                "inventory_losses": round(losses, 2),
+                "delivery_cost": round(delivery_cost, 2),
+                "operating_expenses": round(operating_expenses, 2),
+                "paid_expenses": round(paid_expenses, 2),
+                "pending_expenses": round(pending_expenses, 2),
+                "inventory_purchase_expenses": round(inventory_purchases_expense, 2),
+                "courier_expenses_excluded": round(courier_expense, 2),
+                "inventory_purchase_cash": round(purchase_cash, 2),
+                "total_operating_cost": round(direct_cost + operating_expenses, 2),
+                "operating_profit": round(upper_bound, 2) if complete else None,
+                # Enquanto houver custo desconhecido, este e apenas o teto do
+                # lucro: o custo faltante so pode reduzir o resultado.
+                "profit_upper_bound": round(upper_bound, 2),
+                "operating_margin": self._margin(revenue, direct_cost + operating_expenses) if complete else None,
+            },
         }
 
     def sales_day(self, day: str | None = None) -> dict[str, Any]:
@@ -541,11 +735,14 @@ class ERPService:
         )
         return product
 
-    def delete_product(self, product_id: str) -> dict[str, str]:
-        """Produto ja vendido nunca some: vira inativo.
+    def delete_product(self, product_id: str, permanent: bool = False) -> dict[str, str]:
+        """Tira o produto do cardapio. Vendido, sai em duas etapas.
 
-        Apagar quebraria os pedidos antigos que apontam para ele e, com isso, o
-        historico de faturamento e a previsao.
+        O primeiro clique apenas inativa: o produto continua respondendo pelos
+        pedidos que ja aconteceram. So depois, com `permanent`, ele sai do
+        cadastro de vez — o pedido antigo nao quebra porque cada linha guarda
+        nome, preco e custo do dia da venda, mas o dossie e a previsao daquele
+        produto deixam de existir, e por isso a decisao e explicita.
         """
 
         product = self.store.get("products", product_id)
@@ -556,14 +753,103 @@ class ERPService:
             for order in self.store.list("orders")
             for item in order.get("items", [])
         )
-        if sold:
+        if sold and not permanent:
+            if product.get("active", True) is False:
+                raise ValueError(
+                    "Este produto já está fora do cardápio e tem vendas no histórico. "
+                    "Use a exclusão definitiva para removê-lo do cadastro."
+                )
             product["active"] = False
             self.store.put("products", product_id, product)
             self._audit(self.store, "product", product_id, "inativado", f"{product['name']} saiu do cardápio (tem vendas no histórico)")
             return {"id": product_id, "status": "inativado", "detail": "O produto já tem vendas, então saiu do cardápio mas continua no histórico."}
         self.store.delete("products", product_id)
-        self._audit(self.store, "product", product_id, "excluido", f"Produto {product['name']} removido")
-        return {"id": product_id, "status": "excluido", "detail": "Produto removido do cardápio."}
+        detalhe = (
+            "Produto removido do cadastro. Os pedidos antigos mantêm nome, preço e custo do dia da venda."
+            if sold else "Produto removido do cardápio."
+        )
+        self._audit(
+            self.store, "product", product_id, "excluido",
+            f"Produto {product['name']} removido" + (" em definitivo (tinha vendas no histórico)" if sold else ""),
+        )
+        return {"id": product_id, "status": "excluido", "detail": detalhe}
+
+    # ------------------------------------------------------------------
+    # Complementos
+    # ------------------------------------------------------------------
+
+    def addons(self) -> list[dict[str, Any]]:
+        """Cadastro de complementos, ja com o custo da porcao pelo estoque de hoje."""
+
+        inventory = {item["id"]: item for item in self.store.list("inventory")}
+        rows = []
+        for addon in self.store.list("addons"):
+            item = inventory.get(addon["inventory_id"])
+            cost = (item or {}).get("unit_cost", 0) * addon["quantity"]
+            rows.append({
+                **addon,
+                "inventory_name": (item or {}).get("name"),
+                "unit": (item or {}).get("unit"),
+                "in_stock": (item or {}).get("quantity"),
+                # Porcoes que o saldo de hoje ainda aguenta. E o numero que diz
+                # se vale anunciar o complemento no balcao amanha.
+                # A divisao vai com folga porque 4,1 / 0,02 da 204,99... em ponto
+                # flutuante, e o balcao contaria 205 doses na prateleira.
+                "portions_available": int((item or {}).get("quantity", 0) / addon["quantity"] + 1e-9) if item and addon["quantity"] else None,
+                "cost": round(cost, 4),
+                "contribution": round(addon["price"] - cost, 2),
+                "margin": self._margin(addon["price"], cost) if addon["price"] else 0.0,
+            })
+        return sorted(rows, key=lambda row: (not row.get("active", True), row.get("category", ""), row["name"]))
+
+    def create_addon(self, payload: AddonCreate) -> dict[str, Any]:
+        if not self.store.get("inventory", payload.inventory_id):
+            raise ValueError("O insumo deste complemento não existe no estoque.")
+        addon = payload.model_dump()
+        addon["id"] = self._identifier(payload.name, "addon")
+        if self.store.get("addons", addon["id"]):
+            addon["id"] = f"{addon['id']}-{str(uuid4())[:5]}"
+        self.store.put("addons", addon["id"], addon)
+        self._audit(self.store, "addon", addon["id"], "criado", f"Complemento {payload.name} cadastrado")
+        return addon
+
+    def update_addon(self, addon_id: str, payload: AddonUpdate) -> dict[str, Any]:
+        addon = self.store.get("addons", addon_id)
+        if not addon:
+            raise ValueError("Complemento não encontrado.")
+        changes = {key: value for key, value in payload.model_dump(exclude_unset=True).items() if value is not None}
+        if "inventory_id" in changes and not self.store.get("inventory", changes["inventory_id"]):
+            raise ValueError("O insumo deste complemento não existe no estoque.")
+        before = {key: addon.get(key) for key in changes}
+        addon.update(changes)
+        self.store.put("addons", addon_id, addon)
+        self._audit(
+            self.store, "addon", addon_id, "editado",
+            f"Complemento {addon['name']} atualizado",
+            self._diff(before, changes),
+        )
+        return addon
+
+    def delete_addon(self, addon_id: str) -> dict[str, str]:
+        """Complemento ja vendido e desativado: o pedido antigo precisa continuar explicavel."""
+
+        addon = self.store.get("addons", addon_id)
+        if not addon:
+            raise ValueError("Complemento não encontrado.")
+        used = any(
+            chosen["addon_id"] == addon_id
+            for order in self.store.list("orders")
+            for item in order.get("items", [])
+            for chosen in item.get("addons", [])
+        )
+        if used:
+            addon["active"] = False
+            self.store.put("addons", addon_id, addon)
+            self._audit(self.store, "addon", addon_id, "inativado", f"Complemento {addon['name']} desativado")
+            return {"id": addon_id, "status": "inativado", "detail": "O complemento já foi vendido, então saiu do balcão mas continua no histórico."}
+        self.store.delete("addons", addon_id)
+        self._audit(self.store, "addon", addon_id, "excluido", f"Complemento {addon['name']} removido")
+        return {"id": addon_id, "status": "excluido", "detail": "Complemento removido."}
 
     # ------------------------------------------------------------------
     # Estoque
@@ -607,6 +893,11 @@ class ERPService:
         ]
         if used_by:
             raise ValueError(f"Este insumo está na ficha técnica de: {', '.join(sorted(set(used_by))[:4])}. Remova-o dessas receitas primeiro.")
+        # Complemento sem insumo nao teria o que baixar do estoque, e a venda
+        # passaria a registrar custo zero para a calda que a loja pagou.
+        offered_as = [addon["name"] for addon in self.store.list("addons") if addon["inventory_id"] == inventory_id]
+        if offered_as:
+            raise ValueError(f"Este insumo é a porção do complemento: {', '.join(sorted(set(offered_as))[:4])}. Remova esses complementos primeiro.")
         self.store.delete("inventory", inventory_id)
         self._audit(self.store, "inventory", inventory_id, "excluido", f"Insumo {item['name']} removido")
         return {"id": inventory_id, "status": "excluido"}
@@ -635,6 +926,103 @@ class ERPService:
             return item
 
         return self.store.run_transaction(adjust)
+
+    def register_inventory_purchase(self, inventory_id: str, payload: InventoryPurchase) -> dict[str, Any]:
+        """Recebe uma compra sem transformar a entrada em simples ajuste.
+
+        O custo médio ponderado mantém a ficha técnica com o custo do que está
+        na prateleira. Se o saldo anterior é zero ou negativo, não há estoque
+        valorizado confiável para ponderar; nesse caso o custo da compra passa
+        a ser a nova referência até a próxima entrada.
+        """
+
+        now = datetime.now(timezone.utc)
+        received_at = self._occurrence(payload.received_at, now, "compra")
+        movement_id = str(uuid4())
+        # O validador normaliza a embalagem para a unidade de estoque. Estas
+        # guardas tambem deixam a regra clara para chamadas internas futuras.
+        if payload.quantity is None or payload.unit_cost is None:
+            raise ValueError("Informe a quantidade e o custo da compra.")
+        received_quantity = payload.quantity
+        received_unit_cost = payload.unit_cost
+
+        def receive(transaction: StoreTransaction) -> dict[str, Any]:
+            item = transaction.get("inventory", inventory_id)
+            if not item:
+                raise ValueError("Item de estoque não encontrado.")
+
+            previous_quantity = item["quantity"]
+            previous_unit_cost = item.get("unit_cost", 0.0)
+            resulting_quantity = round(previous_quantity + received_quantity, 3)
+            if previous_quantity > 0:
+                resulting_unit_cost = round(
+                    (previous_quantity * previous_unit_cost + received_quantity * received_unit_cost)
+                    / resulting_quantity,
+                    4,
+                )
+            else:
+                resulting_unit_cost = round(received_unit_cost, 4)
+
+            quantity_bought = payload.purchase_quantity or received_quantity
+            unit_bought = self._optional_text(payload.purchase_unit) or item["unit"]
+            units_per_purchase = payload.units_per_purchase or 1.0
+            cost_per_purchase = payload.purchase_unit_cost or received_unit_cost
+
+            item["quantity"] = resulting_quantity
+            item["unit_cost"] = resulting_unit_cost
+            item["updated_at"] = now.isoformat()
+            transaction.put("inventory", inventory_id, item)
+
+            movement = {
+                "id": movement_id,
+                "inventory_id": inventory_id,
+                "quantity_delta": received_quantity,
+                "reason": PURCHASE_REASON,
+                "kind": "compra",
+                # Custo por unidade de estoque, usado na média ponderada.
+                "unit_cost": received_unit_cost,
+                # Dados originais da compra: preservam "2 caixas de 5 kg" em
+                # vez de reduzir o histórico a "10 kg" sem contexto.
+                "purchase_quantity": quantity_bought,
+                "purchase_unit": unit_bought,
+                "units_per_purchase": units_per_purchase,
+                "purchase_unit_cost": cost_per_purchase,
+                "total_cost": round(quantity_bought * cost_per_purchase, 2),
+                "supplier": self._optional_text(payload.supplier),
+                "invoice_number": self._optional_text(payload.invoice_number),
+                "note": self._optional_text(payload.note),
+                # created_at é o momento em que a mercadoria chegou; o registro
+                # posterior continua visível em registered_at para auditoria.
+                "created_at": received_at.isoformat(),
+                "registered_at": now.isoformat(),
+            }
+            transaction.put("inventory_movements", movement_id, movement)
+            self._audit(
+                transaction,
+                "purchase",
+                movement_id,
+                "recebida",
+                f"Compra de {quantity_bought:g} {unit_bought} ({received_quantity:g} {item['unit']}) de {item['name']} — {self._money(movement['total_cost'])}",
+                {
+                    "quantidade comprada": f"{quantity_bought:g} {unit_bought}",
+                    "conteúdo por unidade": f"{units_per_purchase:g} {item['unit']}",
+                    "custo da unidade comprada": cost_per_purchase,
+                    "custo médio": {"de": previous_unit_cost, "para": resulting_unit_cost},
+                    "fornecedor": movement["supplier"],
+                    "documento": movement["invoice_number"],
+                },
+            )
+            return {
+                **movement,
+                "name": item["name"],
+                "unit": item["unit"],
+                "previous_quantity": previous_quantity,
+                "resulting_quantity": resulting_quantity,
+                "previous_unit_cost": previous_unit_cost,
+                "resulting_unit_cost": resulting_unit_cost,
+            }
+
+        return self.store.run_transaction(receive)
 
     def count_inventory(self, inventory_id: str, payload: InventoryCount) -> dict[str, Any]:
         """Contagem fisica: a loja informa o que existe, o sistema calcula a diferenca.
@@ -752,6 +1140,9 @@ class ERPService:
         if movement["reason"].startswith(REVERSAL_PREFIX):
             raise ValueError(f"Este lançamento é o estorno de um pedido. {remedy}")
 
+        if movement.get("kind") == "compra":
+            raise ValueError("Esta movimentação veio de uma compra. Lance uma contagem ou ajuste para corrigir o saldo.")
+
     def consumption(self, days: int = 7) -> dict[str, Any]:
         """Turn the movement log into what the owner actually needs to decide.
 
@@ -788,12 +1179,15 @@ class ERPService:
             reversal = reason.startswith(REVERSAL_PREFIX)
             kind = (
                 "estorno" if reversal
+                else "compra" if movement.get("kind") == "compra"
                 else "entrada" if delta > 0
                 else "venda" if reason == SALE_REASON
                 else "perda"
             )
             quantity = abs(delta)
-            cost = round(quantity * item["unit_cost"], 2)
+            # A compra guarda o preço pago no dia. Usar o custo médio atual
+            # apagaria esse dado assim que o próximo fornecedor mudasse o preço.
+            cost = movement.get("total_cost", round(quantity * item["unit_cost"], 2))
             day = moment.astimezone(FUSO_LOJA).date().isoformat()
             if kind in ("venda", "perda") and day in by_day:
                 by_day[day]["sale_cost" if kind == "venda" else "loss_cost"] += cost
@@ -804,7 +1198,7 @@ class ERPService:
                     {"inventory_id": item["id"], "name": item["name"], "unit": item["unit"], "sold": 0.0, "lost": 0.0, "received": 0.0, "cost": 0.0},
                 )
                 row["sold" if kind == "venda" else "lost" if kind == "perda" else "received"] += quantity
-                if kind != "entrada":
+                if kind in ("venda", "perda"):
                     row["cost"] += cost
             history.append({
                 **movement,
@@ -814,7 +1208,7 @@ class ERPService:
                 "cost": cost,
                 # A tela precisa saber o que pode oferecer para editar: baixa de
                 # venda so muda pelo pedido.
-                "editable": reason != SALE_REASON and not reversal,
+                "editable": reason != SALE_REASON and not reversal and kind != "compra",
             })
 
         items = []
@@ -855,23 +1249,509 @@ class ERPService:
             "history": history[:60],
         }
 
+    def ingredient_crossing(self, days: int = 30) -> dict[str, Any]:
+        """Cruza cada venda com o estoque, separando ficha tecnica de complemento.
+
+        A tela de Consumo responde "quanto saiu". Esta conta responde "por que
+        saiu": um copo de 500 ml gasta polpa porque a receita manda, e gasta
+        banana e calda porque o cliente pediu. Sao decisoes de dono diferentes
+        — uma se muda mexendo na receita, a outra mexendo no preco do
+        complemento — e enquanto as duas ficam somadas na mesma linha nao da
+        para saber qual delas esta comendo a margem.
+        """
+
+        days = max(1, min(days, 365))
+        start = self._window_start(days)
+        inventory = {item["id"]: item for item in self.store.list("inventory")}
+        products = {product["id"]: product for product in self.store.list("products")}
+        registered_addons = {addon["id"]: addon for addon in self.store.list("addons")}
+
+        orders = [
+            order for order in self.store.list("orders")
+            if is_active_order(order) and self._timestamp(order["created_at"]) >= start
+        ]
+        revenue = sum(order["total"] for order in orders)
+        detailed = [order for order in orders if order.get("items")]
+        detailed_revenue = sum(order["total"] for order in detailed)
+
+        usage: dict[str, dict[str, float]] = {}
+        product_rows: dict[str, dict[str, Any]] = {}
+        addon_rows: dict[str, dict[str, Any]] = {}
+        units_total = 0.0
+
+        for order in detailed:
+            # Quanto cada insumo saiu por causa de complemento neste pedido. O
+            # resto da baixa e ficha tecnica, por subtracao.
+            from_addons: Counter[str] = Counter()
+            for line in order["items"]:
+                quantity = line["quantity"]
+                units_total += quantity
+                row = product_rows.setdefault(line["product_id"], {
+                    "product_id": line["product_id"],
+                    "name": line["name"],
+                    "units": 0.0, "revenue": 0.0, "cost": 0.0,
+                    "addons_revenue": 0.0, "addons_cost": 0.0, "addon_units": 0.0,
+                })
+                row["units"] += quantity
+                row["revenue"] += line["line_total"]
+                row["cost"] += line.get("unit_cost", 0) * quantity
+                row["addons_revenue"] += line.get("addons_price", 0) * quantity
+                row["addons_cost"] += line.get("addons_cost", 0) * quantity
+                if line.get("addons"):
+                    row["addon_units"] += quantity
+                for chosen in line.get("addons", []):
+                    portions = chosen["quantity"] * quantity
+                    from_addons[chosen["inventory_id"]] += chosen.get("portion", 0) * portions
+                    addon = addon_rows.setdefault(chosen["addon_id"], {
+                        "addon_id": chosen["addon_id"],
+                        "name": chosen["name"],
+                        "inventory_id": chosen["inventory_id"],
+                        "portions": 0.0, "revenue": 0.0, "cost": 0.0,
+                        "quantity": 0.0, "units_with": 0.0,
+                    })
+                    addon["portions"] += portions
+                    addon["quantity"] += chosen.get("portion", 0) * portions
+                    addon["revenue"] += chosen.get("unit_price", 0) * portions
+                    addon["cost"] += chosen.get("unit_cost", 0) * portions
+                    addon["units_with"] += quantity
+
+            consumed: Counter[str] = Counter()
+            stock_usage = order.get("stock_usage")
+            if stock_usage is None:
+                # Pedido gravado antes de stock_usage existir: a ficha tecnica
+                # atual e a unica reconstituicao possivel.
+                for line in order["items"]:
+                    for recipe_line in products.get(line["product_id"], {}).get("recipe", []):
+                        consumed[recipe_line["inventory_id"]] += recipe_line["quantity"] * line["quantity"]
+                consumed.update(from_addons)
+            else:
+                for entry in stock_usage:
+                    consumed[entry["inventory_id"]] += entry["quantity"]
+
+            for inventory_id, total in consumed.items():
+                bucket = usage.setdefault(inventory_id, {"recipe": 0.0, "addon": 0.0})
+                # A parte de complemento nunca pode passar do que saiu de fato:
+                # em pedido antigo os dois numeros vem de origens diferentes.
+                by_addon = min(from_addons.get(inventory_id, 0.0), total)
+                bucket["addon"] += by_addon
+                bucket["recipe"] += max(0.0, total - by_addon)
+
+        items = []
+        for inventory_id, split in usage.items():
+            item = inventory.get(inventory_id)
+            if not item:
+                continue
+            quantity = split["recipe"] + split["addon"]
+            unit_cost = item.get("unit_cost", 0)
+            daily = quantity / days
+            items.append({
+                "inventory_id": inventory_id,
+                "name": item["name"],
+                "unit": item["unit"],
+                "category": item.get("category", "Insumos"),
+                "recipe_quantity": round(split["recipe"], 3),
+                "addon_quantity": round(split["addon"], 3),
+                "quantity": round(quantity, 3),
+                "addon_share": round(split["addon"] / quantity * 100, 1) if quantity else 0.0,
+                "recipe_cost": round(split["recipe"] * unit_cost, 2),
+                "addon_cost": round(split["addon"] * unit_cost, 2),
+                "cost": round(quantity * unit_cost, 2),
+                "in_stock": item["quantity"],
+                "daily_average": round(daily, 3),
+                "days_left": round(item["quantity"] / daily, 1) if daily > 0 else None,
+            })
+        items.sort(key=lambda row: row["cost"], reverse=True)
+
+        product_list = []
+        for row in product_rows.values():
+            contribution = row["revenue"] - row["cost"]
+            product_list.append({
+                **row,
+                "units": round(row["units"], 2),
+                "revenue": round(row["revenue"], 2),
+                "cost": round(row["cost"], 2),
+                "addons_revenue": round(row["addons_revenue"], 2),
+                "addons_cost": round(row["addons_cost"], 2),
+                # Quantos por cento das unidades saiu com algum complemento.
+                "addon_attach": round(row["addon_units"] / row["units"] * 100, 1) if row["units"] else 0.0,
+                "contribution": round(contribution, 2),
+                "margin": self._margin(row["revenue"], row["cost"]),
+            })
+        product_list.sort(key=lambda row: row["revenue"], reverse=True)
+
+        addon_list = []
+        for row in addon_rows.values():
+            item = inventory.get(row["inventory_id"])
+            addon_list.append({
+                **row,
+                "unit": (item or {}).get("unit"),
+                "inventory_name": (item or {}).get("name"),
+                "portions": round(row["portions"], 2),
+                "quantity": round(row["quantity"], 3),
+                "revenue": round(row["revenue"], 2),
+                "cost": round(row["cost"], 2),
+                "contribution": round(row["revenue"] - row["cost"], 2),
+                "margin": self._margin(row["revenue"], row["cost"]),
+                "attach": round(row["units_with"] / units_total * 100, 1) if units_total else 0.0,
+                "registered": row["addon_id"] in registered_addons,
+            })
+        addon_list.sort(key=lambda row: row["portions"], reverse=True)
+
+        recipe_cost = round(sum(row["recipe_cost"] for row in items), 2)
+        addon_cost = round(sum(row["addon_cost"] for row in items), 2)
+        addon_revenue = round(sum(row["revenue"] for row in addon_list), 2)
+
+        blockers: list[str] = []
+        undetailed = [order for order in orders if not order.get("items")]
+        if undetailed:
+            blockers.append(
+                f"{len(undetailed)} pedido(s), somando {self._money(sum(order['total'] for order in undetailed))}, "
+                "não têm os itens vendidos, então não entram no cruzamento com o estoque."
+            )
+        sem_receita = sorted({
+            row["name"] for row in product_list
+            if not products.get(row["product_id"], {}).get("recipe")
+        })
+        if sem_receita:
+            blockers.append(
+                "Sem ficha técnica: " + ", ".join(sem_receita[:4])
+                + ". Cadastre a receita para a polpa, as frutas e as embalagens desses produtos entrarem na conta."
+            )
+        if not registered_addons:
+            blockers.append(
+                "Nenhum complemento cadastrado ainda. Cadastre banana, caldas e granola em Cardápio "
+                "para marcá-los na venda e baixá-los do estoque."
+            )
+
+        return {
+            "period_days": days,
+            "orders": len(detailed),
+            "units": round(units_total, 2),
+            "coverage": round(detailed_revenue / revenue * 100, 1) if revenue else 100.0,
+            "items": items,
+            "products": product_list,
+            "addons": addon_list,
+            "blockers": blockers,
+            "totals": {
+                "revenue": round(detailed_revenue, 2),
+                "revenue_without_items": round(revenue - detailed_revenue, 2),
+                "recipe_cost": recipe_cost,
+                "addon_cost": addon_cost,
+                "ingredient_cost": round(recipe_cost + addon_cost, 2),
+                "addon_revenue": addon_revenue,
+                "addon_contribution": round(addon_revenue - addon_cost, 2),
+                "contribution": round(detailed_revenue - recipe_cost - addon_cost, 2),
+                "cost_share": round((recipe_cost + addon_cost) / detailed_revenue * 100, 1) if detailed_revenue else 0.0,
+            },
+            "note": (
+                "Quantidades vêm do que cada pedido realmente baixou; o valor usa o custo médio atual do insumo, "
+                "que é o mesmo critério da tela de Consumo."
+            ),
+        }
+
     # ------------------------------------------------------------------
     # Despesas
     # ------------------------------------------------------------------
 
     def create_expense(self, payload: ExpenseCreate) -> dict[str, Any]:
+        """Lanca a despesa. Marcada como fixa, abre uma serie que se repete.
+
+        O mes informado no vencimento e o primeiro da serie: datar o aluguel em
+        marco faz o sistema lancar de marco ate hoje, que e como uma loja em
+        operacao ha meses coloca o historico em dia de uma vez.
+        """
+
+        now = datetime.now(timezone.utc)
         expense = payload.model_dump()
-        expense["id"] = str(uuid4())
-        expense["created_at"] = datetime.now(timezone.utc).isoformat()
+        expense.pop("repeat_until", None)
+        if not payload.recurring:
+            expense["id"] = str(uuid4())
+            expense["created_at"] = now.isoformat()
+            self.store.put("expenses", expense["id"], expense)
+            self._audit(self.store, "expense", expense["id"], "criado", f"{payload.description} — {self._money(payload.amount)}")
+            return expense
+
+        first = date.fromisoformat(str(payload.due_date)[:10])
+        month = first.strftime("%Y-%m")
+        series = {
+            "id": f"serie-{uuid4()}",
+            "description": payload.description,
+            "category": payload.category,
+            "amount": payload.amount,
+            "day": first.day,
+            "starts_on": month,
+            "ends_on": payload.repeat_until,
+            "active": True,
+            # Meses que a loja apagou de proposito. Sem essa lista a geracao
+            # ressuscitaria, no dia seguinte, a conta que alguem acabou de tirar.
+            "skipped": [],
+            "created_at": now.isoformat(),
+        }
+        self.store.put("expense_series", series["id"], series)
+
+        # O primeiro mes guarda o que o gestor digitou — data e situacao. Os
+        # demais nascem pendentes: o sistema sabe que a conta venceu, nao sabe
+        # se ela foi paga.
+        expense["id"] = f"{series['id']}-{month}"
+        expense["series_id"] = series["id"]
+        expense["competence"] = month
+        expense["created_at"] = now.isoformat()
         self.store.put("expenses", expense["id"], expense)
-        self._audit(self.store, "expense", expense["id"], "criado", f"{payload.description} — {self._money(payload.amount)}")
-        return expense
+        generated = self.materialize_recurring_expenses()
+        self._audit(
+            self.store, "expense", expense["id"], "criado",
+            f"{payload.description} — {self._money(payload.amount)} por mês, a partir de {month_name(month)}",
+            {"repete até": payload.repeat_until or "sem fim previsto", "meses lançados agora": generated + 1},
+        )
+        return {**expense, "generated": generated}
+
+    # ------------------------------------------------------------------
+    # Despesas que se repetem
+    # ------------------------------------------------------------------
+
+    def materialize_recurring_expenses(self) -> int:
+        """Lanca o mes ja vencido de cada despesa que se repete.
+
+        Sem isso `recurring` seria so um rotulo: o aluguel existiria apenas no
+        mes em que alguem digitou, e a DRE de 90 dias mostraria um aluguel onde
+        deveriam estar tres. A geracao para no mes corrente de proposito — o
+        passado e registro e o futuro e projecao; materializar conta que ainda
+        nao venceu encheria a lista de pendencias de despesa imaginaria.
+
+        E idempotente: o identificador do lancamento e a serie mais o mes, entao
+        rodar de novo nao duplica nada.
+        """
+
+        series = self.store.list("expense_series")
+        if not series:
+            return 0
+        limit = month_index(datetime.now(FUSO_LOJA).date().strftime("%Y-%m"))
+        existing = {row["id"] for row in self.store.list("expenses")}
+        now = datetime.now(timezone.utc).isoformat()
+        created = 0
+        for rule in series:
+            if not rule.get("active", True):
+                continue
+            last = min(limit, month_index(rule["ends_on"])) if rule.get("ends_on") else limit
+            skipped = set(rule.get("skipped", []))
+            for index in range(month_index(rule["starts_on"]), last + 1):
+                month = month_label(index)
+                expense_id = f"{rule['id']}-{month}"
+                if month in skipped or expense_id in existing:
+                    continue
+                self.store.put("expenses", expense_id, {
+                    "id": expense_id,
+                    "series_id": rule["id"],
+                    "competence": month,
+                    "description": rule["description"],
+                    "category": rule["category"],
+                    "amount": rule["amount"],
+                    "due_date": self._due_date(month, rule["day"]).isoformat(),
+                    "status": "Pendente",
+                    "recurring": True,
+                    "created_at": now,
+                })
+                created += 1
+        return created
+
+    def setup_fixed_costs(self, payload: FixedCostSetup) -> dict[str, Any]:
+        """Cria de uma vez as despesas que se repetem todo mes.
+
+        Nao ha de onde importar isso: o aluguel e a folha nao estao em nenhum
+        relatorio, estao no contrato e no boleto. O que da para fazer e reduzir
+        a dez campos o trabalho de coloca-los no sistema uma unica vez — dai em
+        diante a recorrencia mantem cada mes em dia sozinha.
+
+        Linha que ja existe como despesa ativa e pulada em vez de duplicada:
+        abrir a tela de novo para acrescentar a conta que faltava nao pode criar
+        um segundo aluguel.
+        """
+
+        current = datetime.now(FUSO_LOJA).date().strftime("%Y-%m")
+        start = payload.starts_on or current
+        if month_index(start) > month_index(current):
+            raise ValueError("O mês inicial não pode estar no futuro.")
+
+        existing = {
+            self._normalized_text(rule["description"]): rule
+            for rule in self.store.list("expense_series")
+            if rule.get("active", True)
+        }
+        created: list[dict[str, Any]] = []
+        skipped: list[str] = []
+        for line in payload.items:
+            if self._normalized_text(line.description) in existing:
+                skipped.append(line.description)
+                continue
+            created.append(self.create_expense(ExpenseCreate(
+                description=line.description,
+                category=line.category,
+                amount=line.amount,
+                due_date=self._due_date(start, line.day).isoformat(),
+                status="Pendente",
+                recurring=True,
+            )))
+
+        # Mes ja vencido entra como pago quando a loja diz que pagou. Sem isso o
+        # cadastro retroativo encheria a lista de pendencias com meses que a
+        # loja quitou ha muito tempo, e o painel diria que ela nunca gastou
+        # nada com estrutura. O mes corrente fica pendente de qualquer forma:
+        # a conta pode ainda estar na gaveta.
+        settled = 0
+        if payload.past_paid and created:
+            today = datetime.now(FUSO_LOJA).date()
+            series_ids = {row["series_id"] for row in created if row.get("series_id")}
+            for expense in self.store.list("expenses"):
+                if expense.get("series_id") not in series_ids or expense.get("status") == "Paga":
+                    continue
+                if date.fromisoformat(str(expense["due_date"])[:10]) >= today:
+                    continue
+                expense["status"] = "Paga"
+                self.store.put("expenses", expense["id"], expense)
+                settled += 1
+
+        monthly = self.recurring_monthly_cost()
+        return {
+            "created": len(created),
+            "settled": settled,
+            "skipped": skipped,
+            "months_released": sum(row.get("generated", 0) + 1 for row in created),
+            "monthly_total": monthly["total"],
+            "starts_on": start,
+            "detail": (
+                f"{len(created)} despesa(s) passam a ser lançadas todo mês, somando "
+                f"{self._money(monthly['total'])} de custo fixo."
+                + (f" Já existiam e foram mantidas: {', '.join(skipped)}." if skipped else "")
+            ),
+        }
+
+    def expense_series(self) -> list[dict[str, Any]]:
+        """As regras que se repetem, com o proximo vencimento de cada uma."""
+
+        current = month_index(datetime.now(FUSO_LOJA).date().strftime("%Y-%m"))
+        released: Counter[str] = Counter(
+            row["series_id"] for row in self.store.list("expenses") if row.get("series_id")
+        )
+        rows = []
+        for rule in self.store.list("expense_series"):
+            last = month_index(rule["ends_on"]) if rule.get("ends_on") else None
+            active = rule.get("active", True) and (last is None or last >= current)
+            next_month = None
+            if active:
+                candidate = max(current, month_index(rule["starts_on"]))
+                skipped = set(rule.get("skipped", []))
+                while last is None or candidate <= last:
+                    if month_label(candidate) not in skipped:
+                        break
+                    candidate += 1
+                else:
+                    candidate = None
+                next_month = self._due_date(month_label(candidate), rule["day"]).isoformat() if candidate else None
+            rows.append({
+                **rule,
+                "active": active,
+                "next_due": next_month,
+                # Quantos meses ja foram lancados por esta regra. E o que
+                # mostra que a repeticao esta de fato funcionando.
+                "released": released[rule["id"]],
+            })
+        return sorted(rows, key=lambda row: (not row["active"], row["description"]))
+
+    def update_expense_series(self, series_id: str, payload: ExpenseSeriesUpdate) -> dict[str, Any]:
+        """Muda a regra dos meses que ainda serao lancados.
+
+        O que ja foi lancado fica como esta: o aluguel de julho continua sendo o
+        que foi cobrado em julho, mesmo depois do reajuste. Reescrever o passado
+        por causa de uma edicao de hoje faria a DRE de tres meses atras mudar
+        sozinha, e ninguem conseguiria conferir de onde veio a diferenca.
+        """
+
+        rule = self.store.get("expense_series", series_id)
+        if not rule:
+            raise ValueError("Despesa recorrente não encontrada.")
+        changes = {key: value for key, value in payload.model_dump(exclude_unset=True).items() if value is not None}
+        if "repeat_until" in changes:
+            changes["ends_on"] = changes.pop("repeat_until")
+            if month_index(changes["ends_on"]) < month_index(rule["starts_on"]):
+                raise ValueError("O mês final não pode ser anterior ao início da repetição.")
+        before = {key: rule.get(key) for key in changes}
+        rule.update(changes)
+        rule["updated_at"] = datetime.now(timezone.utc).isoformat()
+        self.store.put("expense_series", series_id, rule)
+        self._audit(
+            self.store, "expense_series", series_id, "editado",
+            f"Despesa fixa {rule['description']} atualizada",
+            self._diff(before, changes),
+        )
+        return {
+            **rule,
+            "detail": "A mudança vale para os próximos meses. Os já lançados continuam como estão — corrija-os um a um se precisar.",
+        }
+
+    def stop_expense_series(self, series_id: str) -> dict[str, str]:
+        """Para de repetir, sem apagar o que ja foi lancado."""
+
+        rule = self.store.get("expense_series", series_id)
+        if not rule:
+            raise ValueError("Despesa recorrente não encontrada.")
+        rule["active"] = False
+        rule["stopped_at"] = datetime.now(timezone.utc).isoformat()
+        self.store.put("expense_series", series_id, rule)
+        self._audit(self.store, "expense_series", series_id, "encerrado", f"{rule['description']} parou de se repetir")
+        return {
+            "id": series_id,
+            "status": "encerrado",
+            "detail": "Não será mais lançada nos próximos meses. Os lançamentos já feitos continuam no histórico.",
+        }
+
+    def recurring_monthly_cost(self, month: str | None = None) -> dict[str, Any]:
+        """Quanto a estrutura custa no mes informado, pelas regras que se repetem.
+
+        E a base que faltava para projetar lucro: o custo fixo do mes que vem
+        nao se descobre olhando o passado e regra de tres, ele esta escrito no
+        contrato de aluguel e na folha.
+        """
+
+        reference = month or datetime.now(FUSO_LOJA).date().strftime("%Y-%m")
+        index = month_index(reference)
+        rows = []
+        for rule in self.store.list("expense_series"):
+            if not rule.get("active", True):
+                continue
+            if index < month_index(rule["starts_on"]):
+                continue
+            if rule.get("ends_on") and index > month_index(rule["ends_on"]):
+                continue
+            if month_label(index) in set(rule.get("skipped", [])):
+                continue
+            rows.append({"id": rule["id"], "description": rule["description"], "category": rule["category"], "amount": rule["amount"]})
+        return {
+            "month": reference,
+            "total": round(sum(row["amount"] for row in rows), 2),
+            "count": len(rows),
+            "items": sorted(rows, key=lambda row: row["amount"], reverse=True),
+        }
+
+    @staticmethod
+    def _due_date(month: str, day: int) -> date:
+        """Vencimento do mes, com o dia preso ao ultimo dia quando ele nao existe.
+
+        Aluguel do dia 31 vence no dia 28 em fevereiro. Sem essa trava a geracao
+        quebraria em quatro meses do ano.
+        """
+
+        year, number = int(month[:4]), int(month[5:7])
+        return date(year, number, min(day, monthrange(year, number)[1]))
 
     def update_expense(self, expense_id: str, payload: ExpenseUpdate) -> dict[str, Any]:
         expense = self.store.get("expenses", expense_id)
         if not expense:
             raise ValueError("Despesa não encontrada.")
         changes = {key: value for key, value in payload.model_dump(exclude_unset=True).items() if value is not None}
+        if changes.get("recurring") and not expense.get("series_id"):
+            # Marcar como fixa uma despesa que ja existe passa a abrir a serie:
+            # sem isso o gestor ligaria o interruptor e nada se repetiria.
+            return self._promote_to_series(expense, changes)
         before = {key: expense.get(key) for key in changes}
         expense.update(changes)
         expense["updated_at"] = datetime.now(timezone.utc).isoformat()
@@ -887,9 +1767,58 @@ class ERPService:
         expense = self.store.get("expenses", expense_id)
         if not expense:
             raise ValueError("Despesa não encontrada.")
+        detail = "Despesa removida."
+        series_id = expense.get("series_id")
+        if series_id:
+            # Apagar um mes de uma despesa que se repete precisa deixar marca na
+            # regra: sem isso a proxima geracao traria de volta, no dia seguinte,
+            # exatamente a conta que a loja acabou de tirar.
+            rule = self.store.get("expense_series", series_id)
+            if rule:
+                skipped = set(rule.get("skipped", []))
+                skipped.add(expense.get("competence") or str(expense["due_date"])[:7])
+                rule["skipped"] = sorted(skipped)
+                self.store.put("expense_series", series_id, rule)
+                detail = "Mês removido. A despesa continua se repetindo nos outros meses."
         self.store.delete("expenses", expense_id)
         self._audit(self.store, "expense", expense_id, "excluido", f"{expense['description']} — {self._money(expense['amount'])} removida")
-        return {"id": expense_id, "status": "excluido"}
+        return {"id": expense_id, "status": "excluido", "detail": detail}
+
+    def _promote_to_series(self, expense: dict[str, Any], changes: dict[str, Any]) -> dict[str, Any]:
+        """Transforma uma despesa avulsa ja lancada em despesa que se repete."""
+
+        expense.update(changes)
+        first = date.fromisoformat(str(expense["due_date"])[:10])
+        month = first.strftime("%Y-%m")
+        now = datetime.now(timezone.utc)
+        series = {
+            "id": f"serie-{uuid4()}",
+            "description": expense["description"],
+            "category": expense["category"],
+            "amount": expense["amount"],
+            "day": first.day,
+            "starts_on": month,
+            "ends_on": None,
+            "active": True,
+            "skipped": [],
+            "created_at": now.isoformat(),
+        }
+        self.store.put("expense_series", series["id"], series)
+        # O lancamento antigo vira o primeiro mes da serie: mesmo conteudo, o
+        # identificador que a geracao reconhece.
+        self.store.delete("expenses", expense["id"])
+        expense["id"] = f"{series['id']}-{month}"
+        expense["series_id"] = series["id"]
+        expense["competence"] = month
+        expense["updated_at"] = now.isoformat()
+        self.store.put("expenses", expense["id"], expense)
+        generated = self.materialize_recurring_expenses()
+        self._audit(
+            self.store, "expense", expense["id"], "editado",
+            f"{expense['description']} passou a se repetir todo mês",
+            {"meses lançados agora": generated},
+        )
+        return expense
 
     # ------------------------------------------------------------------
     # Canais de distribuicao
@@ -1014,9 +1943,16 @@ class ERPService:
     # ------------------------------------------------------------------
 
     def _price_items(self, transaction: StoreTransaction, lines: list[Any]) -> tuple[list[dict[str, Any]], dict[str, float], float, float]:
-        """Precifica os itens e calcula o que sai do estoque, sem gravar nada."""
+        """Precifica os itens e calcula o que sai do estoque, sem gravar nada.
+
+        A ficha tecnica do produto responde pelo copo; os complementos marcados
+        na linha respondem pelo que o cliente pediu por cima. Os dois caem no
+        mesmo consumo de insumo, porque a polpa e a banana saem da mesma
+        prateleira — o que muda e a explicacao, guardada linha a linha.
+        """
 
         products: dict[str, dict[str, Any]] = {}
+        addons: dict[str, dict[str, Any]] = {}
         needed: Counter[str] = Counter()
         for line in lines:
             product = transaction.get("products", line.product_id)
@@ -1025,6 +1961,12 @@ class ERPService:
             products[line.product_id] = product
             for recipe_line in product.get("recipe", []):
                 needed[recipe_line["inventory_id"]] += recipe_line["quantity"] * line.quantity
+            for chosen in getattr(line, "addons", []) or []:
+                addon = addons.get(chosen.addon_id) or transaction.get("addons", chosen.addon_id)
+                if not addon or not addon.get("active", True):
+                    raise ValueError("Complemento indisponível para venda.")
+                addons[chosen.addon_id] = addon
+                needed[addon["inventory_id"]] += addon["quantity"] * chosen.quantity * line.quantity
 
         # A venda nunca e recusada por falta de saldo. O pedido ja aconteceu no
         # balcao: bloquear o registro nao devolve o insumo, so faz a loja perder
@@ -1041,8 +1983,28 @@ class ERPService:
         total = total_cost = 0.0
         for line in lines:
             product = products[line.product_id]
-            unit_cost = self._recipe_cost(product.get("recipe", []), stock)
-            line_total = product["price"] * line.quantity
+            recipe_cost = self._recipe_cost(product.get("recipe", []), stock)
+            chosen_rows: list[dict[str, Any]] = []
+            addons_price = addons_cost = 0.0
+            for chosen in getattr(line, "addons", []) or []:
+                addon = addons[chosen.addon_id]
+                portion_cost = stock.get(addon["inventory_id"], {}).get("unit_cost", 0) * addon["quantity"]
+                addons_price += addon["price"] * chosen.quantity
+                addons_cost += portion_cost * chosen.quantity
+                chosen_rows.append({
+                    "addon_id": addon["id"],
+                    "name": addon["name"],
+                    "inventory_id": addon["inventory_id"],
+                    # Porcoes por unidade do produto, e quanto cada porcao tira
+                    # do estoque. Guardado no pedido para o cruzamento de
+                    # amanha nao depender do cadastro de hoje.
+                    "quantity": chosen.quantity,
+                    "portion": addon["quantity"],
+                    "unit_price": addon["price"],
+                    "unit_cost": round(portion_cost, 4),
+                })
+            unit_cost = recipe_cost + addons_cost
+            line_total = (product["price"] + addons_price) * line.quantity
             total += line_total
             total_cost += unit_cost * line.quantity
             line_items.append({
@@ -1051,6 +2013,10 @@ class ERPService:
                 "quantity": line.quantity,
                 "unit_price": product["price"],
                 "unit_cost": round(unit_cost, 2),
+                "recipe_cost": round(recipe_cost, 2),
+                "addons_price": round(addons_price, 2),
+                "addons_cost": round(addons_cost, 2),
+                "addons": chosen_rows,
                 "line_total": round(line_total, 2),
             })
         # Receita apontando para insumo removido nao tem o que baixar, mas
@@ -1071,6 +2037,10 @@ class ERPService:
                 product = transaction.get("products", item["product_id"])
                 for line in (product or {}).get("recipe", []):
                     recomposed[line["inventory_id"]] += line["quantity"] * item["quantity"]
+                # O complemento fica gravado na propria linha, entao ele volta
+                # exato mesmo quando a ficha tecnica ja mudou.
+                for chosen in item.get("addons", []):
+                    recomposed[chosen["inventory_id"]] += chosen["portion"] * chosen["quantity"] * item["quantity"]
             usage = [{"inventory_id": key, "quantity": value} for key, value in recomposed.items()]
         for line in usage:
             self._move_stock(transaction, line["inventory_id"], line["quantity"], reason, now, order["id"])
@@ -1135,14 +2105,25 @@ class ERPService:
         if invalid:
             raise ValueError("A receita inclui um insumo que não existe no estoque.")
 
-    def _occurrence(self, requested: datetime | None, now: datetime) -> datetime:
+    def _occurrence(self, requested: datetime | None, now: datetime, label: str = "pedido") -> datetime:
         if requested is None:
             return now
         moment = requested if requested.tzinfo else requested.replace(tzinfo=FUSO_LOJA)
         moment = moment.astimezone(timezone.utc)
         if moment > now:
-            raise ValueError("A data do pedido não pode estar no futuro.")
+            artigo = "do" if label == "pedido" else "da"
+            raise ValueError(f"A data {artigo} {label} não pode estar no futuro.")
         return moment
+
+    @staticmethod
+    def _optional_text(value: str | None) -> str | None:
+        """Não grava espaço em branco como se fosse dado de rastreabilidade."""
+
+        return value.strip() or None if value else None
+
+    @staticmethod
+    def _normalized_text(value: Any) -> str:
+        return unicodedata.normalize("NFKD", str(value)).encode("ascii", "ignore").decode("ascii").lower()
 
     def _audit(self, sink: Any, entity: str, entity_id: str, action: str, summary: str, changes: dict[str, Any] | None = None) -> None:
         entry = {
@@ -1174,7 +2155,11 @@ class ERPService:
             "channel": order.get("channel"),
             "payment_method": order.get("payment_method"),
             "created_at": order.get("created_at"),
-            "itens": ", ".join(f"{item['quantity']}x {item['name']}" for item in order.get("items", [])) or None,
+            "itens": ", ".join(
+                f"{item['quantity']}x {item['name']}"
+                + (f" (+{', '.join(chosen['name'] for chosen in item.get('addons', []))})" if item.get("addons") else "")
+                for item in order.get("items", [])
+            ) or None,
         }
 
     @staticmethod
