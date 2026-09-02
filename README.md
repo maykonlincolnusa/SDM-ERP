@@ -1,7 +1,5 @@
 # SDM — Operational ERP for Small Food Retail
 
-*[Versão em português](README.pt-BR.md)*
-
 SDM answers one question that most point-of-sale systems leave open: **what did this shop actually earn this month, after everything?**
 
 Not revenue. Not gross margin on the menu price. Operating profit — after ingredients, packaging, marketplace commissions, delivery payouts, waste, rent and payroll.
