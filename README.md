@@ -444,3 +444,11 @@ Em Cloud Run, envie os arquivos pela tela ou execute a sincronizacao em uma maqu
 ```powershell
 .\.venv\Scripts\python.exe -m pytest
 ```
+
+## Licenca
+
+[MIT](LICENSE). Pode usar, modificar e vender, inclusive comercialmente. Basta
+manter o aviso de copyright, e vale entender que vem sem garantia.
+
+Se voce toca uma loja e quer ajuda para colocar isso para funcionar, ou esta
+construindo algo parecido e quer trocar ideia, e so chamar.
