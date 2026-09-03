@@ -27,6 +27,9 @@
     "purchase-item": (id) => openPurchase(id),
     "count-item": (id) => openCount(id),
     "edit-movement": (id) => editMovement(id),
+    "undo-withdrawal": (id) => undoWithdrawal(id),
+    "edit-anchor": (id) => editSportAnchor(id),
+    "edit-market-price": (id) => editMarketPrice(id),
     "edit-product": (id) => editProduct(id),
     "delete-product": (id) => deleteProduct(id),
     "purge-product": (id) => deleteProduct(id, true),
@@ -52,6 +55,10 @@
     document.querySelector('#count-form [name="quantity"]').addEventListener("input", refreshCountPreview);
     document.getElementById("movement-form").addEventListener("submit", submitMovement);
     document.getElementById("movement-delete").addEventListener("click", undoMovement);
+    document.getElementById("sport-anchor-form").addEventListener("submit", submitSportAnchor);
+    document.getElementById("market-price-form").addEventListener("submit", submitMarketPrice);
+    document.getElementById("market-price-delete").addEventListener("click", deleteMarketPrice);
+    document.getElementById("sport-anchor-delete").addEventListener("click", deleteSportAnchor);
     document.getElementById("channel-form").addEventListener("submit", submitChannel);
     document.getElementById("channel-delete").addEventListener("click", () => deleteChannel(document.getElementById("channel-id").value));
     document.getElementById("addon-delete").addEventListener("click", () => deleteAddon(document.getElementById("addon-id").value));
@@ -339,6 +346,129 @@
     );
   }
 
+  // A linha da retirada não se corrige sozinha: as outras do mesmo lançamento
+  // saíram juntas e voltam juntas, senão o saldo fica meio devolvido.
+  async function undoWithdrawal(withdrawalId) {
+    const lines = (state.consumption?.history || []).filter((row) => row.withdrawal_id === withdrawalId);
+    if (!lines.length) return;
+    const resumo = lines.map((row) => `- ${number.format(Math.abs(row.quantity_delta))} ${row.unit} de ${row.name}`).join("\n");
+    const quem = lines[0].responsible ? ` registrada por ${lines[0].responsible}` : "";
+    if (!confirm(`Desfazer a retirada${quem}?\n\n${resumo}\n\nTudo volta para o saldo do estoque e os lançamentos somem do consumo.`)) return;
+    await send(`/api/inventory/withdrawals/${withdrawalId}`, "DELETE", null, "Retirada desfeita e saldo devolvido.");
+  }
+
+  // ------------------------------------------------ referências de mercado
+
+  function populateMarketProducts(selecionado = "") {
+    const select = document.getElementById("market-price-product");
+    select.innerHTML = '<option value="">Nenhum — comparar pela categoria</option>'
+      + state.products.map((produto) => `<option value="${produto.id}">${escapeHtml(produto.name)} — ${currency.format(produto.price)}</option>`).join("");
+    select.value = selecionado || "";
+  }
+
+  function editMarketPrice(referenceId) {
+    const referencia = state.marketPrices.find((linha) => linha.id === referenceId);
+    if (!referencia) return;
+    const form = document.getElementById("market-price-form");
+    form.reset();
+    populateMarketProducts(referencia.product_id);
+    form.elements.reference_id.value = referencia.id;
+    form.elements.competitor.value = referencia.competitor || "";
+    form.elements.description.value = referencia.description || "";
+    form.elements.price.value = referencia.price;
+    form.elements.category.value = referencia.category || "";
+    form.elements.channel.value = referencia.channel || "Balcao";
+    form.elements.observed_on.value = (referencia.observed_on || "").slice(0, 10);
+    form.elements.note.value = referencia.note || "";
+    document.getElementById("market-price-delete").hidden = false;
+    setText("#market-price-modal-title", "Editar referência");
+    openDialog("market-price-modal");
+  }
+
+  async function submitMarketPrice(event) {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    const referenceId = form.get("reference_id");
+    const payload = {
+      competitor: form.get("competitor"),
+      description: form.get("description"),
+      price: Number(form.get("price")),
+      product_id: form.get("product_id") || null,
+      category: form.get("category") || null,
+      channel: form.get("channel") || "Balcao",
+      observed_on: form.get("observed_on") || null,
+      note: form.get("note") || null,
+    };
+    if (!payload.product_id && !payload.category) {
+      toast("Ligue a referência a um produto do cardápio ou a uma categoria.", "error");
+      return;
+    }
+    if (referenceId) {
+      await send(`/api/market-prices/${referenceId}`, "PATCH", payload, "Referência atualizada.");
+      return;
+    }
+    await send("/api/market-prices", "POST", payload, "Referência cadastrada. O veredito de preço passa a ter a âncora de mercado.");
+  }
+
+  async function deleteMarketPrice() {
+    const referenceId = document.getElementById("market-price-id").value;
+    if (!referenceId) return;
+    if (!confirm("Excluir esta referência?\n\nO veredito de preço do produto volta a ser calculado sem ela.")) return;
+    await send(`/api/market-prices/${referenceId}`, "DELETE", null, "Referência removida.");
+  }
+
+  // --------------------------------------------------- âncoras esportivas
+
+  function anchorWeekdays() {
+    return [...document.querySelectorAll("#sport-anchor-weekdays input:checked")].map((campo) => Number(campo.value));
+  }
+
+  function editSportAnchor(anchorId) {
+    const ancora = (state.promotions?.anchors || []).find((linha) => linha.id === anchorId);
+    if (!ancora) return;
+    const form = document.getElementById("sport-anchor-form");
+    form.reset();
+    form.elements.anchor_id.value = ancora.id;
+    form.elements.name.value = ancora.name;
+    setSelectValue(form.elements.kind, ancora.kind);
+    setSelectValue(form.elements.time_of_day, ancora.time_of_day);
+    form.elements.people.value = ancora.people || "";
+    form.elements.note.value = ancora.note || "";
+    const marcados = new Set(ancora.weekdays || []);
+    document.querySelectorAll("#sport-anchor-weekdays input").forEach((campo) => {
+      campo.checked = marcados.has(Number(campo.value));
+    });
+    document.getElementById("sport-anchor-delete").hidden = false;
+    setText("#sport-anchor-modal-title", "Editar âncora");
+    openDialog("sport-anchor-modal");
+  }
+
+  async function submitSportAnchor(event) {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    const anchorId = form.get("anchor_id");
+    const payload = {
+      name: form.get("name"),
+      kind: form.get("kind"),
+      weekdays: anchorWeekdays(),
+      time_of_day: form.get("time_of_day"),
+      people: form.get("people") ? Number(form.get("people")) : null,
+      note: form.get("note") || null,
+    };
+    if (anchorId) {
+      await send(`/api/sport-anchors/${anchorId}`, "PATCH", payload, "Âncora atualizada.");
+      return;
+    }
+    await send("/api/sport-anchors", "POST", payload, "Âncora cadastrada. As promoções da linha Sport passam a usar esses dias.");
+  }
+
+  async function deleteSportAnchor() {
+    const anchorId = document.getElementById("sport-anchor-id").value;
+    if (!anchorId) return;
+    if (!confirm("Excluir esta âncora?\n\nAs sugestões esportivas que dependiam dos dias dela deixam de aparecer.")) return;
+    await send(`/api/sport-anchors/${anchorId}`, "DELETE", null, "Âncora removida.");
+  }
+
   async function undoMovement() {
     const movementId = document.getElementById("movement-id").value;
     if (!movementId) return;
@@ -619,7 +749,8 @@
     document.getElementById("dossier-body").innerHTML = `
       <div class="dossier-metrics">
         <article><p>Preço</p><strong>${currency.format(p.price)}</strong></article>
-        <article><p>Custo direto</p><strong>${currency.format(data.cost.direct)}</strong><small>${number.format(data.cost.packaging_share)}% é embalagem</small></article>
+        <article><p>Custo da ficha</p><strong>${currency.format(data.cost.direct)}</strong><small>${number.format(data.cost.packaging_share)}% é embalagem</small></article>
+        <article><p>Custo com quebra</p><strong>${currency.format(data.cost.with_shrinkage)}</strong><small>${data.cost.shrinkage > 0 ? `${currency.format(data.cost.shrinkage)} do que saiu sem vender` : "nada saiu sem vender"}</small></article>
         <article><p>Sobra por unidade</p><strong class="${p.contribution >= 0 ? "positive" : "negative"}">${currency.format(p.contribution)}</strong><small>margem de ${number.format(p.gross_margin)}%</small></article>
         <article><p>Depois da estrutura</p><strong>${p.net_margin === null ? "—" : `${number.format(p.net_margin)}%`}</strong><small>${p.net_margin === null ? "sem volume para ratear" : `${currency.format(p.profit_per_unit)} de lucro real`}</small></article>
       </div>
@@ -627,8 +758,9 @@
       <section class="dossier-section">
         <p class="section-label">Onde cada centavo do custo está</p>
         ${data.recipe.length ? data.recipe.map((row) => `
-          <div class="cost-line"><span>${escapeHtml(row.name)} <em>${number.format(row.quantity)} ${escapeHtml(row.unit)}${row.packaging ? " · embalagem" : ""}</em></span><span class="cost-bar"><span style="width:${row.share}%"></span></span><b>${currency.format(row.cost)}</b></div>`).join("") : '<p class="empty-state">Este produto não tem ficha técnica cadastrada, então o custo não pode ser calculado.</p>'}
+          <div class="cost-line"><span>${escapeHtml(row.name)} <em>${number.format(row.quantity)} ${escapeHtml(row.unit)}${row.packaging ? " · embalagem" : ""}${row.shrinkage_rate ? ` · ${number.format(row.shrinkage_rate)}% sai sem vender` : ""}</em></span><span class="cost-bar"><span style="width:${row.share}%"></span></span><b>${currency.format(row.cost)}</b></div>`).join("") : '<p class="empty-state">Este produto não tem ficha técnica cadastrada, então o custo não pode ser calculado.</p>'}
         <div class="cost-total"><span>Ingredientes ${currency.format(data.cost.ingredients)}</span><span>Embalagem ${currency.format(data.cost.packaging)}</span><span><b>Total ${currency.format(data.cost.direct)}</b></span></div>
+        ${data.cost.shrinkage > 0 ? `<p class="formula-note">Somando o que saiu do estoque sem virar venda nos últimos ${data.cost.shrinkage_days} dias, cada unidade custa <b>${currency.format(data.cost.with_shrinkage)}</b> — ${number.format(data.cost.shrinkage_share)}% acima da ficha. É esse custo que a escada de preço e o ponto de equilíbrio usam.</p>` : ""}
       </section>
 
       <section class="dossier-section">
@@ -642,6 +774,7 @@
         <section class="dossier-section">
           <p class="section-label">Preço por margem-alvo</p>
           <div class="ladder">${data.price_ladder.map((row) => `<span><b>${number.format(row.margin)}%</b>${currency.format(row.price)}</span>`).join("")}</div>
+          <p class="formula-note">Calculada sobre o custo com quebra (${currency.format(data.cost.with_shrinkage)}), não sobre a ficha.</p>
           ${data.target && data.target.price ? `<p class="formula-note">Para ${number.format(data.target.margin)}% o preço seria ${currency.format(data.target.price)} — ${data.target.difference >= 0 ? `${currency.format(data.target.difference)} acima` : `${currency.format(Math.abs(data.target.difference))} abaixo`} do preço de hoje.</p>` : '<p class="formula-note">Informe uma margem-alvo no rodapé para ver o preço correspondente.</p>'}
         </section>
         <section class="dossier-section">
@@ -1013,6 +1146,21 @@
       document.getElementById("expense-id").value = "";
       setText("#expense-modal-title", "Lançar despesa");
     }
+    if (name === "market-price") {
+      document.getElementById("market-price-form").reset();
+      document.getElementById("market-price-id").value = "";
+      document.getElementById("market-price-delete").hidden = true;
+      document.querySelector('#market-price-form [name="observed_on"]').value = new Date().toISOString().slice(0, 10);
+      populateMarketProducts();
+      setText("#market-price-modal-title", "Preço de concorrente");
+    }
+    if (name === "sport-anchor") {
+      document.getElementById("sport-anchor-form").reset();
+      document.getElementById("sport-anchor-id").value = "";
+      document.querySelectorAll("#sport-anchor-weekdays input").forEach((campo) => { campo.checked = false; });
+      document.getElementById("sport-anchor-delete").hidden = true;
+      setText("#sport-anchor-modal-title", "Âncora esportiva");
+    }
     if (name === "inventory") {
       document.getElementById("inventory-form").reset();
       document.getElementById("inventory-id").value = "";
@@ -1060,14 +1208,6 @@
     } catch (error) {
       toast(error.message || "Não foi possível concluir a operação.", "error");
     }
-  }
-
-  function openDialog(id) {
-    const dialog = document.getElementById(id);
-    if (!dialog) return;
-    if (!dialog.open) dialog.showModal();
-    document.getElementById("modal-backdrop").hidden = false;
-    refreshIcons();
   }
 
   function setSelectValue(select, value) {

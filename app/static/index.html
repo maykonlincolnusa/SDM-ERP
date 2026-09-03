@@ -50,6 +50,8 @@
           <button class="nav-item" data-view-target="delivery"><i data-lucide="bike"></i><span>Entregas</span><b id="nav-delivery-count" hidden>0</b></button>
           <button class="nav-item" data-view-target="products"><i data-lucide="cup-soda"></i><span>Cardápio</span></button>
           <button class="nav-item" data-view-target="brand"><i data-lucide="gem"></i><span>Marca e linhas</span></button>
+          <button class="nav-item" data-view-target="promotions"><i data-lucide="megaphone"></i><span>Promoções</span><b id="nav-promotions-count" hidden>0</b></button>
+          <button class="nav-item" data-view-target="pricing"><i data-lucide="tag"></i><span>Preços</span><b id="nav-pricing-count" hidden>0</b></button>
           <button class="nav-item" data-view-target="growth"><i data-lucide="sprout"></i><span>Crescimento</span><b id="nav-growth-count" hidden>0</b></button>
           <button class="nav-item" data-view-target="files"><i data-lucide="folder-sync"></i><span>Arquivos</span><b id="nav-files-count" hidden>0</b></button>
           <button class="nav-item" data-view-target="history"><i data-lucide="history"></i><span>Histórico</span></button>
@@ -147,29 +149,30 @@
         </section>
 
         <section class="view" id="inventory" aria-labelledby="inventory-title">
-          <div class="page-heading"><div><p class="eyebrow">Controle de insumos</p><h1 id="inventory-title">Estoque</h1><p class="page-description">O estoque é descontado automaticamente a cada venda pela ficha técnica.</p></div><div class="heading-actions"><button class="primary-button" type="button" data-modal="purchase"><i data-lucide="shopping-cart"></i><span>Registrar compra</span></button><button class="secondary-button" type="button" data-modal="count"><i data-lucide="clipboard-check"></i><span>Contagem</span></button><button class="secondary-button" type="button" data-modal="adjust"><i data-lucide="sliders-horizontal"></i><span>Ajustar saldo</span></button><button class="secondary-button" type="button" data-modal="inventory"><i data-lucide="plus"></i><span>Novo insumo</span></button></div></div>
+          <div class="page-heading"><div><p class="eyebrow">Controle de insumos</p><h1 id="inventory-title">Estoque</h1><p class="page-description">As vendas baixam a ficha técnica automaticamente; retiradas operacionais registram o que a equipe levou do estoque.</p></div><div class="heading-actions"><button class="primary-button" type="button" data-modal="withdrawal"><i data-lucide="package-minus"></i><span>Registrar retirada</span></button><button class="secondary-button" type="button" data-modal="purchase"><i data-lucide="shopping-cart"></i><span>Registrar compra</span></button><button class="secondary-button" type="button" data-modal="count"><i data-lucide="clipboard-check"></i><span>Contagem</span></button><button class="secondary-button" type="button" data-modal="adjust"><i data-lucide="sliders-horizontal"></i><span>Ajustar saldo</span></button><button class="secondary-button" type="button" data-modal="inventory"><i data-lucide="plus"></i><span>Novo insumo</span></button></div></div>
           <div class="inventory-summary" id="inventory-summary"></div>
           <section class="panel table-panel"><div class="filter-row"><span class="field-label">Itens cadastrados</span><label class="search-field"><i data-lucide="search"></i><input id="inventory-search" type="search" placeholder="Buscar insumo" /></label></div><div class="table-scroll"><table><thead><tr><th>Insumo</th><th>Categoria</th><th>Saldo atual</th><th>Estoque mínimo</th><th>Custo médio</th><th>Status</th><th class="align-right">Ações</th></tr></thead><tbody id="inventory-body"></tbody></table></div></section>
         </section>
 
         <section class="view" id="consumption" aria-labelledby="consumption-title">
-          <div class="page-heading"><div><p class="eyebrow">Saída de insumos</p><h1 id="consumption-title">Consumo</h1><p class="page-description">Tudo que saiu do estoque no período: o que virou venda e o que se perdeu pelo caminho.</p></div><div class="heading-actions"><button class="secondary-button" type="button" data-modal="adjust"><i data-lucide="sliders-horizontal"></i><span>Lançar baixa</span></button></div></div>
+          <div class="page-heading"><div><p class="eyebrow">Saída de insumos</p><h1 id="consumption-title">Consumo</h1><p class="page-description">Tudo que saiu do estoque no período: venda, retirada operacional e perdas ficam separados.</p></div><div class="heading-actions"><button class="primary-button" type="button" data-modal="withdrawal"><i data-lucide="package-minus"></i><span>Registrar retirada</span></button><button class="secondary-button" type="button" data-modal="adjust"><i data-lucide="sliders-horizontal"></i><span>Lançar baixa</span></button></div></div>
 
-          <div class="metric-grid">
+          <div class="metric-grid consumption-metrics">
             <article class="metric-card"><span class="metric-icon revenue"><i data-lucide="coins"></i></span><p>Custo consumido</p><strong id="consumption-total">--</strong><small id="consumption-daily">no período</small></article>
             <article class="metric-card"><span class="metric-icon orders"><i data-lucide="shopping-bag"></i></span><p>Saiu em venda</p><strong id="consumption-sale">--</strong><small>insumo que virou faturamento</small></article>
+            <article class="metric-card"><span class="metric-icon ticket"><i data-lucide="package-minus"></i></span><p>Retiradas</p><strong id="consumption-withdrawal">--</strong><small>uso operacional registrado</small></article>
             <article class="metric-card"><span class="metric-icon margin"><i data-lucide="trash-2"></i></span><p>Perdas</p><strong id="consumption-loss">--</strong><small id="consumption-loss-share">--</small></article>
             <article class="metric-card"><span class="metric-icon ticket"><i data-lucide="hourglass"></i></span><p>Acabando em breve</p><strong id="consumption-running-out">--</strong><small>menos de 7 dias de estoque</small></article>
           </div>
 
           <section class="panel" aria-labelledby="consumption-chart-title">
-            <div class="panel-header"><div><p class="eyebrow">Dia a dia</p><h2 id="consumption-chart-title">Custo do que saiu</h2></div><span class="chart-legend"><span class="legend-key sale"></span>Venda<span class="legend-key loss"></span>Perda</span></div>
+            <div class="panel-header"><div><p class="eyebrow">Dia a dia</p><h2 id="consumption-chart-title">Custo do que saiu</h2></div><span class="chart-legend"><span class="legend-key sale"></span>Venda<span class="legend-key withdrawal"></span>Retirada<span class="legend-key loss"></span>Perda</span></div>
             <div class="chart-wrap"><div class="chart-y-axis" id="consumption-y-axis"></div><div class="chart stacked" id="consumption-chart" aria-label="Custo de insumos por dia"></div></div>
           </section>
 
           <section class="panel table-panel">
             <div class="filter-row"><span class="field-label">Por insumo</span><label class="search-field"><i data-lucide="search"></i><input id="consumption-search" type="search" placeholder="Buscar insumo" /></label></div>
-            <div class="table-scroll"><table><thead><tr><th>Insumo</th><th class="align-right">Vendido</th><th class="align-right">Perdido</th><th class="align-right">Custo</th><th class="align-right">Saldo</th><th>Duração</th></tr></thead><tbody id="consumption-body"></tbody></table></div>
+            <div class="table-scroll"><table><thead><tr><th>Insumo</th><th class="align-right">Vendido</th><th class="align-right">Retirado</th><th class="align-right">Perdido</th><th class="align-right">Custo</th><th class="align-right">Saldo</th><th>Duração</th></tr></thead><tbody id="consumption-body"></tbody></table></div>
           </section>
 
           <section class="panel table-panel" id="crossing-panel">
@@ -396,6 +399,91 @@
           </section>
         </section>
 
+        <section class="view" id="promotions" aria-labelledby="promotions-title">
+          <div class="page-heading">
+            <div><p class="eyebrow">Calendário da semana</p><h1 id="promotions-title">Promoções</h1><p class="page-description">Cada sugestão traz o preço, o piso que ele não pode furar e o <strong>ponto de virada</strong>: quantas unidades a mais o dia precisa vender para a promoção não ser prejuízo.</p></div>
+            <div class="heading-actions"><button class="primary-button" type="button" data-modal="sport-anchor"><i data-lucide="dumbbell"></i><span>Âncora esportiva</span></button><label class="period-control">Base <select id="promotions-period" aria-label="Período analisado"><option value="60">Últimos 60 dias</option><option value="90" selected>Últimos 90 dias</option><option value="180">Últimos 180 dias</option></select></label></div>
+          </div>
+
+          <div class="metric-grid">
+            <article class="metric-card"><span class="metric-icon orders"><i data-lucide="megaphone"></i></span><p>Ofertas no mês</p><strong id="promotions-count">--</strong><small id="promotions-source">--</small></article>
+            <article class="metric-card"><span class="metric-icon revenue"><i data-lucide="target"></i></span><p>Potencial somado</p><strong id="promotions-upside">--</strong><small>por mês, nas premissas de cada uma</small></article>
+            <article class="metric-card"><span class="metric-icon margin"><i data-lucide="scissors"></i></span><p>Margem aberta</p><strong id="promotions-risk">--</strong><small>o que o desconto custa se o volume não vier</small></article>
+            <article class="metric-card"><span class="metric-icon ticket"><i data-lucide="route"></i></span><p>Onde publicar</p><strong id="promotions-channel">--</strong><small id="promotions-channel-note">--</small></article>
+          </div>
+
+          <section class="panel" aria-labelledby="promotions-blocks-title">
+            <div class="panel-header"><div><p class="eyebrow">Os dois pedaços da semana</p><h2 id="promotions-blocks-title">Começo e fim de semana</h2></div></div>
+            <p class="panel-note" id="promotions-split-note">--</p>
+            <div class="block-grid" id="promotions-blocks"></div>
+          </section>
+
+          <section class="panel" aria-labelledby="promotions-month-title">
+            <div class="panel-header"><div><p class="eyebrow">Calendário</p><h2 id="promotions-month-title">As quatro semanas</h2></div></div>
+            <p class="panel-note">O pedaço vazio pede <strong>preço</strong>, porque nele falta gente. O pedaço cheio pede <strong>ticket</strong> — descontar ali compraria a venda que já aconteceria. As quatro semanas não repetem a mesma âncora: desconto que se repete vira o preço novo.</p>
+            <div id="promotions-month" class="month-grid"></div>
+          </section>
+
+          <section class="panel" aria-labelledby="promotions-week-title">
+            <div class="panel-header"><div><p class="eyebrow">Dia a dia</p><h2 id="promotions-week-title">A semana pela frente</h2></div><span class="chart-legend"><span class="legend-key loss"></span>Vale<span class="legend-key sale"></span>Dia cheio</span></div>
+            <p class="panel-note">A média considera apenas os dias em que a loja abriu. Dia com poucas aberturas não é dia fraco — é dia fechado, e desconto não conserta porta fechada.</p>
+            <div class="table-scroll"><table><thead><tr><th>Dia</th><th class="align-right">Média quando abre</th><th class="align-right">Vs. dia mediano</th><th class="align-right">Aberturas</th><th>Leitura</th></tr></thead><tbody id="promotions-week-body"></tbody></table></div>
+          </section>
+
+          <section class="panel" aria-labelledby="promotions-list-title">
+            <div class="panel-header"><div><p class="eyebrow">O que fazer</p><h2 id="promotions-list-title">Promoções sugeridas</h2></div></div>
+            <div id="promotions-list" class="growth-list"></div>
+          </section>
+
+          <section class="panel table-panel" aria-labelledby="promotions-anchors-title">
+            <div class="panel-header"><div><p class="eyebrow">Escopo esportivo</p><h2 id="promotions-anchors-title">Âncoras do bairro</h2></div></div>
+            <p class="panel-note">O sistema não tem como medir hábito de treino: o relatório de vendas não traz hora nem cliente. Cadastre a academia, o grupo de corrida ou o time e os dias em que treinam — a sugestão passa a se alinhar ao que você declarou, e diz que a origem foi declarada, nunca medida.</p>
+            <div class="table-scroll"><table><thead><tr><th>Âncora</th><th>Tipo</th><th>Dias</th><th>Horário</th><th class="align-right">Pessoas</th><th class="align-right">Ações</th></tr></thead><tbody id="promotions-anchors-body"></tbody></table></div>
+          </section>
+
+          <section class="panel" id="promotions-blockers-panel" hidden>
+            <div class="panel-header"><div><p class="eyebrow">Antes de promover</p><h2>O que decidir primeiro</h2></div></div>
+            <div id="promotions-blockers" class="insight-list"></div>
+          </section>
+        </section>
+
+        <section class="view" id="pricing" aria-labelledby="pricing-title">
+          <div class="page-heading">
+            <div><p class="eyebrow">Quanto cobrar</p><h1 id="pricing-title">Preços</h1><p class="page-description">Preço tem três âncoras: <strong>custo</strong> diz quanto você precisa cobrar, <strong>margem-alvo</strong> diz quanto você quer cobrar, e <strong>mercado</strong> diz quanto dá para cobrar. Só o mercado não está dentro da loja — por isso ele se cadastra.</p></div>
+            <div class="heading-actions"><button class="primary-button" type="button" data-modal="market-price"><i data-lucide="tag"></i><span>Preço de concorrente</span></button><label class="period-control">Base <select id="pricing-period" aria-label="Período analisado"><option value="30">Últimos 30 dias</option><option value="90" selected>Últimos 90 dias</option><option value="180">Últimos 180 dias</option></select></label></div>
+          </div>
+
+          <div class="metric-grid">
+            <article class="metric-card"><span class="metric-icon revenue"><i data-lucide="trending-up"></i></span><p>Com espaço para subir</p><strong id="pricing-room">--</strong><small id="pricing-room-note">--</small></article>
+            <article class="metric-card"><span class="metric-icon margin"><i data-lucide="triangle-alert"></i></span><p>Abaixo do custo</p><strong id="pricing-below">--</strong><small>vendendo no prejuízo</small></article>
+            <article class="metric-card"><span class="metric-icon ticket"><i data-lucide="receipt-text"></i></span><p>Ticket médio da loja</p><strong id="pricing-ticket">--</strong><small id="pricing-ticket-note">--</small></article>
+            <article class="metric-card"><span class="metric-icon orders"><i data-lucide="tags"></i></span><p>Referências cadastradas</p><strong id="pricing-references">--</strong><small id="pricing-competitors">--</small></article>
+          </div>
+
+          <section class="panel">
+            <div class="panel-header"><div><p class="eyebrow">Produto a produto</p><h2>O que fazer com cada preço</h2></div></div>
+            <div id="pricing-list" class="growth-list"></div>
+          </section>
+
+          <section class="panel table-panel" aria-labelledby="pricing-market-title">
+            <div class="panel-header"><div><p class="eyebrow">Mercado declarado</p><h2 id="pricing-market-title">Preços de concorrentes</h2></div></div>
+            <p class="panel-note">Não existe fonte dentro da loja que diga por quanto o vizinho vende. Cada linha aqui é uma observação datada — anote o que você viu, e o veredito de preço ganha a terceira âncora. Referência com mais de 120 dias continua contando, mas com aviso.</p>
+            <div class="table-scroll"><table><thead><tr><th>Concorrente</th><th>Referência</th><th>Compara com</th><th>Canal</th><th class="align-right">Preço</th><th>Visto em</th><th class="align-right">Ações</th></tr></thead><tbody id="pricing-market-body"></tbody></table></div>
+          </section>
+
+          <section class="panel table-panel" aria-labelledby="pricing-store-title">
+            <div class="panel-header"><div><p class="eyebrow">Mercado da própria loja</p><h2 id="pricing-store-title">O que o seu cliente paga</h2></div></div>
+            <p class="panel-note">Não é o mercado da rua, é a fatia dele que já compra aqui. Mas é medido — e responde uma coisa que nenhuma tabela de concorrente responde: até onde este cliente vai.</p>
+            <div class="table-scroll"><table><thead><tr><th>Canal</th><th class="align-right">Pedidos</th><th class="align-right">Ticket médio</th></tr></thead><tbody id="pricing-store-body"></tbody></table></div>
+            <div id="pricing-bands" class="ladder"></div>
+          </section>
+
+          <section class="panel" id="pricing-blockers-panel" hidden>
+            <div class="panel-header"><div><p class="eyebrow">O que falta</p><h2>Para o preço ter as três âncoras</h2></div></div>
+            <div id="pricing-blockers" class="insight-list"></div>
+          </section>
+        </section>
+
         <section class="view" id="growth" aria-labelledby="growth-title">
           <div class="page-heading">
             <div><p class="eyebrow">Onde crescer</p><h1 id="growth-title">Oportunidades</h1><p class="page-description">Produtos, combos, serviços e ações de marketing tirados do que a sua loja vendeu — cada um com a conta aberta para você discordar.</p></div>
@@ -468,6 +556,12 @@
     <dialog class="modal compact" id="expense-modal" aria-labelledby="expense-modal-title"><form method="dialog" class="modal-shell data-form" id="expense-form"><header class="modal-header"><div><p class="eyebrow">Financeiro</p><h2 id="expense-modal-title">Lançar despesa</h2></div><input type="hidden" name="expense_id" id="expense-id" /><button class="icon-button" type="button" data-close-modal title="Fechar"><i data-lucide="x"></i></button></header><div class="modal-body form-grid two"><label>Descrição<input name="description" required maxlength="100" placeholder="Ex.: Compra de polpas" /></label><label>Categoria<select name="category"><option>Insumos</option><option>Fixo</option><option>Equipe</option><option>Marketing</option><option>Taxas</option><option>Outros</option></select></label><label>Valor<input name="amount" type="number" min="0.01" step="0.01" required /></label><label>Vencimento<input name="due_date" type="date" required /></label><label>Situação<select name="status"><option value="Pendente">Pendente</option><option value="Paga">Paga</option></select></label><label class="checkbox-field full"><input type="checkbox" name="recurring" id="expense-recurring" /><span>Repete todo mês<small>Aluguel, energia, equipe, contador. O sistema passa a lançar sozinho cada mês que vence — datar no primeiro mês coloca o histórico em dia de uma vez.</small></span></label><label class="full expense-repeat-field">Repetir até<input name="repeat_until" type="month" /><small class="field-hint">Opcional. Vazio significa sem fim previsto, que é o caso do aluguel e do salário. Preencha para o que acaba: parcelas, financiamento.</small></label></div><footer class="modal-footer"><button class="secondary-button" type="button" data-close-modal>Cancelar</button><button class="primary-button" type="submit"><i data-lucide="check"></i><span>Salvar despesa</span></button></footer></form></dialog>
 
     <dialog class="modal compact" id="adjust-modal" aria-labelledby="adjust-modal-title"><form method="dialog" class="modal-shell data-form" id="adjust-form"><header class="modal-header"><div><p class="eyebrow">Controle de estoque</p><h2 id="adjust-modal-title">Ajustar saldo</h2></div><button class="icon-button" type="button" data-close-modal title="Fechar"><i data-lucide="x"></i></button></header><div class="modal-body form-grid"><label class="full">Insumo<select name="inventory_id" id="adjust-inventory" required></select></label><label>Variação<input name="quantity_delta" type="number" step="0.001" required placeholder="Ex.: 5 ou -0,5" /></label><label>Motivo<input name="reason" maxlength="120" required placeholder="Ex.: perda, quebra ou degustação" /></label></div><footer class="modal-footer"><button class="secondary-button" type="button" data-close-modal>Cancelar</button><button class="primary-button" type="submit"><i data-lucide="check"></i><span>Aplicar ajuste</span></button></footer></form></dialog>
+
+    <dialog class="modal compact" id="market-price-modal" aria-labelledby="market-price-modal-title"><form method="dialog" class="modal-shell data-form" id="market-price-form"><header class="modal-header"><div><p class="eyebrow">Mercado</p><h2 id="market-price-modal-title">Preço de concorrente</h2></div><input type="hidden" name="reference_id" id="market-price-id" /><button class="icon-button" type="button" data-close-modal title="Fechar"><i data-lucide="x"></i></button></header><div class="modal-body form-grid two"><p class="modal-note full">Anote o que você viu na rua ou no app do vizinho. Duas ou três observações por produto já transformam "quanto preciso cobrar" em "quanto dá para cobrar". A data importa: preço de concorrente envelhece.</p><label>Concorrente<input name="competitor" required maxlength="80" placeholder="Ex.: Açaí do Zé" /></label><label>Preço observado<input name="price" type="number" min="0.01" step="0.01" required /></label><label class="full">O que foi visto<input name="description" required maxlength="100" placeholder="Ex.: copo 500 ml com dois acompanhamentos" /></label><label class="full">Compara com<select name="product_id" id="market-price-product"></select><small class="field-hint">Comparar com um produto do seu cardápio vale mais que comparar com a categoria. Sem equivalente exato, escolha a categoria abaixo.</small></label><label>Categoria<input name="category" maxlength="40" list="inventory-categories" placeholder="Só se não houver produto equivalente" /></label><label>Canal<input name="channel" maxlength="40" value="Balcao" placeholder="Balcao, iFood..." /><small class="field-hint">O mesmo concorrente cobra diferente no balcão e no marketplace.</small></label><label>Visto em<input name="observed_on" type="date" /></label><label class="full">Observação<input name="note" maxlength="160" placeholder="Opcional" /></label></div><footer class="modal-footer"><button class="danger-button" type="button" id="market-price-delete" hidden>Excluir</button><button class="secondary-button" type="button" data-close-modal>Cancelar</button><button class="primary-button" type="submit"><i data-lucide="check"></i><span>Salvar referência</span></button></footer></form></dialog>
+
+    <dialog class="modal compact" id="sport-anchor-modal" aria-labelledby="sport-anchor-modal-title"><form method="dialog" class="modal-shell data-form" id="sport-anchor-form"><header class="modal-header"><div><p class="eyebrow">Escopo esportivo</p><h2 id="sport-anchor-modal-title">Âncora esportiva</h2></div><input type="hidden" name="anchor_id" id="sport-anchor-id" /><button class="icon-button" type="button" data-close-modal title="Fechar"><i data-lucide="x"></i></button></header><div class="modal-body form-grid two"><p class="modal-note full">A academia, o grupo de corrida ou o time do bairro. Os dias que você marcar aqui são os dias em que a promoção da linha Sport vai ser sugerida — o sistema não deduz treino de venda, porque o relatório não traz hora nem cliente.</p><label>Nome<input name="name" required maxlength="80" placeholder="Ex.: Academia Corpo em Movimento" /></label><label>Tipo<select name="kind"><option>Academia</option><option>Corrida</option><option>Time</option><option>Evento</option><option>Outro</option></select></label><fieldset class="recipe-fieldset full"><legend>Dias de treino</legend><div class="weekday-picker" id="sport-anchor-weekdays"><label><input type="checkbox" value="0" /><span>seg</span></label><label><input type="checkbox" value="1" /><span>ter</span></label><label><input type="checkbox" value="2" /><span>qua</span></label><label><input type="checkbox" value="3" /><span>qui</span></label><label><input type="checkbox" value="4" /><span>sex</span></label><label><input type="checkbox" value="5" /><span>sáb</span></label><label><input type="checkbox" value="6" /><span>dom</span></label></div><small class="field-hint">Nenhum marcado significa todo dia.</small></fieldset><label>Horário do treino<select name="time_of_day"><option>Manhã</option><option>Tarde</option><option>Noite</option></select></label><label>Pessoas<input name="people" type="number" min="1" max="100000" step="1" placeholder="Opcional" /><small class="field-hint">Tamanho declarado do público. Vira ordem de grandeza no impacto, e aparece como premissa.</small></label><label class="full">Observação<input name="note" maxlength="160" placeholder="Ex.: fica a duas quadras, treino às 19h" /></label></div><footer class="modal-footer"><button class="danger-button" type="button" id="sport-anchor-delete" hidden>Excluir</button><button class="secondary-button" type="button" data-close-modal>Cancelar</button><button class="primary-button" type="submit"><i data-lucide="check"></i><span>Salvar âncora</span></button></footer></form></dialog>
+
+    <dialog class="modal" id="withdrawal-modal" aria-labelledby="withdrawal-modal-title"><form method="dialog" class="modal-shell data-form" id="withdrawal-form"><header class="modal-header"><div><p class="eyebrow">Controle de estoque</p><h2 id="withdrawal-modal-title">Registrar retirada</h2></div><button class="icon-button" type="button" data-close-modal title="Fechar"><i data-lucide="x"></i></button></header><div class="modal-body"><p class="modal-note">Registre todos os insumos que saíram juntos. Ou sai tudo, ou não sai nada: se faltar saldo em uma linha, nenhuma é descontada — e aí a tela pergunta se é para registrar assim mesmo. A retirada entra no consumo e no planejamento, sem aparecer como perda.</p><div class="form-grid two"><label>Responsável<input name="responsible" required maxlength="80" placeholder="Ex.: Maria" /></label><label>Finalidade<input name="reason" required maxlength="120" value="Retirada operacional" placeholder="Ex.: produção da manhã" /></label><label class="full">Observação<input name="note" maxlength="160" placeholder="Opcional" /></label></div><fieldset class="recipe-fieldset withdrawal-fieldset"><legend>Itens retirados</legend><div id="withdrawal-lines"></div><button class="text-button recipe-add" type="button" id="add-withdrawal-line"><i data-lucide="plus"></i>Adicionar insumo</button></fieldset><p class="modal-result full neutral" id="withdrawal-preview"></p><label class="checkbox-field" id="withdrawal-override-field" hidden><input type="checkbox" name="allow_negative" id="withdrawal-override" /><span>Registrar assim mesmo. O insumo já saiu da prateleira; o saldo do sistema fica negativo até a próxima contagem.</span></label></div><footer class="modal-footer"><button class="secondary-button" type="button" data-close-modal>Cancelar</button><button class="primary-button" type="submit"><i data-lucide="package-minus"></i><span>Confirmar retirada</span></button></footer></form></dialog>
 
     <dialog class="modal compact" id="purchase-modal" aria-labelledby="purchase-modal-title"><form method="dialog" class="modal-shell data-form" id="purchase-form"><header class="modal-header"><div><p class="eyebrow">Recebimento de compra</p><h2 id="purchase-modal-title">Registrar compra</h2></div><button class="icon-button" type="button" data-close-modal title="Fechar"><i data-lucide="x"></i></button></header><div class="modal-body form-grid two"><p class="modal-note full">Registre a embalagem que foi comprada. O sistema converte para a unidade do estoque e atualiza o custo médio da ficha técnica.</p><label class="full">Insumo<select name="inventory_id" id="purchase-inventory" required></select></label><label>Saldo atual<input id="purchase-current" type="text" readonly tabindex="-1" /></label><label>Quantidade comprada<input name="purchase_quantity" type="number" min="0.001" step="0.001" required /></label><label>Unidade comprada<input name="purchase_unit" maxlength="20" required placeholder="Ex.: caixa, pacote, fardo" /></label><label>Conteúdo de cada unidade<input name="units_per_purchase" type="number" min="0.001" step="0.001" value="1" required /><small class="field-hint" id="purchase-content-hint">Na unidade do estoque.</small></label><label>Custo por unidade comprada<input name="purchase_unit_cost" type="number" min="0.01" step="0.01" required /></label><label>Data e hora do recebimento<input name="received_at" type="datetime-local" /></label><label>Fornecedor<input name="supplier" maxlength="80" placeholder="Opcional" /></label><label>Nota ou documento<input name="invoice_number" maxlength="60" placeholder="Opcional" /></label><label class="full">Observação<input name="note" maxlength="160" placeholder="Ex.: caixa conferida sem avarias" /></label><p class="modal-result full neutral" id="purchase-preview"></p></div><footer class="modal-footer"><button class="secondary-button" type="button" data-close-modal>Cancelar</button><button class="primary-button" type="submit"><i data-lucide="package-check"></i><span>Confirmar recebimento</span></button></footer></form></dialog>
 

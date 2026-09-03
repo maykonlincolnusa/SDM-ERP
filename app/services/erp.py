@@ -21,11 +21,16 @@ from app.schemas import (
     InventoryItemCreate,
     InventoryItemUpdate,
     InventoryPurchase,
+    InventoryWithdrawal,
+    MarketPriceCreate,
+    MarketPriceUpdate,
     MovementUpdate,
     OrderCreate,
     OrderUpdate,
     ProductCreate,
     ProductUpdate,
+    SportAnchorCreate,
+    SportAnchorUpdate,
 )
 
 # Marca os movimentos gerados pela venda. Todo o resto e lancamento manual:
@@ -35,6 +40,10 @@ SALE_REASON = "Venda registrada"
 # Compra é diferente de uma entrada por ajuste: além de aumentar o saldo, o
 # custo recebido atualiza a média usada pela ficha técnica e pela reposição.
 PURCHASE_REASON = "Compra recebida"
+
+# Retirada manual para uso/operacao. Ela nao e quebra nem vencimento: entra no
+# consumo e no planejamento, mas aparece separada para nao mascarar perdas.
+WITHDRAWAL_KIND = "retirada"
 
 # Movimento que desfaz outro. Nao conta como perda nem como venda no consumo,
 # senao editar um pedido apareceria na tela como se a loja tivesse jogado
@@ -313,9 +322,20 @@ class ERPService:
                 continue
             if movement["reason"].startswith(REVERSAL_PREFIX):
                 continue
+            if movement.get("kind") == WITHDRAWAL_KIND:
+                continue
             item = inventory.get(movement["inventory_id"])
             if item:
                 losses += movement.get("total_cost", abs(movement["quantity_delta"]) * item["unit_cost"])
+
+        withdrawals = sum(
+            movement.get("total_cost", abs(movement["quantity_delta"]) * inventory[movement["inventory_id"]]["unit_cost"])
+            for movement in self.store.list("inventory_movements")
+            if movement.get("kind") == WITHDRAWAL_KIND
+            and movement["quantity_delta"] < 0
+            and self._timestamp(movement["created_at"]) >= start
+            and movement["inventory_id"] in inventory
+        )
 
         recognised_expenses: list[dict[str, Any]] = []
         inventory_purchases_expense = 0.0
@@ -355,7 +375,7 @@ class ERPService:
             if movement.get("kind") == "compra" and self._timestamp(movement["created_at"]) >= start
         )
         delivery_cost = max(0.0, delivery_cost)
-        direct_cost = cost_of_goods + channel_fees + losses + delivery_cost
+        direct_cost = cost_of_goods + channel_fees + losses + withdrawals + delivery_cost
         upper_bound = revenue - direct_cost - operating_expenses
         cost_coverage = round(measured_revenue / revenue * 100, 1) if revenue else 100.0
         complete = not unmeasured_orders
@@ -408,6 +428,7 @@ class ERPService:
                 "channel_fees": round(channel_fees, 2),
                 "estimated_channel_fees": round(estimated_channel_fees, 2),
                 "inventory_losses": round(losses, 2),
+                "inventory_withdrawals": round(withdrawals, 2),
                 "delivery_cost": round(delivery_cost, 2),
                 "operating_expenses": round(operating_expenses, 2),
                 "paid_expenses": round(paid_expenses, 2),
@@ -460,9 +481,11 @@ class ERPService:
                 units[item["name"]] += item["quantity"]
                 product_value[item["name"]] += item["line_total"]
 
-        # Perda lancada no mesmo dia: pertence ao resultado do dia tanto quanto a venda.
+        # Perda lancada no mesmo dia pertence ao resultado; retirada e uma
+        # saida operacional separada, para nao aparecer como quebra.
         stock = {item["id"]: item for item in self.store.list("inventory")}
         loss_cost = 0.0
+        withdrawal_cost = 0.0
         for movement in self.store.list("inventory_movements"):
             if self._local_day(movement["created_at"]) != reference:
                 continue
@@ -472,7 +495,11 @@ class ERPService:
                 continue
             item = stock.get(movement["inventory_id"])
             if item:
-                loss_cost += abs(movement["quantity_delta"]) * item["unit_cost"]
+                cost = movement.get("total_cost", abs(movement["quantity_delta"]) * item["unit_cost"])
+                if movement.get("kind") == WITHDRAWAL_KIND:
+                    withdrawal_cost += cost
+                else:
+                    loss_cost += cost
 
         due = [expense for expense in self.store.list("expenses") if expense["due_date"] == reference.isoformat()]
 
@@ -505,6 +532,7 @@ class ERPService:
                 "discount": round(discount, 2),
                 "delivery_fee": round(frete, 2),
                 "loss_cost": round(loss_cost, 2),
+                "withdrawal_cost": round(withdrawal_cost, 2),
                 "cancelled": len(cancelled),
                 "cancelled_value": round(sum(order["total"] for order in cancelled), 2),
             },
@@ -927,6 +955,161 @@ class ERPService:
 
         return self.store.run_transaction(adjust)
 
+    def register_inventory_withdrawal(self, payload: InventoryWithdrawal) -> dict[str, Any]:
+        """Registra uma retirada operacional de varios insumos, de uma vez.
+
+        A conferencia e a baixa ficam na mesma transacao. Portanto, se faltar
+        morango para uma das linhas, nem o acai nem os outros itens sao
+        descontados parcialmente. Linhas repetidas sao somadas antes da
+        validacao, para que duas retiradas de 1 kg nao escapem de um saldo de
+        apenas 1,5 kg.
+
+        Faltar saldo recusa a retirada, para barrar o 50 digitado no lugar do
+        0,5. Com `allow_negative` a tela confirma a excecao e o lancamento
+        passa mesmo assim: o insumo ja saiu da prateleira, e o saldo negativo e
+        um sinal mais util de cadastro atrasado do que um registro que nunca
+        aconteceu.
+        """
+
+        now = datetime.now(timezone.utc)
+        withdrawal_id = str(uuid4())
+        requested: dict[str, float] = {}
+        for line in payload.items:
+            requested[line.inventory_id] = round(requested.get(line.inventory_id, 0.0) + line.quantity, 3)
+
+        responsible = payload.responsible.strip()
+        reason = payload.reason.strip()
+        note = self._optional_text(payload.note)
+
+        def withdraw(transaction: StoreTransaction) -> dict[str, Any]:
+            stock: dict[str, dict[str, Any]] = {}
+            short: set[str] = set()
+            for inventory_id, quantity in requested.items():
+                item = transaction.get("inventory", inventory_id)
+                if not item:
+                    raise ValueError("Item de estoque não encontrado.")
+                if item["quantity"] < quantity:
+                    if not payload.allow_negative:
+                        raise ValueError(
+                            f"Saldo insuficiente de {item['name']}: há {item['quantity']:g} {item['unit']} "
+                            f"e a retirada pede {quantity:g} {item['unit']}. Confirme na tela para registrar "
+                            "assim mesmo e deixar o saldo negativo."
+                        )
+                    short.add(inventory_id)
+                stock[inventory_id] = item
+
+            lines: list[dict[str, Any]] = []
+            total_cost = 0.0
+            for inventory_id, quantity in requested.items():
+                item = stock[inventory_id]
+                previous_quantity = item["quantity"]
+                item["quantity"] = round(previous_quantity - quantity, 3)
+                item["updated_at"] = now.isoformat()
+                transaction.put("inventory", inventory_id, item)
+
+                cost = round(quantity * item.get("unit_cost", 0.0), 2)
+                movement = {
+                    "id": str(uuid4()),
+                    "inventory_id": inventory_id,
+                    "quantity_delta": -quantity,
+                    "reason": reason,
+                    "kind": WITHDRAWAL_KIND,
+                    "withdrawal_id": withdrawal_id,
+                    "responsible": responsible,
+                    "note": note,
+                    # Sinaliza a linha que passou por cima do saldo: sem isso o
+                    # negativo apareceria no estoque sem nada explicando de onde
+                    # veio.
+                    "below_balance": inventory_id in short,
+                    # Mantem o valor da retirada mesmo se o custo medio mudar
+                    # depois da proxima compra.
+                    "unit_cost": item.get("unit_cost", 0.0),
+                    "total_cost": cost,
+                    "created_at": now.isoformat(),
+                }
+                transaction.put("inventory_movements", movement["id"], movement)
+                lines.append({
+                    "movement_id": movement["id"],
+                    "inventory_id": inventory_id,
+                    "name": item["name"],
+                    "unit": item["unit"],
+                    "quantity": quantity,
+                    "previous_quantity": previous_quantity,
+                    "resulting_quantity": item["quantity"],
+                    "total_cost": cost,
+                    "below_balance": inventory_id in short,
+                })
+                total_cost += cost
+
+            self._audit(
+                transaction,
+                "withdrawal",
+                withdrawal_id,
+                "registrada",
+                f"Retirada de {len(lines)} insumo(s) por {responsible}",
+                {
+                    "motivo": reason,
+                    "observação": note,
+                    "itens": [f"{line['quantity']:g} {line['unit']} de {line['name']}" for line in lines],
+                    "custo": round(total_cost, 2),
+                    **({"saldo estourado": [stock[key]["name"] for key in sorted(short)]} if short else {}),
+                },
+            )
+            return {
+                "id": withdrawal_id,
+                "responsible": responsible,
+                "reason": reason,
+                "note": note,
+                "created_at": now.isoformat(),
+                "total_cost": round(total_cost, 2),
+                "below_balance": sorted(stock[key]["name"] for key in short),
+                "items": lines,
+            }
+
+        return self.store.run_transaction(withdraw)
+
+    def undo_inventory_withdrawal(self, withdrawal_id: str) -> dict[str, Any]:
+        """Devolve ao saldo todas as linhas de uma retirada registrada."""
+
+        now = datetime.now(timezone.utc)
+
+        def undo(transaction: StoreTransaction) -> dict[str, Any]:
+            movements = [
+                movement
+                for movement in transaction.list("inventory_movements")
+                if movement.get("kind") == WITHDRAWAL_KIND and movement.get("withdrawal_id") == withdrawal_id
+            ]
+            if not movements:
+                raise ValueError("Retirada não encontrada ou já desfeita.")
+
+            stock: dict[str, dict[str, Any]] = {}
+            for movement in movements:
+                item = transaction.get("inventory", movement["inventory_id"])
+                if not item:
+                    raise ValueError("Não é possível desfazer: um dos insumos da retirada foi excluído.")
+                stock[item["id"]] = item
+
+            restored: list[str] = []
+            for movement in movements:
+                item = stock[movement["inventory_id"]]
+                item["quantity"] = round(item["quantity"] - movement["quantity_delta"], 3)
+                item["updated_at"] = now.isoformat()
+                transaction.put("inventory", item["id"], item)
+                transaction.delete("inventory_movements", movement["id"])
+                restored.append(f"{abs(movement['quantity_delta']):g} {item['unit']} de {item['name']}")
+
+            self._audit(
+                transaction,
+                "withdrawal",
+                withdrawal_id,
+                "desfeita",
+                f"Retirada de {len(movements)} insumo(s) desfeita",
+                {"itens devolvidos": restored},
+            )
+            return {"id": withdrawal_id, "status": "desfeita", "items_restored": len(movements)}
+
+        return self.store.run_transaction(undo)
+
     def register_inventory_purchase(self, inventory_id: str, payload: InventoryPurchase) -> dict[str, Any]:
         """Recebe uma compra sem transformar a entrada em simples ajuste.
 
@@ -1139,7 +1322,8 @@ class ERPService:
             raise ValueError(f"Esta baixa veio de uma venda. {remedy}")
         if movement["reason"].startswith(REVERSAL_PREFIX):
             raise ValueError(f"Este lançamento é o estorno de um pedido. {remedy}")
-
+        if movement.get("kind") == WITHDRAWAL_KIND:
+            raise ValueError("Esta baixa faz parte de uma retirada. Desfaça a retirada inteira para corrigir o saldo.")
         if movement.get("kind") == "compra":
             raise ValueError("Esta movimentação veio de uma compra. Lance uma contagem ou ajuste para corrigir o saldo.")
 
@@ -1162,7 +1346,11 @@ class ERPService:
         by_item: dict[str, dict[str, Any]] = {}
         by_day: dict[str, dict[str, float]] = {}
         for offset in range(days - 1, -1, -1):
-            by_day[(today - timedelta(days=offset)).isoformat()] = {"sale_cost": 0.0, "loss_cost": 0.0}
+            by_day[(today - timedelta(days=offset)).isoformat()] = {
+                "sale_cost": 0.0,
+                "withdrawal_cost": 0.0,
+                "loss_cost": 0.0,
+            }
 
         history: list[dict[str, Any]] = []
         for movement in self.store.list("inventory_movements"):
@@ -1180,6 +1368,7 @@ class ERPService:
             kind = (
                 "estorno" if reversal
                 else "compra" if movement.get("kind") == "compra"
+                else WITHDRAWAL_KIND if movement.get("kind") == WITHDRAWAL_KIND and delta < 0
                 else "entrada" if delta > 0
                 else "venda" if reason == SALE_REASON
                 else "perda"
@@ -1189,16 +1378,26 @@ class ERPService:
             # apagaria esse dado assim que o próximo fornecedor mudasse o preço.
             cost = movement.get("total_cost", round(quantity * item["unit_cost"], 2))
             day = moment.astimezone(FUSO_LOJA).date().isoformat()
-            if kind in ("venda", "perda") and day in by_day:
-                by_day[day]["sale_cost" if kind == "venda" else "loss_cost"] += cost
+            if kind in ("venda", WITHDRAWAL_KIND, "perda") and day in by_day:
+                key = "sale_cost" if kind == "venda" else "withdrawal_cost" if kind == WITHDRAWAL_KIND else "loss_cost"
+                by_day[day][key] += cost
 
             if kind != "estorno":
                 row = by_item.setdefault(
                     movement["inventory_id"],
-                    {"inventory_id": item["id"], "name": item["name"], "unit": item["unit"], "sold": 0.0, "lost": 0.0, "received": 0.0, "cost": 0.0},
+                    {
+                        "inventory_id": item["id"], "name": item["name"], "unit": item["unit"],
+                        "sold": 0.0, "withdrawn": 0.0, "lost": 0.0, "received": 0.0, "cost": 0.0,
+                    },
                 )
-                row["sold" if kind == "venda" else "lost" if kind == "perda" else "received"] += quantity
-                if kind in ("venda", "perda"):
+                bucket = (
+                    "sold" if kind == "venda"
+                    else "withdrawn" if kind == WITHDRAWAL_KIND
+                    else "lost" if kind == "perda"
+                    else "received"
+                )
+                row[bucket] += quantity
+                if kind in ("venda", WITHDRAWAL_KIND, "perda"):
                     row["cost"] += cost
             history.append({
                 **movement,
@@ -1208,17 +1407,18 @@ class ERPService:
                 "cost": cost,
                 # A tela precisa saber o que pode oferecer para editar: baixa de
                 # venda so muda pelo pedido.
-                "editable": reason != SALE_REASON and not reversal and kind != "compra",
+                "editable": reason != SALE_REASON and not reversal and kind not in ("compra", WITHDRAWAL_KIND),
             })
 
         items = []
         for row in by_item.values():
             item = stock[row["inventory_id"]]
-            used = row["sold"] + row["lost"]
+            used = row["sold"] + row["withdrawn"] + row["lost"]
             daily_average = used / days
             items.append({
                 **row,
                 "sold": round(row["sold"], 3),
+                "withdrawn": round(row["withdrawn"], 3),
                 "lost": round(row["lost"], 3),
                 "received": round(row["received"], 3),
                 "used": round(used, 3),
@@ -1231,13 +1431,15 @@ class ERPService:
         items.sort(key=lambda row: row["cost"], reverse=True)
 
         sale_cost = round(sum(day["sale_cost"] for day in by_day.values()), 2)
+        withdrawal_cost = round(sum(day["withdrawal_cost"] for day in by_day.values()), 2)
         loss_cost = round(sum(day["loss_cost"] for day in by_day.values()), 2)
-        total_cost = round(sale_cost + loss_cost, 2)
+        total_cost = round(sale_cost + withdrawal_cost + loss_cost, 2)
         history.sort(key=lambda row: row["created_at"], reverse=True)
         return {
             "period_days": days,
             "totals": {
                 "sale_cost": sale_cost,
+                "withdrawal_cost": withdrawal_cost,
                 "loss_cost": loss_cost,
                 "total_cost": total_cost,
                 "loss_share": round(loss_cost / total_cost * 100, 1) if total_cost else 0.0,
@@ -1867,6 +2069,109 @@ class ERPService:
         self.store.delete("channels", channel_id)
         self._audit(self.store, "channel", channel_id, "excluido", f"Canal {channel['name']} removido")
         return {"id": channel_id, "status": "excluido", "detail": "Canal removido."}
+
+    # ------------------------------------------------------------------
+    # Referencias de preco de mercado
+    # ------------------------------------------------------------------
+
+    def market_prices(self) -> list[dict[str, Any]]:
+        return sorted(
+            self.store.list("market_prices"),
+            key=lambda linha: (str(linha.get("competitor", "")), str(linha.get("description", ""))),
+        )
+
+    def create_market_price(self, payload: MarketPriceCreate) -> dict[str, Any]:
+        """Preco que um concorrente cobra por um produto equivalente.
+
+        Nao existe fonte dentro da loja que diga por quanto o vizinho vende.
+        Sem este cadastro o preco so pode ser julgado por custo e margem-alvo,
+        que responde "quanto preciso cobrar" e nunca "quanto da para cobrar".
+        """
+
+        reference = payload.model_dump()
+        if reference.get("product_id") and not self.store.get("products", reference["product_id"]):
+            raise ValueError("Produto não encontrado no cardápio.")
+        reference["id"] = str(uuid4())
+        reference["observed_on"] = reference.get("observed_on") or datetime.now(FUSO_LOJA).date().isoformat()
+        self.store.put("market_prices", reference["id"], reference)
+        self._audit(
+            self.store, "market_price", reference["id"], "criada",
+            f"Referência de {payload.competitor} a {payload.price:.2f} cadastrada",
+        )
+        return reference
+
+    def update_market_price(self, reference_id: str, payload: MarketPriceUpdate) -> dict[str, Any]:
+        reference = self.store.get("market_prices", reference_id)
+        if not reference:
+            raise ValueError("Referência não encontrada.")
+        changes = {key: value for key, value in payload.model_dump(exclude_unset=True).items() if value is not None}
+        before = {key: reference.get(key) for key in changes}
+        reference.update(changes)
+        self.store.put("market_prices", reference_id, reference)
+        self._audit(
+            self.store, "market_price", reference_id, "editada",
+            f"Referência de {reference.get('competitor')} atualizada",
+            self._diff(before, changes),
+        )
+        return reference
+
+    def delete_market_price(self, reference_id: str) -> dict[str, str]:
+        reference = self.store.get("market_prices", reference_id)
+        if not reference:
+            raise ValueError("Referência não encontrada.")
+        self.store.delete("market_prices", reference_id)
+        self._audit(
+            self.store, "market_price", reference_id, "excluida",
+            f"Referência de {reference.get('competitor')} removida",
+        )
+        return {"id": reference_id, "status": "excluida", "detail": "Referência removida."}
+
+    # ------------------------------------------------------------------
+    # Ancoras esportivas
+    # ------------------------------------------------------------------
+
+    def sport_anchors(self) -> list[dict[str, Any]]:
+        return sorted(self.store.list("sport_anchors"), key=lambda linha: str(linha.get("name", "")))
+
+    def create_sport_anchor(self, payload: SportAnchorCreate) -> dict[str, Any]:
+        """Academia, grupo de corrida ou time do bairro, com os dias de treino.
+
+        O sistema nao tem como medir habito de treino: o relatorio de vendas nao
+        traz nem hora nem cliente. A ancora e o gestor declarando a realidade que
+        ele conhece, e e por isso que toda sugestao que a usa diz que a origem
+        foi declarada, nunca medida.
+        """
+
+        anchor = payload.model_dump()
+        anchor["id"] = self._identifier(payload.name, "sport")
+        if self.store.get("sport_anchors", anchor["id"]):
+            raise ValueError("Já existe uma âncora com esse nome.")
+        self.store.put("sport_anchors", anchor["id"], anchor)
+        self._audit(self.store, "sport_anchor", anchor["id"], "criada", f"Âncora {payload.name} cadastrada")
+        return anchor
+
+    def update_sport_anchor(self, anchor_id: str, payload: SportAnchorUpdate) -> dict[str, Any]:
+        anchor = self.store.get("sport_anchors", anchor_id)
+        if not anchor:
+            raise ValueError("Âncora não encontrada.")
+        changes = {key: value for key, value in payload.model_dump(exclude_unset=True).items() if value is not None}
+        before = {key: anchor.get(key) for key in changes}
+        anchor.update(changes)
+        self.store.put("sport_anchors", anchor_id, anchor)
+        self._audit(
+            self.store, "sport_anchor", anchor_id, "editada",
+            f"Âncora {anchor['name']} atualizada",
+            self._diff(before, changes),
+        )
+        return anchor
+
+    def delete_sport_anchor(self, anchor_id: str) -> dict[str, str]:
+        anchor = self.store.get("sport_anchors", anchor_id)
+        if not anchor:
+            raise ValueError("Âncora não encontrada.")
+        self.store.delete("sport_anchors", anchor_id)
+        self._audit(self.store, "sport_anchor", anchor_id, "excluida", f"Âncora {anchor['name']} removida")
+        return {"id": anchor_id, "status": "excluida", "detail": "Âncora removida."}
 
     def channel_performance(self, days: int = 30) -> dict[str, Any]:
         """Quanto cada canal deixa depois da taxa dele.

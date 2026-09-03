@@ -32,6 +32,13 @@ const state = {
   growth: null,
   growthPeriod: 90,
   growthFilter: "all",
+  promotions: null,
+  promotionMonth: null,
+  promotionsPeriod: 90,
+  sportAnchors: [],
+  pricing: null,
+  pricingPeriod: 90,
+  marketPrices: [],
   planning: null,
   planningService: 0.9,
   couriers: [],
@@ -94,6 +101,14 @@ async function init() {
   document.getElementById("growth-period").addEventListener("change", async (event) => {
     state.growthPeriod = Number(event.target.value);
     await loadGrowth();
+  });
+  document.getElementById("promotions-period").addEventListener("change", async (event) => {
+    state.promotionsPeriod = Number(event.target.value);
+    await loadPromotions();
+  });
+  document.getElementById("pricing-period").addEventListener("change", async (event) => {
+    state.pricingPeriod = Number(event.target.value);
+    await loadPricing();
   });
   document.getElementById("closing-today").addEventListener("click", async () => {
     state.closingDate = "";
@@ -176,7 +191,7 @@ function setMobileNavigation(open) {
 async function loadAll() {
   setRefreshing(true);
   try {
-    const [config, dashboard, consumption, crossing, forecast, products, addons, inventory, orders, expenses, expenseSeries, operating, mediaSummary, media, channels, channelPerformance, lines, salesDay, growth, planning, couriers, deliveries, deliveryPerformance, catalogs, history] = await Promise.all([
+    const [config, dashboard, consumption, crossing, forecast, products, addons, inventory, orders, expenses, expenseSeries, operating, mediaSummary, media, channels, channelPerformance, lines, salesDay, growth, promotions, promotionMonth, pricing, marketPrices, planning, couriers, deliveries, deliveryPerformance, catalogs, history] = await Promise.all([
       api("/api/config"),
       api(`/api/dashboard?days=${state.period}`),
       api(`/api/inventory/consumption?days=${state.period}`),
@@ -196,6 +211,10 @@ async function loadAll() {
       api("/api/products/lines?days=30"),
       api(`/api/sales/daily${state.closingDate ? `?day=${state.closingDate}` : ""}`),
       api(`/api/growth?days=${state.growthPeriod}`),
+      api(`/api/promotions/week?days=${state.promotionsPeriod}&horizon=7`),
+      api(`/api/promotions/month?days=${state.promotionsPeriod}&weeks=4`),
+      api(`/api/pricing?days=${state.pricingPeriod}`),
+      api("/api/market-prices"),
       api(`/api/planning?days=90&horizon=7&service_level=${state.planningService}`),
       api("/api/couriers"),
       api(`/api/deliveries?days=${state.deliveryPeriod}`),
@@ -221,6 +240,10 @@ async function loadAll() {
     state.lines = lines;
     state.salesDay = salesDay;
     state.growth = growth;
+    state.promotions = promotions;
+    state.promotionMonth = promotionMonth;
+    state.pricing = pricing;
+    state.marketPrices = marketPrices;
     state.planning = planning;
     state.couriers = couriers;
     state.deliveries = deliveries;
@@ -286,6 +309,9 @@ function renderAll() {
   renderDelivery();
   renderBrand();
   renderGrowth();
+  renderPromotions();
+  renderPromotionMonth();
+  renderPricing();
   renderMedia();
   renderCatalogs();
   renderHistory();
@@ -451,6 +477,7 @@ function renderConsumption() {
   setText("#consumption-total", currency.format(totals.total_cost));
   setText("#consumption-daily", `${currency.format(totals.daily_cost)} por dia, em média`);
   setText("#consumption-sale", currency.format(totals.sale_cost));
+  setText("#consumption-withdrawal", currency.format(totals.withdrawal_cost || 0));
   setText("#consumption-loss", currency.format(totals.loss_cost));
   setText("#consumption-loss-share", totals.total_cost ? `${number.format(totals.loss_share)}% de tudo que saiu` : "nada registrado ainda");
   setText("#consumption-running-out", number.format(data.running_out.length));
@@ -463,19 +490,25 @@ function renderConsumption() {
       ? '<span class="muted-value">sem consumo</span>'
       : `<span class="status-pill ${item.days_left <= 7 ? "pending" : "success"}">${number.format(item.days_left)} dias</span>`;
     const lost = item.lost > 0 ? `<strong class="negative">${number.format(item.lost)} ${escapeHtml(item.unit)}</strong>` : `<span class="muted-value">—</span>`;
-    return `<tr><td><strong>${escapeHtml(item.name)}</strong></td><td class="align-right">${number.format(item.sold)} ${escapeHtml(item.unit)}</td><td class="align-right">${lost}</td><td class="align-right">${currency.format(item.cost)}</td><td class="align-right muted-value">${number.format(item.quantity)} ${escapeHtml(item.unit)}</td><td>${duration}</td></tr>`;
-  }).join("") : emptyRow(6, "Nenhuma saída de insumo no período.");
+    const withdrawn = item.withdrawn > 0 ? `<strong>${number.format(item.withdrawn)} ${escapeHtml(item.unit)}</strong>` : `<span class="muted-value">—</span>`;
+    return `<tr><td><strong>${escapeHtml(item.name)}</strong></td><td class="align-right">${number.format(item.sold)} ${escapeHtml(item.unit)}</td><td class="align-right">${withdrawn}</td><td class="align-right">${lost}</td><td class="align-right">${currency.format(item.cost)}</td><td class="align-right muted-value">${number.format(item.quantity)} ${escapeHtml(item.unit)}</td><td>${duration}</td></tr>`;
+  }).join("") : emptyRow(7, "Nenhuma saída de insumo no período.");
 
   document.getElementById("movement-body").innerHTML = data.history.length ? data.history.map((row) => {
-    const labels = { venda: "Venda", perda: "Baixa", entrada: "Entrada", compra: "Compra", estorno: "Estorno" };
-    const css = { venda: "success", perda: "pending", entrada: "neutral", compra: "success", estorno: "neutral" };
+    const labels = { venda: "Venda", retirada: "Retirada", perda: "Baixa", entrada: "Entrada", compra: "Compra", estorno: "Estorno" };
+    const css = { venda: "success", retirada: "neutral", perda: "pending", entrada: "neutral", compra: "success", estorno: "neutral" };
     const signal = row.quantity_delta > 0 ? "+" : "";
     // Baixa de venda só muda pelo pedido: oferecer o lápis aqui separaria o
     // pedido do estoque, que é exatamente o que a edição precisa evitar.
-    const actions = row.editable
+    const actions = row.kind === "retirada"
+      ? `<div class="row-actions"><button class="row-action danger" type="button" data-undo-withdrawal="${row.withdrawal_id}" title="Desfazer retirada completa"><i data-lucide="undo-2"></i></button></div>`
+      : row.editable
       ? `<div class="row-actions"><button class="row-action" type="button" data-edit-movement="${row.id}" title="Corrigir lançamento"><i data-lucide="pencil"></i></button></div>`
       : `<span class="muted-value" title="Esta movimentação é vinculada a uma venda, estorno ou compra.">—</span>`;
-    return `<tr><td class="muted-value">${escapeHtml(formatDateTime(row.created_at))}</td><td><strong>${escapeHtml(row.name)}</strong></td><td><span class="status-pill ${css[row.kind]}">${labels[row.kind]}</span></td><td>${escapeHtml(row.reason)}</td><td class="align-right"><strong>${signal}${number.format(row.quantity_delta)} ${escapeHtml(row.unit)}</strong></td><td class="align-right">${actions}</td></tr>`;
+    // A retirada lancada por cima do saldo e a excecao que precisa ficar a
+    // vista: e ela que explica o negativo na tela de Estoque.
+    const abaixo = row.below_balance ? ' <span class="status-pill pending" title="Registrada sem saldo: o estoque ficou negativo até a próxima contagem.">sem saldo</span>' : "";
+    return `<tr><td class="muted-value">${escapeHtml(formatDateTime(row.created_at))}</td><td><strong>${escapeHtml(row.name)}</strong></td><td><span class="status-pill ${css[row.kind]}">${labels[row.kind]}</span></td><td>${escapeHtml(row.reason)}${abaixo}</td><td class="align-right"><strong>${signal}${number.format(row.quantity_delta)} ${escapeHtml(row.unit)}</strong></td><td class="align-right">${actions}</td></tr>`;
   }).join("") : emptyRow(6, "Nenhuma movimentação registrada.");
   refreshIcons();
 }
@@ -483,17 +516,18 @@ function renderConsumption() {
 function renderConsumptionChart(series) {
   const container = document.getElementById("consumption-chart");
   if (!container) return;
-  const peak = Math.max(...series.map((row) => row.sale_cost + row.loss_cost), 0);
+  const peak = Math.max(...series.map((row) => row.sale_cost + (row.withdrawal_cost || 0) + row.loss_cost), 0);
   const top = niceCeiling(peak);
   const axis = document.getElementById("consumption-y-axis");
   if (axis) axis.innerHTML = [top, top / 2, 0].map((value) => `<span>${escapeHtml(currency.format(value))}</span>`).join("");
   container.style.setProperty("--columns", series.length);
   container.innerHTML = series.map((row) => {
-    const total = row.sale_cost + row.loss_cost;
+    const withdrawal = row.withdrawal_cost || 0;
+    const total = row.sale_cost + withdrawal + row.loss_cost;
     const height = (value) => (value > 0 ? Math.max(3, Math.round((value / top) * 150)) : 0);
-    const title = `${formatDate(row.date)}: ${currency.format(row.sale_cost)} em venda, ${currency.format(row.loss_cost)} em perda`;
+    const title = `${formatDate(row.date)}: ${currency.format(row.sale_cost)} em venda, ${currency.format(withdrawal)} em retirada, ${currency.format(row.loss_cost)} em perda`;
     const stack = total > 0
-      ? `<span class="bar loss" style="height:${height(row.loss_cost)}px"></span><span class="bar sale" style="height:${height(row.sale_cost)}px"></span>`
+      ? `<span class="bar loss" style="height:${height(row.loss_cost)}px"></span><span class="bar withdrawal" style="height:${height(withdrawal)}px"></span><span class="bar sale" style="height:${height(row.sale_cost)}px"></span>`
       : `<span class="bar empty"></span>`;
     return `<div class="bar-group" title="${escapeHtml(title)}"><span class="bar-stack">${stack}</span><span class="bar-label">${escapeHtml(shortDate.format(new Date(`${row.date}T12:00:00`)).replace(".", ""))}</span></div>`;
   }).join("");
@@ -569,6 +603,8 @@ function renderForecast() {
         ["Taxas de canal", "Taxa media efetiva dos canais", -totals.channel_fees, "negative"],
         ["Custo dos insumos", "Receita de cada produto x custo atual de polpa, frutas, caldas e complementos", -totals.cost_of_goods, "negative"],
         ["Custo de entregas", "Media dos fechamentos de entregadores", -totals.delivery_cost, "negative"],
+        ["Retiradas da equipe", "Insumo que sai para a operacao sem virar venda, pela media do historico", -(totals.withdrawal_cost || 0), "negative"],
+        ["Perdas previstas", "Quebra e vencimento, pela media do historico", -(totals.loss_cost || 0), "negative"],
         ["Despesas operacionais", "Media das despesas, sem comprar insumo duas vezes", -totals.operating_expenses, "negative"],
         ["Lucro operacional previsto", `Margem operacional: ${number.format(totals.operating_margin)}%`, totals.operating_profit, totals.operating_profit >= 0 ? "positive" : "negative"],
       ];
@@ -865,6 +901,7 @@ function openModal(name) {
   if (name === "addon") { document.getElementById("addon-form").reset(); populateAddonInventory(); }
   if (name === "adjust") populateAdjustSelect();
   if (name === "purchase") { openPurchase(); return; }
+  if (name === "withdrawal") { openWithdrawal(); return; }
   if (name === "product") { document.getElementById("product-form").reset(); document.getElementById("recipe-lines").innerHTML = ""; addRecipeLine(); }
   if (name === "fixed-cost") renderFixedCostSetup();
   if (name === "expense") { document.getElementById("expense-form").reset(); document.querySelector('#expense-form [name="due_date"]').value = dateInputValue(new Date()); toggleExpenseRepeat(); }
@@ -876,6 +913,17 @@ function openModal(name) {
 function closeModal() {
   document.querySelectorAll("dialog[open]").forEach(dialog => dialog.close());
   document.getElementById("modal-backdrop").hidden = true;
+}
+
+// Abre um modal que quem chamou já montou. openModal parte do nome do botão;
+// esta versão parte do id, que é do que precisa quem prepara o formulário
+// antes de mostrá-lo.
+function openDialog(id) {
+  const dialog = document.getElementById(id);
+  if (!dialog) return;
+  if (!dialog.open) dialog.showModal();
+  document.getElementById("modal-backdrop").hidden = false;
+  refreshIcons();
 }
 
 function bindForms() {
@@ -915,6 +963,21 @@ function bindForms() {
   document.getElementById("import-anota-report").addEventListener("click", () => document.getElementById("anota-report-file").click());
   document.getElementById("anota-report-file").addEventListener("change", importAnotaReport);
   document.getElementById("adjust-form").addEventListener("submit", submitAdjustment);
+  document.getElementById("withdrawal-form").addEventListener("submit", submitWithdrawal);
+  document.getElementById("add-withdrawal-line").addEventListener("click", addWithdrawalLine);
+  document.getElementById("withdrawal-lines").addEventListener("click", (event) => {
+    if (!event.target.closest("[data-remove-withdrawal]")) return;
+    // Retirada sem nenhuma linha não existe: apagar a última deixaria o
+    // funcionário diante de um formulário que só pode ser recusado.
+    if (document.querySelectorAll("#withdrawal-lines .withdrawal-line").length === 1) {
+      toast("A retirada precisa de pelo menos um insumo.", "error");
+      return;
+    }
+    event.target.closest(".withdrawal-line").remove();
+    refreshWithdrawalPreview();
+  });
+  document.getElementById("withdrawal-lines").addEventListener("input", refreshWithdrawalPreview);
+  document.getElementById("withdrawal-override").addEventListener("change", refreshWithdrawalPreview);
   document.getElementById("purchase-form").addEventListener("submit", submitPurchase);
   document.getElementById("purchase-inventory").addEventListener("change", (event) => {
     const item = state.inventory.find((row) => row.id === event.target.value);
@@ -1144,6 +1207,97 @@ async function submitAdjustment(event) {
   const form = new FormData(event.currentTarget);
   const inventoryId = form.get("inventory_id");
   await submitData(`/api/inventory/${inventoryId}/adjust`, { quantity_delta: Number(form.get("quantity_delta")), reason: form.get("reason") }, "Saldo de estoque atualizado.");
+}
+
+// ------------------------------------------------------- retirada de insumo
+//
+// A baixa por venda sai sozinha da ficha técnica. O que a loja não tinha era
+// como registrar o insumo que a equipe leva do estoque sem vender: a produção
+// da manhã, a degustação, a reposição do balcão. Sem esse lançamento o saldo
+// do sistema fica maior que o da prateleira, e a diferença só aparece na
+// contagem, virando "perda" sem que ninguém saiba o que foi.
+
+function openWithdrawal() {
+  const form = document.getElementById("withdrawal-form");
+  form.reset();
+  document.getElementById("withdrawal-lines").innerHTML = "";
+  document.getElementById("withdrawal-override").checked = false;
+  document.getElementById("withdrawal-override-field").hidden = true;
+  addWithdrawalLine();
+  openDialog("withdrawal-modal");
+  form.elements.responsible.focus();
+}
+
+function addWithdrawalLine() {
+  // O saldo vai na própria opção: quem retira decide olhando o que existe, e
+  // obrigar a conferir na tela de estoque antes faria o lançamento ser adiado.
+  const options = state.inventory
+    .map((item) => `<option value="${item.id}">${escapeHtml(item.name)} — ${number.format(item.quantity)} ${escapeHtml(item.unit)} em estoque</option>`)
+    .join("");
+  document.getElementById("withdrawal-lines").insertAdjacentHTML("beforeend", `<div class="recipe-line withdrawal-line"><label>Insumo<select required>${options}</select></label><label>Quantidade<input type="number" min="0.001" step="0.001" required placeholder="0,000" /></label><button type="button" data-remove-withdrawal title="Remover insumo"><i data-lucide="trash-2"></i></button></div>`);
+  refreshIcons();
+  refreshWithdrawalPreview();
+}
+
+function readWithdrawalLines() {
+  return [...document.querySelectorAll("#withdrawal-lines .withdrawal-line")]
+    .map((line) => ({ inventory_id: line.querySelector("select").value, quantity: Number(line.querySelector("input").value) }))
+    .filter((line) => line.inventory_id && line.quantity > 0);
+}
+
+function refreshWithdrawalPreview() {
+  const preview = document.getElementById("withdrawal-preview");
+  if (!preview) return;
+  const lines = readWithdrawalLines();
+  if (!lines.length) {
+    preview.textContent = "Escolha o insumo e quanto saiu do estoque.";
+    preview.className = "modal-result full neutral";
+    return;
+  }
+  // O mesmo insumo em duas linhas soma antes da conferência, como o servidor
+  // faz: mostrar cada linha isolada aprovaria aqui uma retirada que lá seria
+  // recusada por saldo.
+  const requested = new Map();
+  lines.forEach((line) => requested.set(line.inventory_id, (requested.get(line.inventory_id) || 0) + line.quantity));
+  let cost = 0;
+  const missing = [];
+  requested.forEach((quantity, inventoryId) => {
+    const item = state.inventory.find((row) => row.id === inventoryId);
+    if (!item) return;
+    cost += quantity * item.unit_cost;
+    if (item.quantity < quantity) missing.push(`${item.name} (há ${number.format(item.quantity)} ${item.unit}, a retirada pede ${number.format(quantity)})`);
+  });
+  // Faltar saldo nao encerra o assunto: o insumo pode ter saido de verdade e o
+  // cadastro estar atrasado. A recusa continua sendo o padrao, e a confirmacao
+  // ao lado e o que separa o erro de digitacao do estoque desatualizado.
+  const override = document.getElementById("withdrawal-override");
+  const overrideField = document.getElementById("withdrawal-override-field");
+  overrideField.hidden = !missing.length;
+  if (!missing.length) override.checked = false;
+  if (missing.length) {
+    preview.textContent = override.checked
+      ? `Sem saldo para ${missing.join(" · ")}. Vai ser registrada assim mesmo, e esse saldo fica negativo.`
+      : `Sem saldo para ${missing.join(" · ")}. Confira a quantidade, ou confirme abaixo para registrar assim mesmo.`;
+    preview.className = `modal-result full ${override.checked ? "neutral" : "negative"}`;
+    return;
+  }
+  preview.textContent = `${requested.size} ${requested.size === 1 ? "insumo" : "insumos"} · ${currency.format(cost)} saindo do estoque.`;
+  preview.className = "modal-result full positive";
+}
+
+async function submitWithdrawal(event) {
+  event.preventDefault();
+  const form = new FormData(event.currentTarget);
+  const items = readWithdrawalLines();
+  if (!items.length) return toast("Inclua ao menos um insumo na retirada.", "error");
+  const payload = {
+    items,
+    responsible: form.get("responsible"),
+    reason: form.get("reason"),
+    note: form.get("note") || null,
+    allow_negative: document.getElementById("withdrawal-override").checked,
+  };
+  await submitData("/api/inventory/withdrawals", payload, "Retirada registrada e estoque atualizado.");
 }
 
 function openPurchase(inventoryId = "") {
@@ -1627,6 +1781,35 @@ function todayInputValue() { const now = new Date(); return new Date(now.getTime
 // Crescimento: o que fazer para a loja crescer, com a conta aberta
 // ---------------------------------------------------------------------------
 
+async function loadPromotions() {
+  try {
+    const [semana, mes] = await Promise.all([
+      api(`/api/promotions/week?days=${state.promotionsPeriod}&horizon=7`),
+      api(`/api/promotions/month?days=${state.promotionsPeriod}&weeks=4`),
+    ]);
+    state.promotions = semana;
+    state.promotionMonth = mes;
+    renderPromotions();
+    renderPromotionMonth();
+  } catch (error) {
+    toast(error.message || "Não foi possível carregar as promoções.", "error");
+  }
+}
+
+async function loadPricing() {
+  try {
+    const [orientacao, referencias] = await Promise.all([
+      api(`/api/pricing?days=${state.pricingPeriod}`),
+      api("/api/market-prices"),
+    ]);
+    state.pricing = orientacao;
+    state.marketPrices = referencias;
+    renderPricing();
+  } catch (error) {
+    toast(error.message || "Não foi possível carregar os preços.", "error");
+  }
+}
+
 async function loadGrowth() {
   try {
     state.growth = await api(`/api/growth?days=${state.growthPeriod}`);
@@ -1686,6 +1869,229 @@ function renderGrowth() {
   blockers.innerHTML = data.blockers.map((row) => `
     <article class="insight attention"><span class="insight-icon"><i data-lucide="triangle-alert"></i></span><div><strong>${escapeHtml(row.title)}</strong><p>${escapeHtml(row.description)}</p></div></article>`).join("");
   refreshIcons();
+}
+
+// ------------------------------------------------------------ promoções
+//
+// A tela existe para uma coisa: não deixar o desconto sair sem que o gestor
+// veja o piso e o ponto de virada. Card sem esses dois números vira o conselho
+// genérico que o resto do sistema se recusa a dar.
+
+const PROMO_TYPES = {
+  "vale-da-semana": { label: "Vale da semana", icon: "calendar-off" },
+  "estoque-em-risco": { label: "Estoque em risco", icon: "hourglass" },
+  "linha-sport": { label: "Linha Sport", icon: "dumbbell" },
+};
+
+function renderPromotionMonth() {
+  const data = state.promotionMonth;
+  if (!data) return;
+
+  setText("#promotions-split-note", data.split_note || "");
+  document.getElementById("promotions-blocks").innerHTML = data.blocks.map((bloco) => {
+    const papel = bloco.id === data.weak_block ? "vazio" : "cheio";
+    const alavanca = papel === "vazio" ? "pede preço" : "pede ticket";
+    return `<article class="block-card ${papel}">
+      <p class="eyebrow">${escapeHtml(bloco.name)} · ${escapeHtml(alavanca)}</p>
+      <strong>${bloco.average_per_open_day === null ? "—" : currency.format(bloco.average_per_open_day)}</strong>
+      <small>por dia aberto</small>
+      <div class="block-metrics">
+        <span>Ticket<b>${bloco.average_ticket === null ? "—" : currency.format(bloco.average_ticket)}</b></span>
+        <span>Do faturamento<b>${number.format(bloco.share)}%</b></span>
+        <span>Dias abertos<b class="${bloco.closed_days ? "negative" : ""}">${number.format(bloco.open_days)} de ${number.format(bloco.possible_days)}</b></span>
+      </div>
+    </article>`;
+  }).join("");
+
+  document.getElementById("promotions-month").innerHTML = data.calendar.map((semana) => {
+    const ofertas = semana.promotions.length
+      ? semana.promotions.map((oferta) => promotionCard(oferta, oferta.id === semana.headline)).join("")
+      : '<p class="empty-state">Nenhuma oferta pôde ser montada para esta semana com o que está cadastrado.</p>';
+    return `<section class="month-week">
+      <header><span class="field-label">${escapeHtml(semana.label)}</span><small>${escapeHtml(formatDate(semana.starts_on))} a ${escapeHtml(formatDate(semana.ends_on))}</small></header>
+      ${ofertas}
+    </section>`;
+  }).join("");
+  refreshIcons();
+}
+
+function renderPromotions() {
+  const data = state.promotions;
+  if (!data) return;
+  const { coverage, channel } = data;
+  // Os cartões do topo falam do mês, que é a unidade em que o gestor decide;
+  // a tabela de dias abaixo continua sendo o detalhe que sustenta o corte.
+  const totals = state.promotionMonth?.totals || data.totals;
+
+  setText("#promotions-count", number.format(totals.count));
+  setText("#promotions-source", `escolhidas por ${coverage.source}`);
+  setText("#promotions-upside", totals.upside_monthly ? currency.format(totals.upside_monthly) : "—");
+  setText("#promotions-risk", data.totals.margin_at_risk_monthly ? currency.format(data.totals.margin_at_risk_monthly) : "—");
+  setText("#promotions-channel", channel.name);
+  setText("#promotions-channel-note", channel.reason || "");
+
+  const badge = document.getElementById("nav-promotions-count");
+  badge.hidden = totals.count === 0;
+  badge.textContent = totals.count;
+
+  document.getElementById("promotions-week-body").innerHTML = data.week.map((dia) => {
+    const fator = dia.factor === null
+      ? '<span class="muted-value">sem base</span>'
+      : `<span class="status-pill ${dia.is_valley ? "pending" : "success"}">${number.format(Math.round((dia.factor - 1) * 100))}%</span>`;
+    // Aberturas que faltaram é a leitura que mais muda decisão: promover um dia
+    // fechado é gastar margem numa porta que não abriu.
+    const leitura = dia.mostly_closed
+      ? `<strong class="negative">Fechou ${dia.closed_days} vez${dia.closed_days === 1 ? "" : "es"}</strong> — decidir abrir vem antes de decidir promover.`
+      : dia.is_valley ? "Vale: é aqui que a promoção se paga."
+      : dia.factor === null ? "Ainda sem observações suficientes."
+      : "Dia cheio: descontar aqui compra venda que já viria.";
+    return `<tr><td><strong>${escapeHtml(dia.name)}</strong><small class="muted-value"> ${escapeHtml(formatDate(dia.date))}</small></td><td class="align-right">${dia.average_revenue === null ? '<span class="muted-value">—</span>' : currency.format(dia.average_revenue)}</td><td class="align-right">${fator}</td><td class="align-right ${dia.mostly_closed ? "negative" : "muted-value"}">${number.format(dia.open_days)}</td><td>${leitura}</td></tr>`;
+  }).join("");
+
+  document.getElementById("promotions-list").innerHTML = data.promotions.length
+    ? data.promotions.map(promotionCard).join("")
+    : '<p class="empty-state">Nenhuma promoção sugerida para esta semana. Veja abaixo o que precisa ser decidido antes — o módulo prefere não sugerir a sugerir desconto sem base.</p>';
+
+  document.getElementById("promotions-anchors-body").innerHTML = data.anchors.length
+    ? data.anchors.map((linha) => `<tr><td><strong>${escapeHtml(linha.name)}</strong>${linha.note ? `<small class="muted-value"> ${escapeHtml(linha.note)}</small>` : ""}</td><td>${escapeHtml(linha.kind)}</td><td class="muted-value">${escapeHtml(linha.weekday_names.join(", "))}</td><td class="muted-value">${escapeHtml(linha.time_of_day)}</td><td class="align-right">${linha.people ? number.format(linha.people) : '<span class="muted-value">—</span>'}</td><td class="align-right"><div class="row-actions"><button class="row-action" type="button" data-edit-anchor="${linha.id}" title="Editar âncora"><i data-lucide="pencil"></i></button></div></td></tr>`).join("")
+    : emptyRow(6, "Nenhuma âncora cadastrada. Sem ela o módulo não sugere ação esportiva — ele não inventa quando o bairro treina.");
+
+  const blockers = document.getElementById("promotions-blockers");
+  document.getElementById("promotions-blockers-panel").hidden = data.blockers.length === 0;
+  blockers.innerHTML = data.blockers.map((row) => `
+    <article class="insight attention"><span class="insight-icon"><i data-lucide="triangle-alert"></i></span><div><strong>${escapeHtml(row.title)}</strong><p>${escapeHtml(row.description)}</p></div></article>`).join("");
+  refreshIcons();
+}
+
+function promotionCard(row, titular = false) {
+  const tipo = PROMO_TYPES[row.kind] || { label: row.kind, icon: "megaphone" };
+  const confianca = { alta: "success", media: "pending", baixa: "neutral" }[row.confidence] || "neutral";
+  // O veredito de preço viaja junto da oferta: promoção não conserta preço
+  // errado, e descontar um item que já está barato demais é perder duas vezes.
+  const preco = row.pricing && row.pricing.verdict !== "na-faixa"
+    ? `<p class="growth-premise ${row.pricing.verdict === "abaixo-do-custo" || row.pricing.verdict === "espaco-para-subir" ? "warning" : ""}"><i data-lucide="tag"></i><span><b>Preço-base: ${escapeHtml(row.pricing.action)}.</b> ${escapeHtml(row.pricing.headline)}${row.pricing.suggested_price ? ` Sugerido: ${currency.format(row.pricing.suggested_price)}.` : ""}</span></p>`
+    : "";
+  const marca = titular ? '<span class="status-pill success" title="Maior ganho entre as ofertas da semana">rode esta se só der para uma</span>' : "";
+  // O ponto de virada é o motivo de a tela existir: sem ele o card seria só um
+  // desconto bonito.
+  const virada = row.breakeven && row.breakeven.units !== null
+    ? `<div class="promo-breakeven"><span class="field-label">Ponto de virada</span><strong>+${number.format(row.breakeven.units)} unidade${row.breakeven.units === 1 ? "" : "s"} nesta ${escapeHtml(row.weekday)}</strong><p>${escapeHtml(row.breakeven.note)}</p></div>`
+    : '<div class="promo-breakeven none"><span class="field-label">Ponto de virada</span><p>Sem volume medido por produto neste dia o ponto de virada não pode ser calculado. Importe os itens da Anota Aí para ele aparecer.</p></div>';
+  const impacto = row.upside_monthly
+    ? `<span class="growth-impact"><b>+${currency.format(row.upside_monthly)}</b><small>por mês</small></span>`
+    : '<span class="growth-impact none"><b>sem número</b><small>premissa sem base</small></span>';
+  return `<article class="growth-card promo-card" data-promo-kind="${escapeHtml(row.kind)}">
+    <div class="growth-rank">${row.rank}</div>
+    <div class="growth-body">
+      <div class="growth-top">
+        <span class="growth-type"><i data-lucide="${tipo.icon}"></i>${escapeHtml(row.goal || tipo.label)} · ${escapeHtml(row.block_name || row.weekday)}</span>
+        ${marca}
+        <span class="status-pill ${confianca}" title="${escapeHtml(row.confidence_note)}">${escapeHtml(row.source)}</span>
+      </div>
+      <h3>${escapeHtml(row.title)}</h3>
+      <div class="promo-price">
+        <span class="promo-from">${currency.format(row.price.from)}</span>
+        <i data-lucide="arrow-right"></i>
+        <span class="promo-to">${currency.format(row.price.to)}</span>
+        <span class="status-pill pending">-${number.format(row.price.discount_percent)}%</span>
+      </div>
+      <p class="promo-floor"><i data-lucide="shield"></i><span>Piso: custo com quebra de ${currency.format(row.floor.cost_with_shrinkage)}${row.floor.min_price ? `, preço mínimo de ${currency.format(row.floor.min_price)}` : ""}. O desconto máximo antes de zerar a sobra é ${number.format(row.floor.max_discount_percent)}%.</span></p>
+      ${preco}
+      ${virada}
+      <p class="growth-evidence"><i data-lucide="search"></i><span>${escapeHtml(row.evidence)}</span></p>
+      <p class="growth-action"><i data-lucide="arrow-right"></i><span>${escapeHtml(row.why_this_day)}</span></p>
+      ${row.channel ? `<p class="growth-premise"><i data-lucide="route"></i><span>Publicar em ${escapeHtml(row.channel)}. ${escapeHtml(row.channel_note || "")}</span></p>` : ""}
+      ${row.upside_note ? `<p class="growth-premise"><i data-lucide="scale"></i><span>${escapeHtml(row.upside_note)}</span></p>` : ""}
+    </div>
+    ${impacto}
+  </article>`;
+}
+
+// ---------------------------------------------------------------- preços
+//
+// A tela não recomenda preço a partir do custo e finge que isso é leitura de
+// mercado. Ela separa as três âncoras e diz qual está faltando.
+
+const PRICING_VERDICTS = {
+  "abaixo-do-custo": { icon: "triangle-alert", css: "danger" },
+  "canal-no-prejuizo": { icon: "triangle-alert", css: "danger" },
+  "espaco-para-subir": { icon: "trending-up", css: "success" },
+  "acima-do-mercado": { icon: "gem", css: "pending" },
+  "na-faixa": { icon: "check", css: "neutral" },
+  "sem-referencia": { icon: "help-circle", css: "neutral" },
+};
+
+function renderPricing() {
+  const data = state.pricing;
+  if (!data) return;
+  const { totals, coverage, store_market: mercado } = data;
+
+  setText("#pricing-room", number.format(totals.room_to_raise));
+  setText("#pricing-room-note", totals.monthly_upside
+    ? `até ${currency.format(totals.monthly_upside)} por mês, no volume medido`
+    : "ganho não projetável sem volume por produto");
+  setText("#pricing-below", number.format(totals.below_floor));
+  setText("#pricing-ticket", mercado.average_ticket ? currency.format(mercado.average_ticket) : "—");
+  setText("#pricing-ticket-note", mercado.orders ? `${number.format(mercado.orders)} pedidos no período` : "sem pedidos no período");
+  setText("#pricing-references", number.format(coverage.reference_count));
+  setText("#pricing-competitors", coverage.competitors.length
+    ? coverage.competitors.slice(0, 3).join(", ")
+    : "nenhum concorrente cadastrado");
+
+  const badge = document.getElementById("nav-pricing-count");
+  badge.hidden = totals.below_floor + totals.room_to_raise === 0;
+  badge.textContent = totals.below_floor + totals.room_to_raise;
+
+  document.getElementById("pricing-list").innerHTML = data.products.length
+    ? data.products.map(pricingCard).join("")
+    : '<p class="empty-state">Nenhum produto ativo com ficha técnica para precificar.</p>';
+
+  document.getElementById("pricing-market-body").innerHTML = state.marketPrices.length
+    ? state.marketPrices.map((linha) => {
+        const produto = state.products.find((p) => p.id === linha.product_id);
+        const alvo = produto ? escapeHtml(produto.name) : linha.category ? `${escapeHtml(linha.category)} <em>(categoria)</em>` : '<span class="muted-value">—</span>';
+        return `<tr><td><strong>${escapeHtml(linha.competitor)}</strong></td><td>${escapeHtml(linha.description)}</td><td>${alvo}</td><td class="muted-value">${escapeHtml(linha.channel || "—")}</td><td class="align-right"><strong>${currency.format(linha.price)}</strong></td><td class="muted-value">${linha.observed_on ? escapeHtml(formatDate(linha.observed_on)) : "—"}</td><td class="align-right"><div class="row-actions"><button class="row-action" type="button" data-edit-market-price="${linha.id}" title="Editar referência"><i data-lucide="pencil"></i></button></div></td></tr>`;
+      }).join("")
+    : emptyRow(7, "Nenhuma referência cadastrada. Sem elas o preço só pode ser julgado por custo e margem-alvo.");
+
+  document.getElementById("pricing-store-body").innerHTML = mercado.channels.length
+    ? mercado.channels.map((canal) => `<tr><td><strong>${escapeHtml(canal.name)}</strong></td><td class="align-right muted-value">${number.format(canal.orders)}</td><td class="align-right"><strong>${currency.format(canal.average_ticket)}</strong></td></tr>`).join("")
+    : emptyRow(3, "Sem pedidos no período.");
+  document.getElementById("pricing-bands").innerHTML = mercado.price_bands.length
+    ? mercado.price_bands.map((faixa) => `<span><b>${number.format(faixa.share)}%</b>${escapeHtml(faixa.band)}</span>`).join("")
+    : "";
+
+  document.getElementById("pricing-blockers-panel").hidden = data.blockers.length === 0;
+  document.getElementById("pricing-blockers").innerHTML = data.blockers.map((row) => `
+    <article class="insight attention"><span class="insight-icon"><i data-lucide="triangle-alert"></i></span><div><strong>${escapeHtml(row.title)}</strong><p>${escapeHtml(row.description)}</p></div></article>`).join("");
+  refreshIcons();
+}
+
+function pricingCard(row) {
+  const v = row.verdict;
+  const estilo = PRICING_VERDICTS[v.id] || { icon: "tag", css: "neutral" };
+  const mercado = row.market.samples
+    ? `<p class="growth-evidence"><i data-lucide="tags"></i><span>Mercado: mediana de ${currency.format(row.market.median)} entre ${currency.format(row.market.min)} e ${currency.format(row.market.max)}, em ${row.market.samples} referência(s) por ${escapeHtml(row.market.match)}${row.market.stale_share >= 50 ? " — a maioria com mais de 120 dias" : ""}.</span></p>`
+    : '<p class="growth-evidence"><i data-lucide="tags"></i><span>Mercado: sem referência cadastrada para este produto.</span></p>';
+  const canais = row.channels.map((canal) => `<span>${escapeHtml(canal.name)}<b class="${canal.contribution > 0 ? "" : "negative"}">${currency.format(canal.contribution)}</b></span>`).join("");
+  const sugerido = v.suggested_price
+    ? `<span class="growth-impact"><b>${currency.format(v.suggested_price)}</b><small>preço sugerido</small></span>`
+    : `<span class="growth-impact none"><b>${number.format(row.margin)}%</b><small>margem atual</small></span>`;
+  return `<article class="growth-card" data-pricing-verdict="${escapeHtml(v.id)}">
+    <div class="growth-rank"><i data-lucide="${estilo.icon}"></i></div>
+    <div class="growth-body">
+      <div class="growth-top">
+        <span class="growth-type">${escapeHtml(row.name)}</span>
+        <span class="status-pill ${estilo.css}">${escapeHtml(v.action)}</span>
+      </div>
+      <h3>${escapeHtml(v.headline)}</h3>
+      <p class="growth-action"><i data-lucide="arrow-right"></i><span>${escapeHtml(v.reason)}</span></p>
+      ${mercado}
+      <p class="growth-premise"><i data-lucide="shield"></i><span>Piso: ${currency.format(row.cost.with_shrinkage)} de custo com quebra (ficha ${currency.format(row.cost.recipe)}). Escada: ${row.ladder.filter((l) => l.price).map((l) => `${l.margin}% = ${currency.format(l.price)}`).join(" · ")}.</span></p>
+      <div class="growth-metrics">${canais}</div>
+    </div>
+    ${sugerido}
+  </article>`;
 }
 
 function growthCard(row) {

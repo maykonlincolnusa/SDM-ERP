@@ -272,6 +272,9 @@ i[data-lucide] { width: 18px; height: 18px; stroke-width: 1.75; }
 /* -------------------------------------------------------------- Dashboard */
 
 .metric-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; }
+/* Consumo tem cinco cartões: venda, retirada e perda precisam ficar lado a
+   lado para a comparação que a tela existe para fazer. */
+.metric-grid.consumption-metrics { grid-template-columns: repeat(auto-fit, minmax(168px, 1fr)); }
 .metric-card { min-height: 150px; padding: 20px; border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--paper); box-shadow: var(--shadow-card); }
 .metric-icon { display: grid; place-items: center; width: 36px; height: 36px; margin-bottom: 14px; border-radius: 50%; }
 .metric-icon i { width: 17px; height: 17px; }
@@ -335,12 +338,14 @@ i[data-lucide] { width: 18px; height: 18px; stroke-width: 1.75; }
 .chart.stacked .bar-stack { display: flex; flex-direction: column-reverse; align-items: center; width: min(30px, 74%); }
 .chart.stacked .bar { width: 100%; min-height: 0; border-radius: 0; transition: height 450ms ease; }
 .chart.stacked .bar.sale { background: var(--accent); border-radius: 0 0 3px 3px; }
+.chart.stacked .bar.withdrawal { background: var(--teal); }
 .chart.stacked .bar.loss { background: var(--orange); border-radius: 8px 8px 0 0; }
 .chart.stacked .bar.sale:only-child { border-radius: 8px 8px 3px 3px; }
 .chart.stacked .bar.empty { height: 2px; border-radius: 2px; background: var(--line-strong); }
 .chart-legend { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 11px; font-weight: 600; }
 .legend-key { width: 9px; height: 9px; border-radius: 3px; }
 .legend-key.sale { background: var(--accent); }
+.legend-key.withdrawal { background: var(--teal); margin-left: 6px; }
 .legend-key.loss { background: var(--orange); margin-left: 6px; }
 td strong.negative { color: var(--orange-ink); }
 
@@ -600,6 +605,8 @@ td strong.negative { color: var(--orange-ink); }
 .recipe-line label { font-size: 10px; }
 .recipe-line button { display: grid; place-items: center; width: 34px; height: 34px; padding: 0; border: 0; border-radius: 50%; color: var(--red); background: var(--red-soft); }
 .recipe-line button i { width: 15px; height: 15px; }
+.withdrawal-fieldset { margin-top: 16px; }
+#withdrawal-override-field { margin-top: 10px; padding: 12px 14px; border: 1px solid var(--orange); border-radius: var(--r-md); background: var(--orange-soft); }
 .recipe-add { margin-top: 10px; font-size: 12px; }
 .recipe-add i { width: 14px; height: 14px; }
 
@@ -829,6 +836,9 @@ tbody tr:hover .row-action.danger { color: var(--muted); }
 .nutrition-fieldset .form-grid { margin-top: 0; }
 
 .checkbox-field { display: flex !important; align-items: flex-start; gap: 10px; }
+/* O display com !important acima venceria o atributo hidden, e o campo que so
+   deve aparecer na excecao ficaria sempre visivel. */
+.checkbox-field[hidden] { display: none !important; }
 .checkbox-field input { width: 20px !important; height: 20px !important; flex: 0 0 20px; margin-top: 2px; accent-color: var(--accent); }
 .checkbox-field span { display: grid; gap: 2px; color: var(--ink-soft); font-size: 13px; font-weight: 600; }
 .checkbox-field small { color: var(--faint); font-size: 11px; font-weight: 500; line-height: 1.35; }
@@ -958,6 +968,51 @@ tbody tr:hover .row-action.danger { color: var(--muted); }
   .growth-card h3 { font-size: 16px; }
 }
 
+
+/* Promoções --------------------------------------------------------------- */
+/* O preço e o ponto de virada são o motivo de o card existir: eles ganham peso
+   visual porque são o que impede o desconto de sair sem conta. */
+.promo-price { display: flex; align-items: center; gap: 10px; margin: 2px 0 10px; }
+.promo-price i { width: 15px; height: 15px; color: var(--faint); }
+.promo-from { color: var(--faint); font-size: 15px; font-weight: 600; text-decoration: line-through; }
+.promo-to { color: var(--ink); font-size: 22px; font-weight: 700; letter-spacing: -0.02em; }
+.promo-floor { display: flex; align-items: flex-start; gap: 8px; margin: 0 0 10px; color: var(--muted); font-size: 12px; line-height: 1.5; }
+.promo-floor i { flex: 0 0 14px; width: 14px; height: 14px; margin-top: 3px; color: var(--green-ink); }
+.promo-breakeven { margin: 0 0 10px; padding: 12px 14px; border: 1px solid var(--accent); border-radius: var(--r-md); background: var(--accent-soft); }
+.promo-breakeven .field-label { display: block; margin-bottom: 3px; color: var(--accent); }
+.promo-breakeven strong { display: block; margin-bottom: 4px; color: var(--ink); font-size: 15px; font-weight: 700; }
+.promo-breakeven p { margin: 0; color: var(--ink-soft); font-size: 12.5px; line-height: 1.5; }
+.promo-breakeven.none { border-color: var(--line); background: var(--canvas); }
+.promo-breakeven.none .field-label { color: var(--muted); }
+
+/* A oferta se distingue do conselho de crescimento por um traço na lateral:
+   são cards da mesma família, mas um é para fazer nesta semana. */
+.growth-card.promo-card { border-left: 3px solid var(--accent); }
+
+/* Os dois pedaços da semana, lado a lado: o contraste entre eles é o
+   argumento da tela inteira. */
+.block-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 14px; margin-top: 4px; }
+.block-card { padding: 18px 20px; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--canvas); }
+.block-card.vazio { border-color: var(--orange); background: var(--orange-soft); }
+.block-card.cheio { border-color: var(--green); background: var(--green-soft); }
+.block-card .eyebrow { margin: 0 0 6px; }
+.block-card strong { display: block; color: var(--ink); font-size: 26px; font-weight: 700; letter-spacing: -0.02em; }
+.block-card > small { display: block; margin-bottom: 12px; color: var(--muted); font-size: 11.5px; font-weight: 600; }
+.block-metrics { display: flex; flex-wrap: wrap; gap: 6px 18px; padding-top: 10px; border-top: 1px solid var(--line); }
+.block-metrics span { display: grid; gap: 2px; color: var(--faint); font-size: 10.5px; font-weight: 600; }
+.block-metrics b { color: var(--ink); font-size: 13px; font-weight: 700; }
+
+.month-grid { display: grid; gap: 18px; }
+.month-week { display: grid; gap: 10px; }
+.month-week > header { display: flex; align-items: baseline; gap: 10px; padding-bottom: 6px; border-bottom: 1px solid var(--line); }
+.month-week > header small { color: var(--muted); font-size: 12px; font-weight: 600; }
+.growth-premise.warning span { color: var(--orange-ink); }
+.growth-premise.warning i { color: var(--orange); }
+
+.weekday-picker { display: flex; flex-wrap: wrap; gap: 6px; }
+.weekday-picker label { display: inline-flex; align-items: center; gap: 5px; padding: 7px 11px; border: 1px solid var(--line); border-radius: 999px; color: var(--ink-soft); font-size: 12px; font-weight: 600; cursor: pointer; }
+.weekday-picker input { width: 15px !important; height: 15px !important; margin: 0; accent-color: var(--accent); }
+.weekday-picker label:has(input:checked) { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); }
 
 /* Planejamento ------------------------------------------------------------ */
 .plan-why { max-width: 34ch; }

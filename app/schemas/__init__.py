@@ -24,6 +24,10 @@ from app.schemas.models import (
     InventoryItemCreate,
     InventoryItemUpdate,
     InventoryPurchase,
+    InventoryWithdrawal,
+    InventoryWithdrawalLine,
+    MarketPriceCreate,
+    MarketPriceUpdate,
     MediaUpdate,
     MovementUpdate,
     Nutrition,
@@ -37,6 +41,8 @@ from app.schemas.models import (
     ProductSimulation,
     ProductUpdate,
     RecipeLine,
+    SportAnchorCreate,
+    SportAnchorUpdate,
 )
 
 __all__ = [
@@ -65,6 +71,10 @@ __all__ = [
     "InventoryItemCreate",
     "InventoryItemUpdate",
     "InventoryPurchase",
+    "InventoryWithdrawal",
+    "InventoryWithdrawalLine",
+    "MarketPriceCreate",
+    "MarketPriceUpdate",
     "MediaUpdate",
     "MovementUpdate",
     "Nutrition",
@@ -78,4 +88,6 @@ __all__ = [
     "ProductSimulation",
     "ProductUpdate",
     "RecipeLine",
+    "SportAnchorCreate",
+    "SportAnchorUpdate",
 ]

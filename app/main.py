@@ -29,6 +29,9 @@ from app.schemas import (
     InventoryItemCreate,
     InventoryItemUpdate,
     InventoryPurchase,
+    InventoryWithdrawal,
+    MarketPriceCreate,
+    MarketPriceUpdate,
     MediaUpdate,
     MovementUpdate,
     OrderCancel,
@@ -37,6 +40,8 @@ from app.schemas import (
     ProductCreate,
     ProductSimulation,
     ProductUpdate,
+    SportAnchorCreate,
+    SportAnchorUpdate,
 )
 from app.services import (
     CatalogService,
@@ -47,8 +52,15 @@ from app.services import (
     GrowthService,
     MediaService,
     PlanningService,
+    PricingService,
+    PromotionService,
 )
-from scripts.import_anota_ai import importar as importar_anota_ai, ler_relatorio as ler_relatorio_anota_ai
+from scripts.import_anota_ai import (
+    aplicar_itens as aplicar_itens_anota_ai,
+    importar as importar_anota_ai,
+    ler_relatorio as ler_relatorio_anota_ai,
+    ler_relatorio_itens as ler_relatorio_itens_anota_ai,
+)
 
 BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
@@ -394,6 +406,26 @@ def adjust_inventory(inventory_id: str, payload: InventoryAdjustment, service: E
     return _run(lambda: service.adjust_inventory(inventory_id, payload))
 
 
+@app.post("/api/inventory/withdrawals", status_code=status.HTTP_201_CREATED)
+def register_inventory_withdrawal(
+    payload: InventoryWithdrawal,
+    service: ERPService = Depends(erp),
+    _: dict = Depends(current_user),
+) -> dict:
+    """Baixa varios insumos, identificando a retirada e quem a fez."""
+    return _run(lambda: service.register_inventory_withdrawal(payload))
+
+
+@app.delete("/api/inventory/withdrawals/{withdrawal_id}")
+def undo_inventory_withdrawal(
+    withdrawal_id: str,
+    service: ERPService = Depends(erp),
+    _: dict = Depends(current_user),
+) -> dict:
+    """Desfaz todas as linhas de uma retirada de uma vez."""
+    return _run(lambda: service.undo_inventory_withdrawal(withdrawal_id))
+
+
 @app.post("/api/inventory/{inventory_id}/purchases", status_code=status.HTTP_201_CREATED)
 def register_inventory_purchase(
     inventory_id: str,
@@ -522,6 +554,40 @@ async def import_anota_ai_report(
             temp_path.unlink(missing_ok=True)
 
 
+@app.post("/api/imports/anota-ai/items")
+async def import_anota_ai_items(
+    report: UploadFile = File(...),
+    database: Store = Depends(store),
+    _: dict = Depends(current_user),
+) -> dict:
+    """Enriquece pedidos já importados com os itens vendidos.
+
+    O relatório de pedidos traz o faturamento e não traz o que foi vendido, e é
+    essa falta que deixa custo, margem por produto e sugestão de promoção sem
+    base. Este segundo relatório fecha a lacuna sem refazer a importação — e sem
+    tocar no estoque, porque a baixa desses insumos já aconteceu na prateleira.
+    """
+
+    if not (report.filename or "").lower().endswith(".xlsx"):
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Envie o relatório de itens em formato .xlsx.")
+    content = await report.read()
+    if len(content) > 10 * 1024 * 1024:
+        raise HTTPException(status_code=status.HTTP_413_CONTENT_TOO_LARGE, detail="O relatório excede o limite de 10 MB.")
+
+    temp_path: Path | None = None
+    try:
+        with NamedTemporaryFile(suffix=".xlsx", delete=False) as temporary:
+            temporary.write(content)
+            temp_path = Path(temporary.name)
+        items, discarded = ler_relatorio_itens_anota_ai(temp_path)
+        return {**aplicar_itens_anota_ai(items, database), "discarded": discarded}
+    except ValueError as error:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error)) from error
+    finally:
+        if temp_path:
+            temp_path.unlink(missing_ok=True)
+
+
 @app.get("/api/expenses")
 def expenses(service: ERPService = Depends(erp), _: dict = Depends(current_user)) -> list[dict]:
     return service.expenses()
@@ -623,6 +689,102 @@ def update_channel(
 @app.delete("/api/channels/{channel_id}")
 def delete_channel(channel_id: str, service: ERPService = Depends(erp), _: dict = Depends(current_user)) -> dict:
     return _run(lambda: service.delete_channel(channel_id))
+
+
+# ----------------------------------------------------------------------
+# Promoções da semana e âncoras esportivas
+# ----------------------------------------------------------------------
+
+
+@app.get("/api/promotions/week")
+def promotions_week(
+    days: int = Query(default=90, ge=14, le=365),
+    horizon: int = Query(default=7, ge=1, le=14),
+    database: Store = Depends(store),
+    _: dict = Depends(current_user),
+) -> dict:
+    """Calendário de promoções dos próximos dias, com o ponto de virada de cada uma."""
+    return PromotionService(database).week(days, horizon)
+
+
+@app.get("/api/promotions/month")
+def promotions_month(
+    days: int = Query(default=90, ge=14, le=365),
+    weeks: int = Query(default=4, ge=1, le=8),
+    database: Store = Depends(store),
+    _: dict = Depends(current_user),
+) -> dict:
+    """Calendário do mês: uma oferta por bloco da semana, girando as alavancas."""
+    return PromotionService(database).month(days, weeks)
+
+
+@app.get("/api/pricing")
+def pricing_guidance(
+    days: int = Query(default=90, ge=7, le=365),
+    product_id: str | None = Query(default=None),
+    database: Store = Depends(store),
+    _: dict = Depends(current_user),
+) -> dict:
+    """Como precificar: piso de custo, margem-alvo e as duas leituras de mercado."""
+    return PricingService(database).guidance(days, product_id)
+
+
+@app.get("/api/market-prices")
+def market_prices(service: ERPService = Depends(erp), _: dict = Depends(current_user)) -> list[dict]:
+    return service.market_prices()
+
+
+@app.post("/api/market-prices", status_code=status.HTTP_201_CREATED)
+def create_market_price(
+    payload: MarketPriceCreate,
+    service: ERPService = Depends(erp),
+    _: dict = Depends(current_user),
+) -> dict:
+    return _run(lambda: service.create_market_price(payload))
+
+
+@app.patch("/api/market-prices/{reference_id}")
+def update_market_price(
+    reference_id: str,
+    payload: MarketPriceUpdate,
+    service: ERPService = Depends(erp),
+    _: dict = Depends(current_user),
+) -> dict:
+    return _run(lambda: service.update_market_price(reference_id, payload))
+
+
+@app.delete("/api/market-prices/{reference_id}")
+def delete_market_price(reference_id: str, service: ERPService = Depends(erp), _: dict = Depends(current_user)) -> dict:
+    return _run(lambda: service.delete_market_price(reference_id))
+
+
+@app.get("/api/sport-anchors")
+def sport_anchors(service: ERPService = Depends(erp), _: dict = Depends(current_user)) -> list[dict]:
+    return service.sport_anchors()
+
+
+@app.post("/api/sport-anchors", status_code=status.HTTP_201_CREATED)
+def create_sport_anchor(
+    payload: SportAnchorCreate,
+    service: ERPService = Depends(erp),
+    _: dict = Depends(current_user),
+) -> dict:
+    return _run(lambda: service.create_sport_anchor(payload))
+
+
+@app.patch("/api/sport-anchors/{anchor_id}")
+def update_sport_anchor(
+    anchor_id: str,
+    payload: SportAnchorUpdate,
+    service: ERPService = Depends(erp),
+    _: dict = Depends(current_user),
+) -> dict:
+    return _run(lambda: service.update_sport_anchor(anchor_id, payload))
+
+
+@app.delete("/api/sport-anchors/{anchor_id}")
+def delete_sport_anchor(anchor_id: str, service: ERPService = Depends(erp), _: dict = Depends(current_user)) -> dict:
+    return _run(lambda: service.delete_sport_anchor(anchor_id))
 
 
 # ----------------------------------------------------------------------

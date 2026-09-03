@@ -105,6 +105,35 @@ class InventoryAdjustment(BaseModel):
     reason: str = Field(min_length=2, max_length=120)
 
 
+class InventoryWithdrawalLine(BaseModel):
+    """Um insumo e a quantidade que saiu em uma retirada operacional."""
+
+    inventory_id: str = Field(min_length=1, max_length=80)
+    quantity: float = Field(gt=0)
+
+
+class InventoryWithdrawal(BaseModel):
+    """Retirada de varios insumos de uma vez.
+
+    A retirada e diferente de uma perda: ela registra quem levou os insumos
+    para a operacao e alimenta o consumo usado pelo planejamento. Cada linha
+    vira um movimento, mas todas carregam o mesmo identificador de retirada
+    para poderem ser desfeitas juntas.
+    """
+
+    items: list[InventoryWithdrawalLine] = Field(min_length=1, max_length=50)
+    responsible: str = Field(min_length=2, max_length=80)
+    reason: str = Field(default="Retirada operacional", min_length=2, max_length=120)
+    note: str | None = Field(default=None, max_length=160)
+    # A retirada e recusada quando falta saldo, porque o erro de digitacao mais
+    # comum — 50 no lugar de 0,5 — some sem isso. Mas o saldo do sistema fica
+    # atrasado com frequencia, e a venda ja nunca e bloqueada por esse motivo:
+    # travar a retirada faria a saida voltar a ser invisivel justamente na loja
+    # que mais precisa registra-la. Entao a recusa e o padrao e a tela oferece
+    # esta confirmacao explicita, que grava e deixa o saldo negativo.
+    allow_negative: bool = False
+
+
 class InventoryPurchase(BaseModel):
     """Recebimento de uma compra de insumo.
 
@@ -492,6 +521,104 @@ class ProductSimulation(BaseModel):
         if not self.recipe and not self.extra_cost:
             raise ValueError("Informe a ficha técnica ou um custo estimado para simular.")
         return self
+
+
+class MarketPriceCreate(BaseModel):
+    """Preço que um concorrente cobra por um produto equivalente.
+
+    O sistema não tem, e não tem como ter, preço de mercado: não existe fonte
+    dentro da loja que diga por quanto o vizinho vende. Sem este cadastro, o
+    preço só pode ser julgado por custo e margem-alvo — o que responde "quanto
+    preciso cobrar", nunca "quanto dá para cobrar".
+
+    Uma linha aqui é uma observação datada, não uma verdade permanente: preço
+    de concorrente muda, e uma referência de seis meses atrás vale menos que
+    uma de ontem. Por isso a data entra e a tela mostra a idade dela.
+    """
+
+    competitor: str = Field(min_length=2, max_length=80)
+    # Produto do próprio cardápio a que essa referência se compara. Vazio serve
+    # para a referência de categoria, quando o concorrente não tem equivalente
+    # exato — é menos preciso e a tela diz isso.
+    product_id: str | None = Field(default=None, max_length=80)
+    category: str | None = Field(default=None, max_length=40)
+    description: str = Field(min_length=2, max_length=100)
+    price: float = Field(gt=0)
+    # Onde o preço foi visto. O mesmo concorrente cobra diferente no balcão e
+    # no marketplace, e comparar o preço de iFood dele com o de balcão da loja
+    # é comparar coisas diferentes.
+    channel: str = Field(default="Balcao", min_length=2, max_length=40)
+    observed_on: str | None = None
+    note: str | None = Field(default=None, max_length=160)
+
+    @model_validator(mode="after")
+    def require_target(self) -> "MarketPriceCreate":
+        if not self.product_id and not self.category:
+            raise ValueError("Ligue a referência a um produto do cardápio ou a uma categoria.")
+        if self.observed_on:
+            try:
+                date.fromisoformat(str(self.observed_on)[:10])
+            except ValueError as error:
+                raise ValueError("Informe a data da observação no formato AAAA-MM-DD.") from error
+        return self
+
+
+class MarketPriceUpdate(BaseModel):
+    competitor: str | None = Field(default=None, min_length=2, max_length=80)
+    product_id: str | None = Field(default=None, max_length=80)
+    category: str | None = Field(default=None, max_length=40)
+    description: str | None = Field(default=None, min_length=2, max_length=100)
+    price: float | None = Field(default=None, gt=0)
+    channel: str | None = Field(default=None, min_length=2, max_length=40)
+    observed_on: str | None = None
+    note: str | None = Field(default=None, max_length=160)
+
+
+class SportAnchorCreate(BaseModel):
+    """Uma âncora esportiva do bairro: a academia, o grupo de corrida, o time.
+
+    O sistema não tem nenhum dado sobre treino. Deduzir de venda funciona
+    quando a linha Sport já tem histórico, e hoje ela não tem nenhum — então
+    sugerir "segunda é dia de academia" seria o conselho genérico que o resto
+    do módulo se recusa a dar.
+
+    Cadastrar a âncora é a saída: o gestor declara a realidade que ele conhece
+    e o dado ainda não mostra. Cada sugestão diz de qual das duas fontes veio,
+    para nunca se confundir uma coisa com a outra.
+    """
+
+    name: str = Field(min_length=2, max_length=80)
+    kind: Literal["Academia", "Corrida", "Time", "Evento", "Outro"] = "Academia"
+    # Dias em que esse público treina, 0 = segunda. É o que liga a âncora ao
+    # calendário da semana; vazio significa "todo dia".
+    weekdays: list[int] = Field(default_factory=list, max_length=7)
+    # Momento do treino. O relatório da Anota Aí não traz hora, então isto não
+    # se deduz de venda nenhuma — só o gestor sabe.
+    time_of_day: Literal["Manhã", "Tarde", "Noite"] = "Manhã"
+    # Tamanho declarado do público. Serve de ordem de grandeza no impacto, e
+    # aparece na tela como premissa, nunca como medição.
+    people: int | None = Field(default=None, ge=1, le=100000)
+    distance_note: str | None = Field(default=None, max_length=80)
+    active: bool = True
+    note: str | None = Field(default=None, max_length=160)
+
+    @model_validator(mode="after")
+    def validate_weekdays(self) -> "SportAnchorCreate":
+        if any(dia < 0 or dia > 6 for dia in self.weekdays):
+            raise ValueError("Os dias da semana vão de 0 (segunda) a 6 (domingo).")
+        self.weekdays = sorted(set(self.weekdays))
+        return self
+
+
+class SportAnchorUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=2, max_length=80)
+    kind: Literal["Academia", "Corrida", "Time", "Evento", "Outro"] | None = None
+    weekdays: list[int] | None = Field(default=None, max_length=7)
+    time_of_day: Literal["Manhã", "Tarde", "Noite"] | None = None
+    people: int | None = Field(default=None, ge=1, le=100000)
+    distance_note: str | None = Field(default=None, max_length=80)
+    active: bool | None = None
+    note: str | None = Field(default=None, max_length=160)
 
 
 class MediaUpdate(BaseModel):

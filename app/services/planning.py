@@ -45,7 +45,7 @@ from statistics import fmean, pstdev
 from typing import Any
 
 from app.repositories.store import Store
-from app.services.erp import FUSO_LOJA, REVERSAL_PREFIX, SALE_REASON, ERPService
+from app.services.erp import FUSO_LOJA, REVERSAL_PREFIX, SALE_REASON, WITHDRAWAL_KIND, ERPService
 
 DIAS = ("segunda", "terça", "quarta", "quinta", "sexta", "sábado", "domingo")
 
@@ -330,11 +330,13 @@ class PlanningService:
     # ------------------------------------------------------------------
 
     def _series(self, days: int, estoque: dict[str, Any]) -> tuple[dict[str, list[tuple[date, float]]], set[date]]:
-        """Consumo diario por insumo, só o que virou venda.
+        """Consumo diario por insumo: o que virou venda e o que a equipe retirou.
 
-        Perda fica de fora de proposito: o plano existe para atender o cliente,
-        nao para repor o que foi jogado fora. A perda entra no resultado por
-        outro caminho, na tela de Consumo.
+        A retirada entra porque tambem e consumo previsivel — a producao da
+        manha sai todo dia, e um plano que a ignora manda comprar menos do que
+        a loja gasta. Perda fica de fora de proposito: o plano existe para
+        atender o cliente, nao para repor o que foi jogado fora. A perda entra
+        no resultado por outro caminho, na tela de Consumo.
         """
 
         inicio = datetime.now(FUSO_LOJA).date() - timedelta(days=days - 1)
@@ -349,7 +351,9 @@ class PlanningService:
             if motivo.startswith(REVERSAL_PREFIX):
                 continue
             movimento.add(dia)
-            if motivo != SALE_REASON or movimentacao["quantity_delta"] >= 0:
+            is_sale = motivo == SALE_REASON
+            is_withdrawal = movimentacao.get("kind") == WITHDRAWAL_KIND
+            if movimentacao["quantity_delta"] >= 0 or not (is_sale or is_withdrawal):
                 continue
             vendas[movimentacao["inventory_id"]][dia] += abs(movimentacao["quantity_delta"])
 

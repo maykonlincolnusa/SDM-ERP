@@ -6,6 +6,8 @@ from app.services.forecast import ForecastService
 from app.services.growth import GrowthService
 from app.services.media import MediaService
 from app.services.planning import PlanningService
+from app.services.pricing import PricingService
+from app.services.promotions import PromotionService
 
 __all__ = [
     "CatalogService",
@@ -16,4 +18,6 @@ __all__ = [
     "GrowthService",
     "MediaService",
     "PlanningService",
+    "PricingService",
+    "PromotionService",
 ]

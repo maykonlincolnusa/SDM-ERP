@@ -42,6 +42,11 @@ CONVERSAO_ASSUMIDA = 0.25
 # Desconto que torna o combo atraente sem comer a margem inteira.
 DESCONTO_COMBO = 0.08
 
+# Como o canal de venda presencial costuma ser nomeado. Ele fatura sem comissao
+# como o link proprio, mas nao serve para publicar promocao, entao fica fora da
+# comparacao entre canal proprio e marketplace.
+BALCAO_HINTS = ("balcao", "loja", "pdv", "presencial", "retirada")
+
 
 def _fold(value: str) -> str:
     return unicodedata.normalize("NFKD", str(value)).encode("ascii", "ignore").decode("ascii").lower()
@@ -311,6 +316,42 @@ class GrowthService:
                 confidence_note="oportunidade de posicionamento, ainda sem venda para comprovar demanda",
             ))
 
+        # 3b. Ancora esportiva cadastrada sem nenhum produto para ela.
+        #
+        # Aqui a lacuna deixa de ser hipotese: o gestor declarou um publico com
+        # dia e horario, e o cardapio nao tem o que oferecer a ele. E a unica
+        # sugestao de produto novo deste modulo com demanda declarada do outro
+        # lado, e por isso ela vem com o esboco de ficha ja precificado.
+        ancoras = [a for a in self.store.list("sport_anchors") if a.get("active", True)]
+        if ancoras and "Sport" not in linhas_com_produto and ativos:
+            pessoas = sum(a.get("people") or 0 for a in ancoras)
+            nomes = ", ".join(a["name"] for a in ancoras[:2])
+            referencia = max(ativos, key=lambda p: p["price"])
+            custo_referencia = self._recipe_cost(referencia, inventory)
+            proteicos = [i for i in inventory.values() if any(
+                hint in _fold(i["name"]) for hint in ("whey", "proteina", "castanha", "pasta de amendoim", "aveia", "granola"))]
+            ponte = ", ".join(i["name"] for i in proteicos[:3])
+            sugestoes.append(self._suggestion(
+                "produto-sport-para-ancora", "produto",
+                f"{nomes} está cadastrado e o cardápio não tem produto Sport",
+                f"{len(ancoras)} âncora(s) esportiva(s) cadastrada(s)"
+                + (f", somando {pessoas} pessoas declaradas" if pessoas else "")
+                + f". O cardápio tem {len(ativos)} produtos ativos e nenhum na linha Sport, então não há o que "
+                "oferecer a esse público nos dias em que ele treina."
+                + (f" No estoque já existem {ponte} para sustentar a promessa." if ponte else ""),
+                f"Monte um item proteico partindo de {referencia['name']} (custo de ficha {_money(round(custo_referencia, 2))}) "
+                "e passe pelo simulador em Cardápio: ele aceita insumo que a loja ainda não compra e devolve o preço "
+                "para a margem que você quer. Cadastre proteína e calorias no produto — sem esses números a oferta "
+                "esportiva não tem o que comunicar, e a promoção da semana vira desconto genérico.",
+                impact_monthly=round(pessoas * 0.05 * 4.3 * (referencia["price"] - custo_referencia), 2) if pessoas else None,
+                impact_note=(
+                    f"Premissa: 5% das {pessoas} pessoas declaradas compram uma vez por semana, com a sobra por "
+                    f"unidade de {referencia['name']}. É premissa sobre público declarado, não medição."
+                ) if pessoas else "Sem público declarado nas âncoras, o impacto não tem base para ser estimado.",
+                confidence="media",
+                confidence_note="a demanda vem do seu cadastro de âncoras; o custo vem da ficha técnica",
+            ))
+
         # 4. Produto de margem alta e giro baixo: o problema é exposição, não preço.
         vendas = self._unit_sales(detailed)
         if vendas and len(detailed) >= MINIMO_PEDIDOS_PARA_CESTA:
@@ -454,6 +495,73 @@ class GrowthService:
                 confidence="alta",
                 confidence_note="nenhum pedido registrado no período",
             ))
+
+        # Canal próprio contra marketplace: a comparação que decide onde investir.
+        #
+        # No histórico real desta loja o link próprio fatura cinco vezes o iFood
+        # e não paga comissão nenhuma. Sem essa linha na tela, a tendência é
+        # tratar o marketplace como "o canal digital" e o link próprio como
+        # detalhe — quando é o contrário.
+        proprios = [c for c in desempenho["channels"] if not c["fee_percent"] and c["revenue"] > 0]
+        marketplaces = [c for c in desempenho["channels"] if c["fee_percent"] > 0 and c["revenue"] > 0]
+        # O balcao nao entra na comparacao: ele fatura sem comissao, mas nao e
+        # onde se publica uma promocao. A pergunta aqui e qual canal *digital*
+        # proprio disputa com o marketplace — e quase sempre ele ja esta
+        # ganhando sem ninguem ter reparado.
+        digitais = [c for c in proprios if not any(hint in _fold(c["name"]) for hint in BALCAO_HINTS)]
+        if (digitais or proprios) and marketplaces:
+            melhor = max(digitais or proprios, key=lambda c: c["revenue"])
+            pior = max(marketplaces, key=lambda c: c["fee"])
+            if melhor["revenue"] > pior["revenue"]:
+                vezes = round(melhor["revenue"] / pior["revenue"], 1) if pior["revenue"] else None
+                sugestoes.append(self._suggestion(
+                    "canal-proprio-vence", "canal",
+                    f"{melhor['name']} fatura {vezes}x o {pior['name']} e não paga comissão",
+                    f"{melhor['name']}: {_money(melhor['revenue'])} em {melhor['orders']} pedidos, sem comissão. "
+                    f"{pior['name']}: {_money(pior['revenue'])} em {pior['orders']} pedidos, dos quais "
+                    f"{_money(pior['fee'])} ficaram com a plataforma.",
+                    f"Trate {melhor['name']} como o canal principal, não como sobra do marketplace: é nele que a "
+                    f"promoção da semana deve ser publicada, porque lá o desconto vai inteiro para o cliente em vez "
+                    f"de ser dividido com a plataforma. Um QR no balcão e o link na bio custam quase nada e alimentam "
+                    "o canal que já está ganhando.",
+                    impact_monthly=round(pior["fee"] / meses, 2) if pior["fee"] else None,
+                    impact_note=(
+                        f"O número é a comissão que o {pior['name']} cobrou por mês — o teto do que migrar o "
+                        "pedido para o canal próprio economiza."
+                    ),
+                    confidence="alta" if melhor["orders"] >= 20 else "media",
+                    confidence_note=f"{melhor['orders']} pedidos pelo canal próprio no período",
+                    metrics=[
+                        {"label": f"{melhor['name']}", "value": _money(melhor["revenue"])},
+                        {"label": f"{pior['name']}", "value": _money(pior["revenue"])},
+                        {"label": "Comissão paga", "value": _money(pior["fee"])},
+                    ],
+                ))
+
+        # Ticket muito diferente entre canais: onde crescer rende mais por pedido.
+        com_ticket = [c for c in desempenho["channels"] if c["orders"] >= 10 and c.get("average_ticket")]
+        if len(com_ticket) >= 2:
+            alto = max(com_ticket, key=lambda c: c["average_ticket"])
+            baixo = min(com_ticket, key=lambda c: c["average_ticket"])
+            diferenca = alto["average_ticket"] - baixo["average_ticket"]
+            if baixo["average_ticket"] and diferenca / baixo["average_ticket"] >= 0.25 and alto["share"] < 50:
+                migrados = baixo["orders"] * 0.1 / meses
+                sugestoes.append(self._suggestion(
+                    "canal-ticket", "canal",
+                    f"O pedido de {alto['name']} vale {round(diferenca / baixo['average_ticket'] * 100)}% mais que o de {baixo['name']}",
+                    f"Ticket médio de {_money(alto['average_ticket'])} em {alto['name']} contra "
+                    f"{_money(baixo['average_ticket'])} em {baixo['name']}, com {alto['share']}% do faturamento "
+                    f"vindo do canal de ticket maior.",
+                    f"Crescer {alto['name']} rende mais por pedido atendido do que crescer {baixo['name']}. "
+                    f"Ofereça {alto['name']} a quem já compra no balcão — é o mesmo cliente, gastando mais por visita.",
+                    impact_monthly=round(migrados * diferenca, 2) if migrados else None,
+                    impact_note=(
+                        f"Premissa: 10% dos pedidos de {baixo['name']} passam a sair por {alto['name']}, "
+                        "com a diferença de ticket observada. Não inclui o custo de entrega."
+                    ),
+                    confidence="media",
+                    confidence_note=f"{alto['orders']} e {baixo['orders']} pedidos nos dois canais",
+                ))
 
         # Concentração: um canal só sustentando a loja é risco, não conquista.
         if desempenho["channels"]:

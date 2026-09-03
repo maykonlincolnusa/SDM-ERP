@@ -19,7 +19,7 @@ from typing import Any
 import unicodedata
 
 from app.services.delivery import DeliveryService
-from app.services.erp import ERPService
+from app.services.erp import REVERSAL_PREFIX, SALE_REASON, WITHDRAWAL_KIND, ERPService
 
 # O Brasil nao usa mais horario de verao desde 2019, entao o fuso da loja e um
 # deslocamento fixo. Isso evita depender do pacote tzdata no Windows e mantem o
@@ -484,13 +484,30 @@ class ForecastService:
         custo_produtos = sum(linha["cost"] for linha in linhas)
         receita_total = receita_produtos + frete_previsto
         taxas_canais = receita_total * taxa_media
+        # O insumo que a equipe retira e o que se perde saem do estoque todo
+        # dia e nao viram faturamento. Fora desta conta, o lucro previsto seria
+        # otimista exatamente no valor do que a loja consome sem vender — que e
+        # o custo que o registro de retirada existe para tornar visivel.
+        saidas = self._saidas_sem_venda(dias_historico)
+        retirada_prevista = saidas["withdrawal"] / dias_historico * horizonte
+        perda_prevista = saidas["loss"] / dias_historico * horizonte
         despesas = despesa_fixa + despesas_variaveis / dias_historico * horizonte
-        lucro = receita_total - custo_produtos - taxas_canais - custo_entrega - despesas
+        lucro = (
+            receita_total - custo_produtos - taxas_canais - custo_entrega
+            - retirada_prevista - perda_prevista - despesas
+        )
         avisos: list[str] = []
         if taxa_estimativa:
             avisos.append("Parte da taxa de canal usa a tabela atual, pois alguns pedidos antigos nao guardaram a taxa do dia.")
         if tem_entrega_sem_fechamento:
             avisos.append("Ha frete em pedidos, mas nenhum fechamento de entregador no historico; o custo projetado de entrega ficou zerado.")
+        sem_venda = retirada_prevista + perda_prevista
+        if sem_venda and receita_total and sem_venda / receita_total >= 0.03:
+            avisos.append(
+                f"{self._reais(sem_venda)} do custo previsto e insumo que sai sem virar venda "
+                f"({self._reais(retirada_prevista)} em retirada da equipe e {self._reais(perda_prevista)} em perda), "
+                "projetado pela media do historico."
+            )
         if not custo_fixo_mensal:
             avisos.append(
                 "Nenhuma despesa fixa cadastrada como recorrente. Aluguel, energia e equipe entram na projecao "
@@ -516,6 +533,11 @@ class ForecastService:
                 "cost_of_goods": round(custo_produtos, 2),
                 "channel_fees": round(taxas_canais, 2),
                 "delivery_cost": round(custo_entrega, 2),
+                # Separadas uma da outra pelo mesmo motivo do resultado
+                # realizado: retirada e consumo da operacao e tende a se
+                # repetir; perda e quebra e deveria cair.
+                "withdrawal_cost": round(retirada_prevista, 2),
+                "loss_cost": round(perda_prevista, 2),
                 "operating_expenses": round(despesas, 2),
                 # Separadas porque tem confiabilidade diferente: a fixa vem do
                 # contrato, a variavel vem de media.
@@ -526,6 +548,38 @@ class ForecastService:
                 "operating_margin": round(lucro / receita_total * 100, 1) if receita_total else 0.0,
             },
         }
+
+    def _saidas_sem_venda(self, dias: int) -> dict[str, float]:
+        """Custo do insumo que saiu do estoque sem virar venda, no periodo.
+
+        Retirada e perda vem separadas porque significam coisas diferentes: a
+        retirada e consumo da operacao e tende a se repetir no mesmo tamanho; a
+        perda e quebra, e o dono precisa ve-la caindo. Somar as duas num
+        "outros custos" apagaria justamente essa leitura.
+        """
+
+        inicio = datetime.now(FUSO_LOJA).date() - timedelta(days=dias - 1)
+        estoque = {item["id"]: item for item in self.store.list("inventory")}
+        total = {"withdrawal": 0.0, "loss": 0.0}
+        for movimentacao in self.store.list("inventory_movements"):
+            if movimentacao["quantity_delta"] >= 0:
+                continue
+            motivo = movimentacao.get("reason", "")
+            if motivo == SALE_REASON or motivo.startswith(REVERSAL_PREFIX):
+                continue
+            if _dia_local(movimentacao["created_at"]).date() < inicio:
+                continue
+            item = estoque.get(movimentacao["inventory_id"])
+            if not item:
+                continue
+            # O custo gravado no movimento manda: ele guarda o preco do dia da
+            # saida, e o custo medio de hoje ja mudou com a compra seguinte.
+            custo = movimentacao.get(
+                "total_cost", abs(movimentacao["quantity_delta"]) * item.get("unit_cost", 0)
+            )
+            chave = "withdrawal" if movimentacao.get("kind") == WITHDRAWAL_KIND else "loss"
+            total[chave] += custo
+        return total
 
     def _despesas_variaveis(self, dias: int) -> float:
         """Despesa que nao se repete todo mes, e por isso so pode vir da media.

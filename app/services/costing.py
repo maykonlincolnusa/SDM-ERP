@@ -17,13 +17,22 @@ from __future__ import annotations
 
 import unicodedata
 from collections import Counter, defaultdict
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from statistics import fmean
 from typing import Any
 
 from app.repositories.store import Store
 from app.schemas import ProductSimulation
-from app.services.erp import FUSO_LOJA, ERPService, is_active_order, month_index, month_label, month_name
+from app.services.erp import (
+    FUSO_LOJA,
+    REVERSAL_PREFIX,
+    SALE_REASON,
+    ERPService,
+    is_active_order,
+    month_index,
+    month_label,
+    month_name,
+)
 
 # Categorias de insumo que sao embalagem, nao ingrediente. A separacao importa
 # porque embalagem escala com o numero de copos e ingrediente escala com o
@@ -38,6 +47,12 @@ FIXED_CATEGORIES = ("fixo", "fixa", "equipe", "aluguel", "estrutura")
 # de luz de verao e a de inverno sem deixar um aluguel de dois anos atras
 # puxando a media de hoje.
 FIXED_COST_MONTHS = 12
+
+# Teto da quebra usada no custo. Uma taxa perto de 100% viria de um insumo que
+# quase nao foi vendido no periodo — meia duzia de degustacoes de um sabor novo
+# — e faria o custo tender ao infinito. Acima do teto o numero deixa de ser
+# informacao de custo e vira um alerta de cadastro.
+SHRINKAGE_CAP = 0.5
 
 
 def _fold(value: str) -> str:
@@ -78,9 +93,25 @@ class CostingService:
         fixed = self._fixed_allocation(days, sales["units"])
         full_cost = round(direct + (fixed["per_unit"] or 0), 4)
 
+        # Custo com quebra: para o cliente receber a porcao da ficha, a loja
+        # tirou mais do que ela do estoque. Dividir pelo aproveitamento e o que
+        # transforma "quanto a receita pesa" em "quanto sai do freezer".
+        shrink_rates = self._shrinkage_rates(days)
+        shrunk = 0.0
+        for row in lines:
+            taxa = shrink_rates.get(row["inventory_id"], 0.0)
+            row["shrinkage_rate"] = round(taxa * 100, 1)
+            row["cost_with_shrinkage"] = round(row["cost"] / (1 - taxa), 4)
+            shrunk += row["cost_with_shrinkage"]
+        shrunk = round(shrunk, 4)
+        shrinkage = round(shrunk - direct, 4)
+
         channels = self._channel_economics(price, direct)
         target = target_margin or 0.0
-        suggested = self._price_for_margin(direct, target) if target else None
+        # O preco-alvo e o ponto de equilibrio usam o custo com quebra: sao os
+        # numeros que decidem preco, e decidir preco pelo custo da ficha e
+        # decidir por um custo que a loja nunca teve.
+        suggested = self._price_for_margin(shrunk, target) if target else None
 
         return {
             "product": {
@@ -101,6 +132,13 @@ class CostingService:
                 "packaging_share": round(packaging / direct * 100, 1) if direct else 0.0,
                 "fixed_per_unit": fixed["per_unit"],
                 "full": round(full_cost, 2) if fixed["per_unit"] is not None else None,
+                # O custo da ficha continua ali do lado de proposito: e ele que
+                # se compara com a ficha de outro produto, e e a diferenca
+                # entre os dois que mede o tamanho da quebra.
+                "with_shrinkage": round(shrunk, 2),
+                "shrinkage": round(shrinkage, 2),
+                "shrinkage_share": round(shrinkage / direct * 100, 1) if direct else 0.0,
+                "shrinkage_days": days,
             },
             "fixed": fixed,
             "price_analysis": {
@@ -121,12 +159,13 @@ class CostingService:
                 "difference": round(suggested - price, 2) if suggested is not None else None,
             } if target else None,
             "price_ladder": [
-                {"margin": margin, "price": self._price_for_margin(direct, margin)}
+                {"margin": margin, "price": self._price_for_margin(shrunk, margin)}
                 for margin in (40, 50, 60, 70)
             ],
             "sales": sales,
-            "breakeven": self._breakeven(price, direct, fixed["monthly"]),
-            "alerts": alerts + self._dossier_alerts(product, direct, price, channels, fixed),
+            "breakeven": self._breakeven(price, shrunk, fixed["monthly"]),
+            "alerts": alerts + self._dossier_alerts(product, direct, price, channels, fixed)
+            + self._shrinkage_alerts(lines, shrinkage, direct, days),
             "period_days": days,
         }
 
@@ -285,6 +324,65 @@ class CostingService:
         return {"period_days": days, "lines": result, "catalog": catalog}
 
     # ------------------------------------------------------------------
+
+    def _shrinkage_alerts(self, lines: list[dict[str, Any]], shrinkage: float, direct: float, days: int) -> list[dict[str, str]]:
+        """Avisa quando a quebra ja mudou o custo o bastante para mudar o preco."""
+
+        if not direct or shrinkage / direct < 0.05:
+            return []
+        piores = sorted(
+            (row for row in lines if row.get("shrinkage_rate")),
+            key=lambda row: row["cost_with_shrinkage"] - row["cost"],
+            reverse=True,
+        )[:2]
+        nomes = ", ".join(f"{row['name']} ({self._money(row['cost_with_shrinkage'] - row['cost'])} por unidade)" for row in piores)
+        return [{
+            "type": "attention",
+            "title": f"A quebra soma {self._money(shrinkage)} ao custo deste produto",
+            "description": (
+                f"Nos últimos {days} dias, parte do insumo saiu do estoque sem virar venda: {nomes}. "
+                "O preço-alvo e o ponto de equilíbrio já usam o custo com quebra; o custo da ficha continua "
+                "ao lado para comparar."
+            ),
+        }]
+
+    def _shrinkage_rates(self, days: int) -> dict[str, float]:
+        """Quanto de cada insumo sai do estoque sem virar venda, em proporcao.
+
+        A ficha tecnica diz que o copo leva 400 g de polpa. Ela nao diz que
+        para entregar esses 400 g a loja tirou 430 do freezer, porque parte
+        virou perda e parte saiu na producao da manha. Essa diferenca e a razao
+        de o custo do dossie ser sempre menor que o custo do extrato, e e ela
+        que faz o preco-alvo sair baixo.
+
+        A taxa e por insumo, e nao uma media da loja: quem perde e a fruta,
+        nao o copo descartavel, e ratear a quebra da fruta sobre a embalagem
+        encareceria o produto errado.
+        """
+
+        inicio = datetime.now(FUSO_LOJA).date() - timedelta(days=days - 1)
+        saida: dict[str, dict[str, float]] = defaultdict(lambda: {"total": 0.0, "quebra": 0.0})
+        for movimentacao in self.store.list("inventory_movements"):
+            if movimentacao["quantity_delta"] >= 0:
+                continue
+            motivo = movimentacao.get("reason", "")
+            if motivo.startswith(REVERSAL_PREFIX):
+                continue
+            if self.erp._local_day(movimentacao["created_at"]) < inicio:
+                continue
+            quantidade = abs(movimentacao["quantity_delta"])
+            linha = saida[movimentacao["inventory_id"]]
+            linha["total"] += quantidade
+            # Retirada e perda contam juntas aqui, embora sejam separadas no
+            # resultado: as duas sao insumo que saiu e nao apareceu no copo que
+            # o cliente pagou, que e o que o custo precisa cobrir.
+            if motivo != SALE_REASON:
+                linha["quebra"] += quantidade
+        return {
+            item_id: min(linha["quebra"] / linha["total"], SHRINKAGE_CAP)
+            for item_id, linha in saida.items()
+            if linha["total"] > 0 and linha["quebra"] > 0
+        }
 
     def _recipe_breakdown(self, recipe: list[dict[str, Any]], inventory: dict[str, dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
         lines: list[dict[str, Any]] = []
