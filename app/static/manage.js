@@ -262,6 +262,12 @@
     form.elements.unit_cost.value = item.unit_cost;
     form.elements.shelf_life_days.value = item.shelf_life_days ?? "";
     form.elements.lead_time_days.value = item.lead_time_days ?? 2;
+    // Sem isto a edição de qualquer insumo apagaria a unidade de manuseio, e a
+    // barra voltaria a ser lançada em quilo.
+    form.elements.pack_unit.value = item.pack_unit ?? "";
+    form.elements.pack_size.value = item.pack_size ?? "";
+    form.elements.pack_cost.value = item.pack_size ? (item.unit_cost * item.pack_size).toFixed(2) : "";
+    refreshInventoryPack();
     // O saldo some da edição: quem muda saldo é contagem ou ajuste, e assim
     // toda diferença de estoque tem um lançamento explicando de onde veio.
     const quantityField = document.getElementById("inventory-quantity-field");
@@ -1231,6 +1237,7 @@
       const quantityField = document.getElementById("inventory-quantity-field");
       quantityField.hidden = false;
       document.getElementById("inventory-form").elements.quantity.required = true;
+      refreshInventoryPack();
       setText("#inventory-modal-title", "Novo insumo");
     }
     if (name === "product") {

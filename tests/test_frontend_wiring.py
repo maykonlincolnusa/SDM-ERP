@@ -191,6 +191,29 @@ def test_toda_classe_do_html_tem_estilo():
 
 
 # ----------------------------------------------------------------------
+# Conversoes que existem para poupar conta de cabeca
+# ----------------------------------------------------------------------
+
+
+def test_o_cadastro_de_insumo_pede_o_custo_nas_duas_leituras():
+    """Quem compra sabe o preco da barra; a ficha tecnica precisa do quilo."""
+
+    for campo in ("inventory-pack-unit", "inventory-pack-size", "inventory-pack-cost", "inventory-unit-cost"):
+        assert campo in IDS_DO_HTML, f"o cadastro de insumo perdeu o campo {campo}"
+    assert 'name="pack_cost"' in HTML
+    # O custo por embalagem e so da tela: o servidor guarda o custo por unidade.
+    assert "delete payload.pack_cost;" in APP_JS
+
+
+def test_a_conversao_do_insumo_e_refeita_quando_qualquer_ponta_muda():
+    for gatilho in ('refreshInventoryPack("pack")', 'refreshInventoryPack("unit")'):
+        assert gatilho in APP_JS, f"falta o gatilho {gatilho}"
+    # Editar um insumo tem de devolver a conversao, senao ela se perde na edicao.
+    assert "form.elements.pack_unit.value = item.pack_unit" in MANAGE_JS
+    assert "refreshInventoryPack();" in MANAGE_JS
+
+
+# ----------------------------------------------------------------------
 # Service worker
 # ----------------------------------------------------------------------
 

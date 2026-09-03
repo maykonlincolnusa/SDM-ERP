@@ -354,3 +354,44 @@ def test_desfazer_duas_vezes_e_recusado(loja):
 
     with pytest.raises(ValueError, match="não encontrada"):
         loja.undo_production(resultado["id"])
+
+
+# ----------------------------------------------------------------------
+# O custo chega como o fornecedor cobra
+# ----------------------------------------------------------------------
+
+
+def test_compra_em_barra_vira_custo_por_quilo(loja):
+    """O gestor sabe o preco da barra; a ficha tecnica precisa do quilo."""
+
+    barra = _item(loja, "Barra de açaí 12%")
+
+    # 10 barras de 2,8 kg a R$ 58 a barra = 28 kg a R$ 20,714 o quilo.
+    assert barra["quantity"] == 28
+    assert barra["unit_cost"] == pytest.approx(58 / 2.8, abs=0.001)
+    assert barra["unit_cost"] * barra["pack_size"] == pytest.approx(58.0, abs=0.01)
+
+
+def test_editar_o_insumo_nao_apaga_a_unidade_de_manuseio(loja):
+    """Perder a conversao faria a barra voltar a ser lancada em quilo."""
+
+    from app.schemas import InventoryItemUpdate
+
+    barra = _item(loja, "Barra de açaí 12%")
+    loja.update_inventory_item(barra["id"], InventoryItemUpdate(minimum_quantity=30))
+
+    depois = _item(loja, "Barra de açaí 12%")
+    assert depois["minimum_quantity"] == 30
+    assert depois["pack_unit"] == "barra"
+    assert depois["pack_size"] == 2.8
+
+
+def test_a_unidade_de_manuseio_pode_ser_corrigida(loja):
+    from app.schemas import InventoryItemUpdate
+
+    barra = _item(loja, "Barra de açaí 12%")
+    loja.update_inventory_item(barra["id"], InventoryItemUpdate(pack_unit="caixa", pack_size=10.0))
+
+    depois = _item(loja, "Barra de açaí 12%")
+    assert depois["pack_unit"] == "caixa"
+    assert depois["pack_size"] == 10.0

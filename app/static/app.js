@@ -1002,14 +1002,16 @@ function bindForms() {
   document.getElementById("withdrawal-override").addEventListener("change", refreshWithdrawalPreview);
   document.getElementById("purchase-form").addEventListener("submit", submitPurchase);
   document.getElementById("purchase-inventory").addEventListener("change", (event) => {
-    const item = state.inventory.find((row) => row.id === event.target.value);
-    const form = document.getElementById("purchase-form");
-    form.elements.purchase_unit.value = item?.unit || "";
-    form.elements.units_per_purchase.value = 1;
+    applyPurchasePack(state.inventory.find((row) => row.id === event.target.value));
     refreshPurchasePreview();
   });
   ["purchase_quantity", "purchase_unit", "units_per_purchase", "purchase_unit_cost"].forEach((field) => document.querySelector(`#purchase-form [name="${field}"]`).addEventListener("input", refreshPurchasePreview));
   document.getElementById("inventory-form").addEventListener("submit", submitInventory);
+  document.getElementById("inventory-pack-cost").addEventListener("input", () => refreshInventoryPack("pack"));
+  document.getElementById("inventory-unit-cost").addEventListener("input", () => refreshInventoryPack("unit"));
+  ["unit", "pack_unit", "pack_size"].forEach((campo) => {
+    document.querySelector(`#inventory-form [name="${campo}"]`).addEventListener("input", () => refreshInventoryPack());
+  });
   document.getElementById("product-form").addEventListener("submit", submitProduct);
   document.getElementById("add-recipe-line").addEventListener("click", addRecipeLine);
   document.getElementById("recipe-lines").addEventListener("click", (event) => {
@@ -1252,6 +1254,41 @@ function inventoryOptions(selected = "") {
     .join("");
 }
 
+function refreshInventoryPack(origem = "") {
+  // O gestor sabe quanto custa a barra; a ficha técnica precisa do quilo. Em
+  // vez de exigir a divisão de cabeça, os dois campos existem e um preenche o
+  // outro — quem digitou por último manda.
+  const form = document.getElementById("inventory-form");
+  if (!form) return;
+  const unidade = (form.elements.unit.value || "unidade").trim();
+  const embalagem = (form.elements.pack_unit.value || "").trim();
+  const tamanho = Number(form.elements.pack_size.value || 0);
+  const campo = document.getElementById("inventory-pack-cost-field");
+  const ativo = Boolean(embalagem && tamanho > 0);
+
+  campo.hidden = !ativo;
+  setText("#inventory-pack-cost-label", embalagem || "unidade comprada");
+  setText("#inventory-pack-size-hint", embalagem
+    ? `Quanto uma ${embalagem} tem, em ${unidade}.`
+    : "Na unidade de estoque.");
+
+  if (!ativo) {
+    setText("#inventory-unit-cost-hint", `O que a ficha técnica usa, por ${unidade}.`);
+    return;
+  }
+  const porEmbalagem = Number(form.elements.pack_cost.value || 0);
+  const porUnidade = Number(form.elements.unit_cost.value || 0);
+  if (origem === "pack" && porEmbalagem > 0) {
+    form.elements.unit_cost.value = (porEmbalagem / tamanho).toFixed(4).replace(/0+$/, "").replace(/\.$/, "");
+  } else if (origem === "unit" && porUnidade > 0) {
+    form.elements.pack_cost.value = (porUnidade * tamanho).toFixed(2);
+  }
+  const atual = Number(form.elements.unit_cost.value || 0);
+  setText("#inventory-unit-cost-hint", atual > 0
+    ? `${currency.format(atual)} por ${unidade} · ${currency.format(atual * tamanho)} por ${embalagem}. É o de cima que a ficha técnica usa.`
+    : `O que a ficha técnica usa, por ${unidade}.`);
+}
+
 function addProductionLine(container, inventoryId = "", quantity = "") {
   const item = state.inventory.find((row) => row.id === inventoryId);
   const dica = item && item.pack_unit
@@ -1485,13 +1522,19 @@ function openPurchase(inventoryId = "") {
   const select = document.getElementById("purchase-inventory");
   select.innerHTML = state.inventory.map((item) => `<option value="${item.id}">${escapeHtml(item.name)} (${number.format(item.quantity)} ${escapeHtml(item.unit)})</option>`).join("");
   if (inventoryId && state.inventory.some((item) => item.id === inventoryId)) select.value = inventoryId;
-  const item = state.inventory.find((row) => row.id === select.value);
-  form.elements.purchase_unit.value = item?.unit || "";
-  form.elements.units_per_purchase.value = 1;
+  applyPurchasePack(state.inventory.find((row) => row.id === select.value));
   form.elements.received_at.value = localDateTimeValue(new Date());
   form.elements.received_at.max = localDateTimeValue(new Date());
   refreshPurchasePreview();
   openDialog("purchase-modal");
+}
+
+function applyPurchasePack(item) {
+  // Se o insumo diz que é contado em barra, a compra já vem em barra: quem
+  // cadastrou a conversão uma vez não deveria repeti-la a cada nota.
+  const form = document.getElementById("purchase-form");
+  form.elements.purchase_unit.value = item?.pack_unit || item?.unit || "";
+  form.elements.units_per_purchase.value = item?.pack_size || 1;
 }
 
 function refreshPurchasePreview() {
@@ -1562,6 +1605,9 @@ async function submitInventory(event) {
   payload.pack_unit = payload.pack_unit ? payload.pack_unit : null;
   payload.pack_size = payload.pack_size === "" ? null : Number(payload.pack_size);
   if (!payload.pack_unit || !payload.pack_size) { payload.pack_unit = null; payload.pack_size = null; }
+  // Custo por embalagem existe só para poupar a divisão de cabeça; o que o
+  // sistema guarda é sempre o custo por unidade de estoque.
+  delete payload.pack_cost;
   if (inventoryId) {
     // Saldo não entra na edição: ele só muda por contagem ou ajuste, para toda
     // diferença ficar registrada em uma movimentação.
