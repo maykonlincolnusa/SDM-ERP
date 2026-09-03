@@ -76,6 +76,20 @@ class InventoryItemCreate(BaseModel):
     # Prazo do fornecedor. E sobre ele que o ponto de pedido e calculado: pedir
     # quando o saldo cobre exatamente o que se consome ate a entrega chegar.
     lead_time_days: int = Field(default=2, ge=1, le=60)
+    # Como a equipe conta este insumo no dia a dia: "barra", "pote", "fardo".
+    # O estoque continua em quilo, porque e nele que custo e ficha tecnica
+    # falam; mas ninguem no balcao pensa em "8,4 kg de acai" — pensa em "3
+    # barras". Sem essa conversao, ou o lancamento vira conta de cabeca ou vira
+    # balanca em toda retirada, e nos dois casos ele deixa de ser feito.
+    pack_unit: str | None = Field(default=None, min_length=1, max_length=20)
+    # Quanto vale uma dessas, na unidade de estoque. Uma barra de 2,8 kg = 2.8.
+    pack_size: float | None = Field(default=None, gt=0)
+
+    @model_validator(mode="after")
+    def pack_completo(self) -> "InventoryItemCreate":
+        if (self.pack_unit is None) != (self.pack_size is None):
+            raise ValueError("Informe o nome e o tamanho da unidade de manuseio, ou deixe os dois em branco.")
+        return self
 
 
 class InventoryItem(InventoryItemCreate):
@@ -98,6 +112,8 @@ class InventoryItemUpdate(BaseModel):
     category: str | None = Field(default=None, max_length=40)
     shelf_life_days: int | None = Field(default=None, ge=1, le=365)
     lead_time_days: int | None = Field(default=None, ge=1, le=60)
+    pack_unit: str | None = Field(default=None, min_length=1, max_length=20)
+    pack_size: float | None = Field(default=None, gt=0)
 
 
 class InventoryAdjustment(BaseModel):
@@ -132,6 +148,80 @@ class InventoryWithdrawal(BaseModel):
     # que mais precisa registra-la. Entao a recusa e o padrao e a tela oferece
     # esta confirmacao explicita, que grava e deixa o saldo negativo.
     allow_negative: bool = False
+
+
+class ProductionLine(BaseModel):
+    """Um insumo e a quantidade que ele entra numa fabricação, na unidade do estoque."""
+
+    inventory_id: str = Field(min_length=1, max_length=80)
+    quantity: float = Field(gt=0)
+
+
+class ProductionRecipeCreate(BaseModel):
+    """Ficha de fabricação: o que entra e o que sai de uma batida.
+
+    Não confundir com a ficha técnica do produto. A ficha técnica diz o que um
+    copo de 500 ml consome da base pronta; esta diz como a base pronta nasce —
+    quantas barras de açaí de 8% ou 12% viram quantos quilos de base.
+
+    É a peça que faltava para o saldo bater com a prateleira. Sem ela, a barra
+    saía do freezer sem registro e a base pronta nunca aumentava, então o
+    estoque só voltava ao lugar na contagem seguinte, com a diferença já
+    disfarçada de perda.
+    """
+
+    name: str = Field(min_length=2, max_length=80)
+    inputs: list[ProductionLine] = Field(min_length=1, max_length=20)
+    # O que a batida produz. É este item que a ficha técnica dos copos consome.
+    output_inventory_id: str = Field(min_length=1, max_length=80)
+    output_quantity: float = Field(gt=0)
+    active: bool = True
+    note: str | None = Field(default=None, max_length=160)
+
+    @model_validator(mode="after")
+    def output_fora_das_entradas(self) -> "ProductionRecipeCreate":
+        if any(linha.inventory_id == self.output_inventory_id for linha in self.inputs):
+            raise ValueError("O item produzido não pode estar também entre os insumos da fabricação.")
+        vistos = {linha.inventory_id for linha in self.inputs}
+        if len(vistos) != len(self.inputs):
+            raise ValueError("O mesmo insumo aparece duas vezes na ficha de fabricação.")
+        return self
+
+
+class ProductionRecipeUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=2, max_length=80)
+    inputs: list[ProductionLine] | None = Field(default=None, min_length=1, max_length=20)
+    output_inventory_id: str | None = Field(default=None, min_length=1, max_length=80)
+    output_quantity: float | None = Field(default=None, gt=0)
+    active: bool | None = None
+    note: str | None = Field(default=None, max_length=160)
+
+
+class ProductionRun(BaseModel):
+    """Uma batida que aconteceu de verdade.
+
+    A ficha preenche a tela, mas quem manda é o que saiu. Rendimento varia com
+    gelo, com o ponto da barra e com o que fica na cuba, e é justamente essa
+    diferença que faz o custo do quilo de base ser o custo real e não o
+    planejado — por isso as quantidades chegam aqui de novo, editáveis, em vez
+    de serem copiadas da ficha.
+    """
+
+    recipe_id: str | None = Field(default=None, max_length=80)
+    inputs: list[ProductionLine] = Field(min_length=1, max_length=20)
+    output_inventory_id: str = Field(min_length=1, max_length=80)
+    output_quantity: float = Field(gt=0)
+    responsible: str = Field(min_length=2, max_length=80)
+    note: str | None = Field(default=None, max_length=160)
+    # Mesma regra da retirada: faltar saldo recusa, e a tela confirma a exceção
+    # quando o insumo saiu de verdade e o cadastro é que está atrasado.
+    allow_negative: bool = False
+
+    @model_validator(mode="after")
+    def output_fora_das_entradas(self) -> "ProductionRun":
+        if any(linha.inventory_id == self.output_inventory_id for linha in self.inputs):
+            raise ValueError("O item produzido não pode estar também entre os insumos da fabricação.")
+        return self
 
 
 class InventoryPurchase(BaseModel):

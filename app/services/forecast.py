@@ -19,7 +19,7 @@ from typing import Any
 import unicodedata
 
 from app.services.delivery import DeliveryService
-from app.services.erp import REVERSAL_PREFIX, SALE_REASON, WITHDRAWAL_KIND, ERPService
+from app.services.erp import PRODUCTION_KIND, REVERSAL_PREFIX, SALE_REASON, WITHDRAWAL_KIND, ERPService
 
 # O Brasil nao usa mais horario de verao desde 2019, entao o fuso da loja e um
 # deslocamento fixo. Isso evita depender do pacote tzdata no Windows e mantem o
@@ -566,6 +566,10 @@ class ForecastService:
                 continue
             motivo = movimentacao.get("reason", "")
             if motivo == SALE_REASON or motivo.startswith(REVERSAL_PREFIX):
+                continue
+            # Fabricacao move custo entre itens em vez de consumi-lo; contar
+            # aqui somaria o acai de novo, depois de ja te-lo somado na venda.
+            if movimentacao.get("kind") == PRODUCTION_KIND:
                 continue
             if _dia_local(movimentacao["created_at"]).date() < inicio:
                 continue

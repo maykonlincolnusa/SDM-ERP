@@ -25,6 +25,7 @@ from app.repositories.store import Store
 from app.schemas import ProductSimulation
 from app.services.erp import (
     FUSO_LOJA,
+    PRODUCTION_KIND,
     REVERSAL_PREFIX,
     SALE_REASON,
     ERPService,
@@ -367,6 +368,11 @@ class CostingService:
                 continue
             motivo = movimentacao.get("reason", "")
             if motivo.startswith(REVERSAL_PREFIX):
+                continue
+            # A barra que virou base nao se perdeu: ela mudou de item. Contar
+            # como quebra faria a barra parecer 100% desperdicada e inflaria o
+            # custo de todo produto que usa a base.
+            if movimentacao.get("kind") == PRODUCTION_KIND:
                 continue
             if self.erp._local_day(movimentacao["created_at"]) < inicio:
                 continue

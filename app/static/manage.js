@@ -30,6 +30,7 @@
     "undo-withdrawal": (id) => undoWithdrawal(id),
     "edit-anchor": (id) => editSportAnchor(id),
     "edit-market-price": (id) => editMarketPrice(id),
+    "edit-recipe": (id) => editProductionRecipe(id),
     "edit-product": (id) => editProduct(id),
     "delete-product": (id) => deleteProduct(id),
     "purge-product": (id) => deleteProduct(id, true),
@@ -56,6 +57,14 @@
     document.getElementById("movement-form").addEventListener("submit", submitMovement);
     document.getElementById("movement-delete").addEventListener("click", undoMovement);
     document.getElementById("sport-anchor-form").addEventListener("submit", submitSportAnchor);
+    document.getElementById("production-recipe-form").addEventListener("submit", submitProductionRecipe);
+    document.getElementById("production-recipe-delete").addEventListener("click", deleteProductionRecipe);
+    document.getElementById("add-production-recipe-line").addEventListener("click", () => addProductionLine("production-recipe-lines"));
+    document.getElementById("production-recipe-lines").addEventListener("click", (event) => {
+      if (!event.target.closest("[data-remove-production]")) return;
+      if (document.querySelectorAll("#production-recipe-lines .production-line").length === 1) return;
+      event.target.closest(".production-line").remove();
+    });
     document.getElementById("market-price-form").addEventListener("submit", submitMarketPrice);
     document.getElementById("market-price-delete").addEventListener("click", deleteMarketPrice);
     document.getElementById("sport-anchor-delete").addEventListener("click", deleteSportAnchor);
@@ -355,6 +364,52 @@
     const quem = lines[0].responsible ? ` registrada por ${lines[0].responsible}` : "";
     if (!confirm(`Desfazer a retirada${quem}?\n\n${resumo}\n\nTudo volta para o saldo do estoque e os lançamentos somem do consumo.`)) return;
     await send(`/api/inventory/withdrawals/${withdrawalId}`, "DELETE", null, "Retirada desfeita e saldo devolvido.");
+  }
+
+  // ------------------------------------------------- fichas de fabricação
+
+  function editProductionRecipe(recipeId) {
+    const ficha = state.productionRecipes.find((linha) => linha.id === recipeId);
+    if (!ficha) return;
+    const form = document.getElementById("production-recipe-form");
+    form.reset();
+    document.getElementById("production-recipe-lines").innerHTML = "";
+    ficha.inputs.forEach((linha) => addProductionLine("production-recipe-lines", linha.inventory_id, linha.quantity));
+    document.getElementById("production-recipe-output").innerHTML = inventoryOptions(ficha.output_inventory_id);
+    form.elements.recipe_id.value = ficha.id;
+    form.elements.name.value = ficha.name;
+    form.elements.output_quantity.value = ficha.output_quantity;
+    form.elements.note.value = ficha.note || "";
+    document.getElementById("production-recipe-delete").hidden = false;
+    setText("#production-recipe-modal-title", "Editar ficha de batida");
+    openDialog("production-recipe-modal");
+  }
+
+  async function submitProductionRecipe(event) {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    const inputs = readProductionLines("production-recipe-lines");
+    if (!inputs.length) { toast("Inclua ao menos um insumo na ficha.", "error"); return; }
+    const payload = {
+      name: form.get("name"),
+      inputs,
+      output_inventory_id: form.get("output_inventory_id"),
+      output_quantity: Number(form.get("output_quantity")),
+      note: form.get("note") || null,
+    };
+    const recipeId = form.get("recipe_id");
+    if (recipeId) {
+      await send(`/api/production/recipes/${recipeId}`, "PATCH", payload, "Ficha atualizada.");
+      return;
+    }
+    await send("/api/production/recipes", "POST", payload, "Ficha cadastrada. A batida passa a vir pré-preenchida.");
+  }
+
+  async function deleteProductionRecipe() {
+    const recipeId = document.getElementById("production-recipe-id").value;
+    if (!recipeId) return;
+    if (!confirm("Excluir esta ficha?\n\nAs fabricações já lançadas continuam no histórico; só o preenchimento automático deixa de existir.")) return;
+    await send(`/api/production/recipes/${recipeId}`, "DELETE", null, "Ficha removida.");
   }
 
   // ------------------------------------------------ referências de mercado
@@ -1145,6 +1200,15 @@
     if (name === "expense") {
       document.getElementById("expense-id").value = "";
       setText("#expense-modal-title", "Lançar despesa");
+    }
+    if (name === "production-recipe") {
+      document.getElementById("production-recipe-form").reset();
+      document.getElementById("production-recipe-id").value = "";
+      document.getElementById("production-recipe-delete").hidden = true;
+      document.getElementById("production-recipe-lines").innerHTML = "";
+      document.getElementById("production-recipe-output").innerHTML = inventoryOptions();
+      addProductionLine("production-recipe-lines");
+      setText("#production-recipe-modal-title", "Nova ficha de batida");
     }
     if (name === "market-price") {
       document.getElementById("market-price-form").reset();

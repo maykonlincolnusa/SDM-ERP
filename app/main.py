@@ -38,6 +38,9 @@ from app.schemas import (
     OrderCreate,
     OrderUpdate,
     ProductCreate,
+    ProductionRecipeCreate,
+    ProductionRecipeUpdate,
+    ProductionRun,
     ProductSimulation,
     ProductUpdate,
     SportAnchorCreate,
@@ -424,6 +427,52 @@ def undo_inventory_withdrawal(
 ) -> dict:
     """Desfaz todas as linhas de uma retirada de uma vez."""
     return _run(lambda: service.undo_inventory_withdrawal(withdrawal_id))
+
+
+@app.get("/api/production/recipes")
+def production_recipes(service: ERPService = Depends(erp), _: dict = Depends(current_user)) -> list[dict]:
+    return service.production_recipes()
+
+
+@app.post("/api/production/recipes", status_code=status.HTTP_201_CREATED)
+def create_production_recipe(
+    payload: ProductionRecipeCreate,
+    service: ERPService = Depends(erp),
+    _: dict = Depends(current_user),
+) -> dict:
+    """Ficha de fabricação: quantas barras viram quantos quilos de base."""
+    return _run(lambda: service.create_production_recipe(payload))
+
+
+@app.patch("/api/production/recipes/{recipe_id}")
+def update_production_recipe(
+    recipe_id: str,
+    payload: ProductionRecipeUpdate,
+    service: ERPService = Depends(erp),
+    _: dict = Depends(current_user),
+) -> dict:
+    return _run(lambda: service.update_production_recipe(recipe_id, payload))
+
+
+@app.delete("/api/production/recipes/{recipe_id}")
+def delete_production_recipe(recipe_id: str, service: ERPService = Depends(erp), _: dict = Depends(current_user)) -> dict:
+    return _run(lambda: service.delete_production_recipe(recipe_id))
+
+
+@app.post("/api/production/runs", status_code=status.HTTP_201_CREATED)
+def register_production(
+    payload: ProductionRun,
+    service: ERPService = Depends(erp),
+    _: dict = Depends(current_user),
+) -> dict:
+    """Registra a batida: consome as barras e dá entrada na base pronta."""
+    return _run(lambda: service.register_production(payload))
+
+
+@app.delete("/api/production/runs/{production_id}")
+def undo_production(production_id: str, service: ERPService = Depends(erp), _: dict = Depends(current_user)) -> dict:
+    """Desfaz a batida inteira, devolvendo a barra e retirando a base."""
+    return _run(lambda: service.undo_production(production_id))
 
 
 @app.post("/api/inventory/{inventory_id}/purchases", status_code=status.HTTP_201_CREATED)

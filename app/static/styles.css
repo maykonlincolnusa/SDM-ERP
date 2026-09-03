@@ -1009,6 +1009,10 @@ tbody tr:hover .row-action.danger { color: var(--muted); }
 .growth-premise.warning span { color: var(--orange-ink); }
 .growth-premise.warning i { color: var(--orange); }
 
+/* A linha da fabricacao precisa de mais espaco no campo de quantidade: ela
+   mostra a conversao para barra logo abaixo. */
+.production-line { grid-template-columns: minmax(0, 1fr) 130px 34px; }
+
 .weekday-picker { display: flex; flex-wrap: wrap; gap: 6px; }
 .weekday-picker label { display: inline-flex; align-items: center; gap: 5px; padding: 7px 11px; border: 1px solid var(--line); border-radius: 999px; color: var(--ink-soft); font-size: 12px; font-weight: 600; cursor: pointer; }
 .weekday-picker input { width: 15px !important; height: 15px !important; margin: 0; accent-color: var(--accent); }

@@ -32,6 +32,7 @@ const state = {
   growth: null,
   growthPeriod: 90,
   growthFilter: "all",
+  productionRecipes: [],
   promotions: null,
   promotionMonth: null,
   promotionsPeriod: 90,
@@ -191,7 +192,7 @@ function setMobileNavigation(open) {
 async function loadAll() {
   setRefreshing(true);
   try {
-    const [config, dashboard, consumption, crossing, forecast, products, addons, inventory, orders, expenses, expenseSeries, operating, mediaSummary, media, channels, channelPerformance, lines, salesDay, growth, promotions, promotionMonth, pricing, marketPrices, planning, couriers, deliveries, deliveryPerformance, catalogs, history] = await Promise.all([
+    const [config, dashboard, consumption, crossing, forecast, products, addons, inventory, orders, expenses, expenseSeries, operating, mediaSummary, media, channels, channelPerformance, lines, salesDay, growth, promotions, promotionMonth, pricing, marketPrices, productionRecipes, planning, couriers, deliveries, deliveryPerformance, catalogs, history] = await Promise.all([
       api("/api/config"),
       api(`/api/dashboard?days=${state.period}`),
       api(`/api/inventory/consumption?days=${state.period}`),
@@ -215,6 +216,7 @@ async function loadAll() {
       api(`/api/promotions/month?days=${state.promotionsPeriod}&weeks=4`),
       api(`/api/pricing?days=${state.pricingPeriod}`),
       api("/api/market-prices"),
+      api("/api/production/recipes"),
       api(`/api/planning?days=90&horizon=7&service_level=${state.planningService}`),
       api("/api/couriers"),
       api(`/api/deliveries?days=${state.deliveryPeriod}`),
@@ -244,6 +246,7 @@ async function loadAll() {
     state.promotionMonth = promotionMonth;
     state.pricing = pricing;
     state.marketPrices = marketPrices;
+    state.productionRecipes = productionRecipes;
     state.planning = planning;
     state.couriers = couriers;
     state.deliveries = deliveries;
@@ -312,6 +315,7 @@ function renderAll() {
   renderPromotions();
   renderPromotionMonth();
   renderPricing();
+  renderProductionRecipes();
   renderMedia();
   renderCatalogs();
   renderHistory();
@@ -902,6 +906,7 @@ function openModal(name) {
   if (name === "adjust") populateAdjustSelect();
   if (name === "purchase") { openPurchase(); return; }
   if (name === "withdrawal") { openWithdrawal(); return; }
+  if (name === "production") { openProduction(); return; }
   if (name === "product") { document.getElementById("product-form").reset(); document.getElementById("recipe-lines").innerHTML = ""; addRecipeLine(); }
   if (name === "fixed-cost") renderFixedCostSetup();
   if (name === "expense") { document.getElementById("expense-form").reset(); document.querySelector('#expense-form [name="due_date"]').value = dateInputValue(new Date()); toggleExpenseRepeat(); }
@@ -963,6 +968,23 @@ function bindForms() {
   document.getElementById("import-anota-report").addEventListener("click", () => document.getElementById("anota-report-file").click());
   document.getElementById("anota-report-file").addEventListener("change", importAnotaReport);
   document.getElementById("adjust-form").addEventListener("submit", submitAdjustment);
+  document.getElementById("production-form").addEventListener("submit", submitProduction);
+  document.getElementById("production-recipe").addEventListener("change", applyProductionRecipe);
+  document.getElementById("add-production-line").addEventListener("click", () => { addProductionLine("production-lines"); refreshProductionPreview(); });
+  document.getElementById("production-lines").addEventListener("click", (event) => {
+    if (!event.target.closest("[data-remove-production]")) return;
+    if (document.querySelectorAll("#production-lines .production-line").length === 1) {
+      toast("A fabricação precisa de pelo menos um insumo.", "error");
+      return;
+    }
+    event.target.closest(".production-line").remove();
+    refreshProductionPreview();
+  });
+  document.getElementById("production-lines").addEventListener("input", refreshProductionPreview);
+  document.getElementById("production-override").addEventListener("change", refreshProductionPreview);
+  ["output_inventory_id", "output_quantity"].forEach((campo) => {
+    document.querySelector(`#production-form [name="${campo}"]`).addEventListener("input", refreshProductionPreview);
+  });
   document.getElementById("withdrawal-form").addEventListener("submit", submitWithdrawal);
   document.getElementById("add-withdrawal-line").addEventListener("click", addWithdrawalLine);
   document.getElementById("withdrawal-lines").addEventListener("click", (event) => {
@@ -1209,6 +1231,163 @@ async function submitAdjustment(event) {
   await submitData(`/api/inventory/${inventoryId}/adjust`, { quantity_delta: Number(form.get("quantity_delta")), reason: form.get("reason") }, "Saldo de estoque atualizado.");
 }
 
+// ---------------------------------------------------------- fabricação
+//
+// A barra sai do freezer e a base pronta entra. É o único movimento que tira de
+// um item e põe em outro, e por isso a tela precisa mostrar as duas pontas ao
+// mesmo tempo: o custo não some, ele muda de lugar, e o que decide a margem do
+// copo é justamente quanto ficou o quilo de base.
+
+function packLabel(item, quantity) {
+  // A equipe conta em barra; o estoque fala em quilo. Mostrar as duas leituras
+  // evita tanto a conta de cabeça quanto a balança em toda batida.
+  if (!item || !item.pack_size || !item.pack_unit) return "";
+  const packs = quantity / item.pack_size;
+  return ` ≈ ${number.format(packs)} ${escapeHtml(item.pack_unit)}${packs === 1 ? "" : "s"}`;
+}
+
+function inventoryOptions(selected = "") {
+  return state.inventory
+    .map((item) => `<option value="${item.id}"${item.id === selected ? " selected" : ""}>${escapeHtml(item.name)} (${number.format(item.quantity)} ${escapeHtml(item.unit)})</option>`)
+    .join("");
+}
+
+function addProductionLine(container, inventoryId = "", quantity = "") {
+  const item = state.inventory.find((row) => row.id === inventoryId);
+  const dica = item && item.pack_unit
+    ? `<small class="field-hint">1 ${escapeHtml(item.pack_unit)} = ${number.format(item.pack_size)} ${escapeHtml(item.unit)}</small>`
+    : "";
+  document.getElementById(container).insertAdjacentHTML("beforeend", `<div class="recipe-line production-line"><label>Insumo<select required>${inventoryOptions(inventoryId)}</select></label><label>Quantidade<input type="number" min="0.001" step="0.001" required placeholder="0,000" value="${quantity}" />${dica}</label><button type="button" data-remove-production title="Remover insumo"><i data-lucide="trash-2"></i></button></div>`);
+  refreshIcons();
+}
+
+function readProductionLines(container) {
+  return [...document.querySelectorAll(`#${container} .production-line`)]
+    .map((linha) => ({ inventory_id: linha.querySelector("select").value, quantity: Number(linha.querySelector("input").value) }))
+    .filter((linha) => linha.inventory_id && linha.quantity > 0);
+}
+
+function openProduction() {
+  const form = document.getElementById("production-form");
+  form.reset();
+  document.getElementById("production-override").checked = false;
+  document.getElementById("production-override-field").hidden = true;
+  const fichas = state.productionRecipes.filter((linha) => linha.active !== false);
+  document.getElementById("production-recipe").innerHTML =
+    '<option value="">Sem ficha — lançar do zero</option>'
+    + fichas.map((linha) => `<option value="${linha.id}">${escapeHtml(linha.name)}</option>`).join("");
+  document.getElementById("production-output").innerHTML = inventoryOptions();
+  document.getElementById("production-lines").innerHTML = "";
+  if (fichas.length) {
+    document.getElementById("production-recipe").value = fichas[0].id;
+    applyProductionRecipe();
+  } else {
+    addProductionLine("production-lines");
+    refreshProductionPreview();
+  }
+  openDialog("production-modal");
+}
+
+function applyProductionRecipe() {
+  // A ficha preenche; quem manda é o que saiu. Rendimento varia com gelo e com
+  // o ponto da barra, e é essa diferença que faz o custo do quilo ser o real.
+  const ficha = state.productionRecipes.find((linha) => linha.id === document.getElementById("production-recipe").value);
+  const form = document.getElementById("production-form");
+  document.getElementById("production-lines").innerHTML = "";
+  if (!ficha) {
+    addProductionLine("production-lines");
+    refreshProductionPreview();
+    return;
+  }
+  ficha.inputs.forEach((linha) => addProductionLine("production-lines", linha.inventory_id, linha.quantity));
+  form.elements.output_inventory_id.value = ficha.output_inventory_id;
+  form.elements.output_quantity.value = ficha.output_quantity;
+  refreshProductionPreview();
+}
+
+function refreshProductionPreview() {
+  const preview = document.getElementById("production-preview");
+  if (!preview) return;
+  const form = document.getElementById("production-form");
+  const linhas = readProductionLines("production-lines");
+  const saida = state.inventory.find((row) => row.id === form.elements.output_inventory_id.value);
+  const quantidade = Number(form.elements.output_quantity.value || 0);
+  const unidade = document.getElementById("production-output-unit");
+  if (unidade) unidade.textContent = saida ? `Na unidade do item: ${saida.unit}.` : "Na unidade do item.";
+
+  const override = document.getElementById("production-override");
+  const overrideField = document.getElementById("production-override-field");
+  const faltando = [];
+  let custo = 0;
+  const pedido = new Map();
+  linhas.forEach((linha) => pedido.set(linha.inventory_id, (pedido.get(linha.inventory_id) || 0) + linha.quantity));
+  pedido.forEach((quantity, inventoryId) => {
+    const item = state.inventory.find((row) => row.id === inventoryId);
+    if (!item) return;
+    custo += quantity * item.unit_cost;
+    if (item.quantity < quantity) faltando.push(`${item.name} (há ${number.format(item.quantity)} ${item.unit})`);
+  });
+  overrideField.hidden = !faltando.length;
+  if (!faltando.length) override.checked = false;
+
+  if (!linhas.length || !saida || !quantidade) {
+    preview.textContent = "Escolha as barras e diga quanto saiu da batida.";
+    preview.className = "modal-result full neutral";
+    return;
+  }
+  if (faltando.length && !override.checked) {
+    preview.textContent = `Sem saldo para ${faltando.join(" · ")}. Confira, ou confirme abaixo para registrar assim mesmo.`;
+    preview.className = "modal-result full negative";
+    return;
+  }
+  const porUnidade = custo / quantidade;
+  const anterior = saida.unit_cost;
+  const resultante = saida.quantity > 0
+    ? (saida.quantity * anterior + quantidade * porUnidade) / (saida.quantity + quantidade)
+    : porUnidade;
+  const barras = pedido.size === 1
+    ? packLabel(state.inventory.find((row) => row.id === [...pedido.keys()][0]), [...pedido.values()][0])
+    : "";
+  preview.textContent = `${currency.format(custo)} em insumo${barras} para ${number.format(quantidade)} ${saida.unit} — ${currency.format(porUnidade)} por ${saida.unit}. O custo médio de ${saida.name} vai de ${currency.format(anterior)} para ${currency.format(resultante)}.`;
+  preview.className = `modal-result full ${resultante <= anterior ? "positive" : "neutral"}`;
+}
+
+async function submitProduction(event) {
+  event.preventDefault();
+  const form = new FormData(event.currentTarget);
+  const inputs = readProductionLines("production-lines");
+  if (!inputs.length) return toast("Inclua ao menos um insumo na fabricação.", "error");
+  const payload = {
+    recipe_id: form.get("recipe_id") || null,
+    inputs,
+    output_inventory_id: form.get("output_inventory_id"),
+    output_quantity: Number(form.get("output_quantity")),
+    responsible: form.get("responsible"),
+    note: form.get("note") || null,
+    allow_negative: document.getElementById("production-override").checked,
+  };
+  await submitData("/api/production/runs", payload, "Fabricação registrada: barra baixada e base pronta em estoque.");
+}
+
+function renderProductionRecipes() {
+  const corpo = document.getElementById("production-recipes-body");
+  if (!corpo) return;
+  const insumos = Object.fromEntries(state.inventory.map((item) => [item.id, item]));
+  corpo.innerHTML = state.productionRecipes.length
+    ? state.productionRecipes.map((ficha) => {
+        const consome = ficha.inputs.map((linha) => {
+          const item = insumos[linha.inventory_id];
+          if (!item) return '<span class="negative">insumo removido</span>';
+          return `${number.format(linha.quantity)} ${escapeHtml(item.unit)} de ${escapeHtml(item.name)}${packLabel(item, linha.quantity)}`;
+        }).join(" + ");
+        const custo = ficha.inputs.reduce((total, linha) => total + (insumos[linha.inventory_id]?.unit_cost || 0) * linha.quantity, 0);
+        const saida = insumos[ficha.output_inventory_id];
+        return `<tr><td><strong>${escapeHtml(ficha.name)}</strong>${ficha.note ? `<small class="muted-value"> ${escapeHtml(ficha.note)}</small>` : ""}</td><td class="muted-value">${consome}</td><td>${saida ? `<strong>${number.format(ficha.output_quantity)} ${escapeHtml(saida.unit)}</strong> de ${escapeHtml(saida.name)}` : '<span class="negative">item removido</span>'}</td><td class="align-right">${currency.format(custo)}</td><td class="align-right"><strong>${currency.format(custo / ficha.output_quantity)}</strong>${saida ? `<small class="muted-value">/${escapeHtml(saida.unit)}</small>` : ""}</td><td class="align-right"><div class="row-actions"><button class="row-action" type="button" data-edit-recipe="${ficha.id}" title="Editar ficha"><i data-lucide="pencil"></i></button></div></td></tr>`;
+      }).join("")
+    : emptyRow(6, "Nenhuma ficha cadastrada. Sem ela a batida é lançada do zero toda vez.");
+  refreshIcons();
+}
+
 // ------------------------------------------------------- retirada de insumo
 //
 // A baixa por venda sai sozinha da ficha técnica. O que a loja não tinha era
@@ -1378,6 +1557,11 @@ async function submitInventory(event) {
   // isso. Mandar string vazia faria a validação recusar o insumo inteiro.
   payload.shelf_life_days = payload.shelf_life_days === "" ? null : Number(payload.shelf_life_days);
   payload.lead_time_days = Number(payload.lead_time_days || 2);
+  // Unidade de manuseio e opcional, e os dois campos andam juntos: metade
+  // preenchida seria recusada pelo servidor.
+  payload.pack_unit = payload.pack_unit ? payload.pack_unit : null;
+  payload.pack_size = payload.pack_size === "" ? null : Number(payload.pack_size);
+  if (!payload.pack_unit || !payload.pack_size) { payload.pack_unit = null; payload.pack_size = null; }
   if (inventoryId) {
     // Saldo não entra na edição: ele só muda por contagem ou ajuste, para toda
     // diferença ficar registrada em uma movimentação.

@@ -76,6 +76,7 @@ def test_health_e_config_respondem(client):
     "/api/catalogs",
     "/api/market-prices",
     "/api/sport-anchors",
+    "/api/production/recipes",
     "/api/audit",
 ])
 def test_toda_rota_de_leitura_responde(client, caminho):
@@ -96,7 +97,7 @@ def test_as_rotas_que_o_carregamento_inicial_usa_existem_todas(client):
         "/api/media", "/api/channels", "/api/channels/performance?days=30",
         "/api/products/lines?days=30", "/api/sales/daily", "/api/growth?days=90",
         "/api/promotions/week?days=90&horizon=7", "/api/promotions/month?days=90&weeks=4",
-        "/api/pricing?days=90", "/api/market-prices",
+        "/api/pricing?days=90", "/api/market-prices", "/api/production/recipes",
         "/api/planning?days=90&horizon=7&service_level=0.9", "/api/couriers",
         "/api/deliveries?days=30", "/api/couriers/performance?days=30", "/api/catalogs",
         "/api/audit?limit=60",
@@ -230,3 +231,46 @@ def test_importacao_recusa_arquivo_que_nao_e_xlsx(client):
 
     assert resposta.status_code == 422
     assert "xlsx" in resposta.json()["detail"].lower()
+
+
+def test_ciclo_da_fabricacao_move_estoque_de_um_item_para_o_outro(client):
+    """A ponta que sai e a que entra andam juntas, e o custo muda de lugar."""
+
+    barra = client.post("/api/inventory", json={
+        "name": "Barra de açaí 12%", "unit": "kg", "quantity": 28, "minimum_quantity": 10,
+        "unit_cost": 20.0, "category": "Açaí", "pack_unit": "barra", "pack_size": 2.8,
+    })
+    assert barra.status_code == 201
+    barra_id = barra.json()["id"]
+
+    ficha = client.post("/api/production/recipes", json={
+        "name": "Batida de 12%", "inputs": [{"inventory_id": barra_id, "quantity": 8.4}],
+        "output_inventory_id": "acai", "output_quantity": 10.0,
+    })
+    assert ficha.status_code == 201
+
+    base_antes = _saldo(client, "acai")
+    batida = client.post("/api/production/runs", json={
+        "recipe_id": ficha.json()["id"],
+        "inputs": [{"inventory_id": barra_id, "quantity": 8.4}],
+        "output_inventory_id": "acai", "output_quantity": 10.0, "responsible": "Maria",
+    })
+
+    assert batida.status_code == 201
+    assert _saldo(client, barra_id) == 28 - 8.4
+    assert _saldo(client, "acai") == base_antes + 10.0
+    # 8,4 kg a R$ 20 dão R$ 168 em 10 kg: R$ 16,80 o quilo.
+    assert batida.json()["output"]["unit_cost"] == pytest.approx(16.8, abs=0.01)
+
+    assert client.delete(f"/api/production/runs/{batida.json()['id']}").status_code == 200
+    assert _saldo(client, "acai") == base_antes
+    assert _saldo(client, barra_id) == 28
+
+
+def test_ficha_de_fabricacao_circular_e_recusada_na_rota(client):
+    resposta = client.post("/api/production/recipes", json={
+        "name": "Circular", "inputs": [{"inventory_id": "acai", "quantity": 1}],
+        "output_inventory_id": "acai", "output_quantity": 1,
+    })
+
+    assert resposta.status_code == 422

@@ -28,6 +28,9 @@ from app.schemas import (
     OrderCreate,
     OrderUpdate,
     ProductCreate,
+    ProductionRecipeCreate,
+    ProductionRecipeUpdate,
+    ProductionRun,
     ProductUpdate,
     SportAnchorCreate,
     SportAnchorUpdate,
@@ -44,6 +47,13 @@ PURCHASE_REASON = "Compra recebida"
 # Retirada manual para uso/operacao. Ela nao e quebra nem vencimento: entra no
 # consumo e no planejamento, mas aparece separada para nao mascarar perdas.
 WITHDRAWAL_KIND = "retirada"
+
+# Fabricacao: a barra de acai vira base pronta. E o unico movimento que tira de
+# um item e poe em outro, e o custo nao some — muda de lugar. Por isso ele fica
+# fora de perda, de retirada e de quebra em toda conta de resultado: contar aqui
+# e de novo quando o copo for vendido cobraria o mesmo acai duas vezes.
+PRODUCTION_KIND = "fabricacao"
+PRODUCTION_REASON = "Fabricação"
 
 # Movimento que desfaz outro. Nao conta como perda nem como venda no consumo,
 # senao editar um pedido apareceria na tela como se a loja tivesse jogado
@@ -322,7 +332,7 @@ class ERPService:
                 continue
             if movement["reason"].startswith(REVERSAL_PREFIX):
                 continue
-            if movement.get("kind") == WITHDRAWAL_KIND:
+            if movement.get("kind") in (WITHDRAWAL_KIND, PRODUCTION_KIND):
                 continue
             item = inventory.get(movement["inventory_id"])
             if item:
@@ -495,6 +505,10 @@ class ERPService:
                 continue
             item = stock.get(movement["inventory_id"])
             if item:
+                # Fabricacao fica de fora das duas: o custo da barra vira custo
+                # da base e ja aparece quando o copo e vendido.
+                if movement.get("kind") == PRODUCTION_KIND:
+                    continue
                 cost = movement.get("total_cost", abs(movement["quantity_delta"]) * item["unit_cost"])
                 if movement.get("kind") == WITHDRAWAL_KIND:
                     withdrawal_cost += cost
@@ -1110,6 +1124,259 @@ class ERPService:
 
         return self.store.run_transaction(undo)
 
+    # ------------------------------------------------------------------
+    # Fabricacao: a barra vira base pronta
+    # ------------------------------------------------------------------
+
+    def production_recipes(self) -> list[dict[str, Any]]:
+        return sorted(self.store.list("production_recipes"), key=lambda linha: str(linha.get("name", "")))
+
+    def create_production_recipe(self, payload: ProductionRecipeCreate) -> dict[str, Any]:
+        recipe = payload.model_dump()
+        recipe["id"] = self._identifier(payload.name, "ficha")
+        if self.store.get("production_recipes", recipe["id"]):
+            raise ValueError("Já existe uma ficha de fabricação com esse nome.")
+        self._validar_itens_da_ficha(recipe)
+        self.store.put("production_recipes", recipe["id"], recipe)
+        self._audit(
+            self.store, "production_recipe", recipe["id"], "criada",
+            f"Ficha de fabricação {payload.name} cadastrada",
+        )
+        return recipe
+
+    def update_production_recipe(self, recipe_id: str, payload: ProductionRecipeUpdate) -> dict[str, Any]:
+        recipe = self.store.get("production_recipes", recipe_id)
+        if not recipe:
+            raise ValueError("Ficha de fabricação não encontrada.")
+        changes = {key: value for key, value in payload.model_dump(exclude_unset=True).items() if value is not None}
+        before = {key: recipe.get(key) for key in changes}
+        recipe.update(changes)
+        self._validar_itens_da_ficha(recipe)
+        self.store.put("production_recipes", recipe_id, recipe)
+        self._audit(
+            self.store, "production_recipe", recipe_id, "editada",
+            f"Ficha de fabricação {recipe['name']} atualizada",
+            self._diff(before, changes),
+        )
+        return recipe
+
+    def delete_production_recipe(self, recipe_id: str) -> dict[str, str]:
+        recipe = self.store.get("production_recipes", recipe_id)
+        if not recipe:
+            raise ValueError("Ficha de fabricação não encontrada.")
+        self.store.delete("production_recipes", recipe_id)
+        self._audit(
+            self.store, "production_recipe", recipe_id, "excluida",
+            f"Ficha de fabricação {recipe['name']} removida",
+        )
+        return {"id": recipe_id, "status": "excluida", "detail": "Ficha removida. As fabricações já lançadas continuam no histórico."}
+
+    def _validar_itens_da_ficha(self, recipe: dict[str, Any]) -> None:
+        """Ficha que aponta para insumo inexistente quebraria só na hora da batida."""
+
+        for linha in recipe.get("inputs", []):
+            if not self.store.get("inventory", linha["inventory_id"]):
+                raise ValueError("Um dos insumos da ficha não existe no estoque.")
+        if not self.store.get("inventory", recipe["output_inventory_id"]):
+            raise ValueError("O item produzido não existe no estoque.")
+
+    def register_production(self, payload: ProductionRun) -> dict[str, Any]:
+        """Registra uma batida: consome as barras e da entrada na base pronta.
+
+        Fabricacao nao e retirada. Retirada so tira; aqui o custo nao some, ele
+        muda de lugar — sai das barras e entra no quilo de base. Por isso o
+        movimento de fabricacao fica fora de perda, de retirada e de quebra em
+        toda conta de resultado: contar como custo aqui e de novo quando o copo
+        for vendido cobraria o mesmo acai duas vezes.
+
+        E por isso tambem que o custo da base vem do que foi usado de verdade.
+        Bater com barra de 12% deixa o quilo mais caro que bater com a de 8%, e
+        e essa diferenca que faz a margem do copo ser real.
+        """
+
+        now = datetime.now(timezone.utc)
+        production_id = str(uuid4())
+        requested: dict[str, float] = {}
+        for linha in payload.inputs:
+            requested[linha.inventory_id] = round(requested.get(linha.inventory_id, 0.0) + linha.quantity, 3)
+
+        responsible = payload.responsible.strip()
+        note = self._optional_text(payload.note)
+        output_quantity = round(payload.output_quantity, 3)
+
+        def produce(transaction: StoreTransaction) -> dict[str, Any]:
+            produced = transaction.get("inventory", payload.output_inventory_id)
+            if not produced:
+                raise ValueError("O item produzido não existe no estoque.")
+
+            stock: dict[str, dict[str, Any]] = {}
+            short: set[str] = set()
+            for inventory_id, quantity in requested.items():
+                item = transaction.get("inventory", inventory_id)
+                if not item:
+                    raise ValueError("Item de estoque não encontrado.")
+                if item["quantity"] < quantity:
+                    if not payload.allow_negative:
+                        raise ValueError(
+                            f"Saldo insuficiente de {item['name']}: há {item['quantity']:g} {item['unit']} "
+                            f"e a fabricação pede {quantity:g} {item['unit']}. Confirme na tela para registrar "
+                            "assim mesmo e deixar o saldo negativo."
+                        )
+                    short.add(inventory_id)
+                stock[inventory_id] = item
+
+            consumidos: list[dict[str, Any]] = []
+            custo_total = 0.0
+            for inventory_id, quantity in requested.items():
+                item = stock[inventory_id]
+                anterior = item["quantity"]
+                item["quantity"] = round(anterior - quantity, 3)
+                item["updated_at"] = now.isoformat()
+                transaction.put("inventory", inventory_id, item)
+
+                custo = round(quantity * item.get("unit_cost", 0.0), 2)
+                custo_total += custo
+                movimento = {
+                    "id": str(uuid4()),
+                    "inventory_id": inventory_id,
+                    "quantity_delta": -quantity,
+                    "reason": PRODUCTION_REASON,
+                    "kind": PRODUCTION_KIND,
+                    "production_id": production_id,
+                    "recipe_id": payload.recipe_id,
+                    "responsible": responsible,
+                    "note": note,
+                    "below_balance": inventory_id in short,
+                    "unit_cost": item.get("unit_cost", 0.0),
+                    "total_cost": custo,
+                    "created_at": now.isoformat(),
+                }
+                transaction.put("inventory_movements", movimento["id"], movimento)
+                consumidos.append({
+                    "movement_id": movimento["id"],
+                    "inventory_id": inventory_id,
+                    "name": item["name"],
+                    "unit": item["unit"],
+                    "quantity": quantity,
+                    "unit_cost": item.get("unit_cost", 0.0),
+                    "total_cost": custo,
+                    "below_balance": inventory_id in short,
+                })
+
+            # O custo do que saiu da batida e o custo do que entrou dividido
+            # pelo rendimento real. Rendimento pior encarece o quilo, e e assim
+            # que a perda de processo aparece no custo em vez de sumir.
+            custo_unitario = round(custo_total / output_quantity, 4) if output_quantity else 0.0
+            saldo_anterior = produced["quantity"]
+            custo_anterior = produced.get("unit_cost", 0.0)
+            saldo_novo = round(saldo_anterior + output_quantity, 3)
+            if saldo_anterior > 0:
+                custo_novo = round(
+                    (saldo_anterior * custo_anterior + output_quantity * custo_unitario) / saldo_novo, 4
+                )
+            else:
+                custo_novo = custo_unitario
+            produced["quantity"] = saldo_novo
+            produced["unit_cost"] = custo_novo
+            produced["updated_at"] = now.isoformat()
+            transaction.put("inventory", produced["id"], produced)
+
+            entrada = {
+                "id": str(uuid4()),
+                "inventory_id": produced["id"],
+                "quantity_delta": output_quantity,
+                "reason": PRODUCTION_REASON,
+                "kind": PRODUCTION_KIND,
+                "production_id": production_id,
+                "recipe_id": payload.recipe_id,
+                "responsible": responsible,
+                "note": note,
+                "unit_cost": custo_unitario,
+                "total_cost": round(custo_total, 2),
+                # Sem isto o desfazer devolveria a quantidade e deixaria o custo
+                # medio contaminado pela batida que deixou de existir.
+                "previous_unit_cost": custo_anterior,
+                "previous_quantity": saldo_anterior,
+                "created_at": now.isoformat(),
+            }
+            transaction.put("inventory_movements", entrada["id"], entrada)
+
+            self._audit(
+                transaction, "production", production_id, "registrada",
+                f"Fabricação de {output_quantity:g} {produced['unit']} de {produced['name']} por {responsible}",
+                {
+                    "consumido": [f"{linha['quantity']:g} {linha['unit']} de {linha['name']}" for linha in consumidos],
+                    "custo do lote": round(custo_total, 2),
+                    "custo por {}".format(produced["unit"]): custo_unitario,
+                    "custo médio": {"de": custo_anterior, "para": custo_novo},
+                    "observação": note,
+                    **({"saldo estourado": [stock[key]["name"] for key in sorted(short)]} if short else {}),
+                },
+            )
+            return {
+                "id": production_id,
+                "recipe_id": payload.recipe_id,
+                "responsible": responsible,
+                "note": note,
+                "created_at": now.isoformat(),
+                "inputs": consumidos,
+                "output": {
+                    "movement_id": entrada["id"],
+                    "inventory_id": produced["id"],
+                    "name": produced["name"],
+                    "unit": produced["unit"],
+                    "quantity": output_quantity,
+                    "unit_cost": custo_unitario,
+                    "previous_unit_cost": custo_anterior,
+                    "resulting_unit_cost": custo_novo,
+                    "resulting_quantity": saldo_novo,
+                },
+                "total_cost": round(custo_total, 2),
+                "below_balance": sorted(stock[key]["name"] for key in short),
+            }
+
+        return self.store.run_transaction(produce)
+
+    def undo_production(self, production_id: str) -> dict[str, Any]:
+        """Desfaz a batida inteira: devolve as barras e tira a base produzida.
+
+        As duas pontas voltam juntas, senao o estoque ficaria com a base sem a
+        barra que a originou — ou o contrario.
+        """
+
+        now = datetime.now(timezone.utc)
+
+        def undo(transaction: StoreTransaction) -> dict[str, Any]:
+            movimentos = [
+                movimento for movimento in transaction.list("inventory_movements")
+                if movimento.get("kind") == PRODUCTION_KIND and movimento.get("production_id") == production_id
+            ]
+            if not movimentos:
+                raise ValueError("Fabricação não encontrada ou já desfeita.")
+
+            for movimento in movimentos:
+                item = transaction.get("inventory", movimento["inventory_id"])
+                if not item:
+                    raise ValueError("Não é possível desfazer: um dos itens da fabricação foi excluído.")
+                item["quantity"] = round(item["quantity"] - movimento["quantity_delta"], 3)
+                # A ponta que recebeu a producao teve o custo medio recalculado;
+                # devolver so a quantidade deixaria o custo de uma batida que
+                # nao existe mais grudado no saldo.
+                if movimento["quantity_delta"] > 0 and "previous_unit_cost" in movimento:
+                    item["unit_cost"] = movimento["previous_unit_cost"]
+                item["updated_at"] = now.isoformat()
+                transaction.put("inventory", item["id"], item)
+                transaction.delete("inventory_movements", movimento["id"])
+
+            self._audit(
+                transaction, "production", production_id, "desfeita",
+                f"Fabricação com {len(movimentos)} movimento(s) desfeita",
+                {"detalhe": "As barras voltaram ao saldo e a base produzida saiu."},
+            )
+            return {"id": production_id, "status": "desfeita", "movements_reverted": len(movimentos)}
+
+        return self.store.run_transaction(undo)
+
     def register_inventory_purchase(self, inventory_id: str, payload: InventoryPurchase) -> dict[str, Any]:
         """Recebe uma compra sem transformar a entrada em simples ajuste.
 
@@ -1324,6 +1591,8 @@ class ERPService:
             raise ValueError(f"Este lançamento é o estorno de um pedido. {remedy}")
         if movement.get("kind") == WITHDRAWAL_KIND:
             raise ValueError("Esta baixa faz parte de uma retirada. Desfaça a retirada inteira para corrigir o saldo.")
+        if movement.get("kind") == PRODUCTION_KIND:
+            raise ValueError("Este lançamento faz parte de uma fabricação. Desfaça a fabricação inteira, para a barra e a base voltarem juntas.")
         if movement.get("kind") == "compra":
             raise ValueError("Esta movimentação veio de uma compra. Lance uma contagem ou ajuste para corrigir o saldo.")
 
@@ -1367,6 +1636,7 @@ class ERPService:
             reversal = reason.startswith(REVERSAL_PREFIX)
             kind = (
                 "estorno" if reversal
+                else PRODUCTION_KIND if movement.get("kind") == PRODUCTION_KIND
                 else "compra" if movement.get("kind") == "compra"
                 else WITHDRAWAL_KIND if movement.get("kind") == WITHDRAWAL_KIND and delta < 0
                 else "entrada" if delta > 0
@@ -1407,7 +1677,7 @@ class ERPService:
                 "cost": cost,
                 # A tela precisa saber o que pode oferecer para editar: baixa de
                 # venda so muda pelo pedido.
-                "editable": reason != SALE_REASON and not reversal and kind not in ("compra", WITHDRAWAL_KIND),
+                "editable": reason != SALE_REASON and not reversal and kind not in ("compra", WITHDRAWAL_KIND, PRODUCTION_KIND),
             })
 
         items = []

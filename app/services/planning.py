@@ -45,7 +45,14 @@ from statistics import fmean, pstdev
 from typing import Any
 
 from app.repositories.store import Store
-from app.services.erp import FUSO_LOJA, REVERSAL_PREFIX, SALE_REASON, WITHDRAWAL_KIND, ERPService
+from app.services.erp import (
+    FUSO_LOJA,
+    PRODUCTION_KIND,
+    REVERSAL_PREFIX,
+    SALE_REASON,
+    WITHDRAWAL_KIND,
+    ERPService,
+)
 
 DIAS = ("segunda", "terça", "quarta", "quinta", "sexta", "sábado", "domingo")
 
@@ -353,7 +360,11 @@ class PlanningService:
             movimento.add(dia)
             is_sale = motivo == SALE_REASON
             is_withdrawal = movimentacao.get("kind") == WITHDRAWAL_KIND
-            if movimentacao["quantity_delta"] >= 0 or not (is_sale or is_withdrawal):
+            # A barra so sai do freezer pela fabricacao: e ela que diz quanta
+            # barra comprar. Sem contar aqui, o plano mandaria repor so o que a
+            # ficha tecnica consome, e a ficha nao consome barra — consome base.
+            is_production = movimentacao.get("kind") == PRODUCTION_KIND
+            if movimentacao["quantity_delta"] >= 0 or not (is_sale or is_withdrawal or is_production):
                 continue
             vendas[movimentacao["inventory_id"]][dia] += abs(movimentacao["quantity_delta"])
 
