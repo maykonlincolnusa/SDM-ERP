@@ -31,8 +31,11 @@ def loja(tmp_path):
     """Loja com as duas barras cadastradas e compradas, como a de verdade."""
 
     store = DemoStore(tmp_path / "store.json")
-    for movimento in store.list("inventory_movements"):
-        store.delete("inventory_movements", movimento["id"])
+    # As vendas de exemplo da loja saem junto: elas trazem outro mix de copos, e
+    # o mix e o que pesa a equivalencia por batida.
+    for colecao in ("inventory_movements", "orders"):
+        for linha in store.list(colecao):
+            store.delete(colecao, linha["id"])
     erp = ERPService(store)
     for nome, custo_da_barra in (("Barra de açaí 8%", 42.0), ("Barra de açaí 12%", 58.0)):
         erp.create_inventory_item(InventoryItemCreate(
@@ -709,3 +712,177 @@ def test_contagem_que_bate_exatamente_tambem_conta_como_evidencia(loja):
     assert not [m for m in loja.store.list("inventory_movements") if m.get("kind") == "contagem"]
     # Ainda assim a loja contou, e o carimbo no item registra isso.
     assert _item(loja, "Base de açaí")["counted_at"]
+
+
+# ----------------------------------------------------------------------
+# Insumo que vai na batida, e nao no copo
+# ----------------------------------------------------------------------
+
+
+def _com_guarana_na_batida(erp, ficha_id):
+    """Poe o guarana como insumo da batida, alem da barra."""
+
+    from app.schemas import ProductionRecipeUpdate
+
+    ficha = next(linha for linha in erp.production_recipes() if linha["id"] == ficha_id)
+    entradas = [ProductionLine(**linha) for linha in ficha["inputs"]]
+    entradas.append(ProductionLine(inventory_id="guarana", quantity=0.67))
+    return erp.update_production_recipe(ficha_id, ProductionRecipeUpdate(inputs=entradas))
+
+
+def test_a_equivalencia_por_batida_sai_da_ficha_do_copo_e_do_mix(loja):
+    """Ninguem mede: a ficha diz por copo, a venda diz o mix, a batida diz o rendimento."""
+
+    _loja_com_movimento(loja)
+
+    conselho = loja.production_input_advice(30)
+    guarana = next(linha for linha in conselho["suggestions"] if linha["inventory_id"] == "guarana")
+
+    assert guarana["per_batch"] > 0
+    assert guarana["cups_per_batch"] > 0
+    assert guarana["measured"] is True, "com venda no período o mix é medido, não assumido"
+    # 0,03 L no copo de 500 e 0,02 no de 300, no mix de 3 para 2 vendido.
+    esperado = (3 * 0.03 + 2 * 0.02) / (3 * 0.46 + 2 * 0.28) * 10.0
+    assert guarana["per_batch"] == pytest.approx(esperado, abs=0.001)
+
+
+def test_sem_venda_no_periodo_o_mix_e_declarado_como_assumido(loja):
+    """Assumir mix igual e aceitavel; esconder que assumiu, nao."""
+
+    _abastece_barra(loja)
+    _ficha(loja)
+
+    conselho = loja.production_input_advice(30)
+    guarana = next(linha for linha in conselho["suggestions"] if linha["inventory_id"] == "guarana")
+
+    assert guarana["measured"] is False
+    assert "mix foi assumido igual" in guarana["reading"]
+
+
+def test_a_embalagem_nunca_e_sugerida_para_a_batida(loja):
+    """Um copo de 500 ml nao sai do liquidificador."""
+
+    _loja_com_movimento(loja)
+
+    ids = {linha["inventory_id"] for linha in loja.production_input_advice(30)["suggestions"]}
+    assert not any(identificador.startswith("copo-") for identificador in ids)
+
+
+def test_insumo_nos_dois_lugares_vira_aviso_de_baixa_dupla(loja):
+    """O erro caro: sai do estoque ao bater e sai de novo ao vender."""
+
+    ficha = _loja_com_movimento(loja)
+    _com_guarana_na_batida(loja, ficha["id"])
+
+    conselho = loja.production_input_advice(30)
+    aviso = next((linha for linha in conselho["double_counted"] if "guaran" in linha["title"].lower()), None)
+
+    assert aviso is not None
+    assert "duas vezes" in aviso["description"] or "dobro" in aviso["description"]
+    # Ele sai da lista de sugestões: já está na batida.
+    assert not any(linha["inventory_id"] == "guarana" for linha in conselho["suggestions"])
+
+
+def test_a_lista_se_apresenta_como_conversao_e_nao_recomendacao(loja):
+    """O sistema nao sabe o que vai no liquidificador — so quem bate sabe."""
+
+    _loja_com_movimento(loja)
+
+    conselho = loja.production_input_advice(30)
+    assert "não é recomendação" in conselho["note"]
+    assert "tire-o da ficha técnica dos copos" in conselho["warning"]
+
+
+# ----------------------------------------------------------------------
+# O copo confere a venda
+# ----------------------------------------------------------------------
+
+
+def _vende_copos(erp, quantidade=4, dias=20, produto="acai-500"):
+    from datetime import datetime, timedelta
+
+    from app.schemas import ChannelCreate, OrderCreate, OrderLine
+    from app.services.erp import FUSO_LOJA
+
+    try:
+        erp.create_channel(ChannelCreate(name="Balcao", fee_percent=0.0))
+    except ValueError:
+        pass
+    hoje = datetime.now(FUSO_LOJA).date()
+    for atras in range(dias, 0, -1):
+        quando = datetime.combine(hoje - timedelta(days=atras), datetime.min.time(), tzinfo=FUSO_LOJA).replace(hour=15)
+        erp.create_order(OrderCreate(
+            items=[OrderLine(product_id=produto, quantity=quantidade)],
+            channel="Balcao", occurred_at=quando))
+
+
+def test_sem_contagem_de_copo_nao_ha_o_que_conferir(loja):
+    """O modulo diz que falta a contagem em vez de inventar a diferenca."""
+
+    _vende_copos(loja)
+
+    auditoria = loja.packaging_audit(30)
+    assert auditoria["counted_any"] is False
+    assert auditoria["totals"]["missing_cups"] == 0
+    assert any("Nenhum copo foi contado" in b["title"] for b in auditoria["blockers"])
+
+
+def test_copo_que_falta_vira_venda_nao_lancada_em_reais(loja):
+    """Um copo e uma venda: o que sumiu do estoque e servico que nao passou pelo caixa."""
+
+    from app.schemas import InventoryCount
+
+    _vende_copos(loja, quantidade=4, dias=20)
+    copo = _item(loja, "Copo 500 ml")
+    loja.count_inventory("copo-500", InventoryCount(quantity=copo["quantity"] - 12))
+
+    auditoria = loja.packaging_audit(30)
+    linha = next(row for row in auditoria["packaging"] if row["inventory_id"] == "copo-500")
+
+    assert linha["counted"] is True
+    assert linha["registered_sales"] == 80
+    assert linha["missing"] == 12
+    assert linha["missing_percent"] == 15.0
+    # 12 copos ao preco medio do produto que os usa.
+    assert linha["implied_revenue"] == pytest.approx(12 * 22.0, abs=0.01)
+    assert "venda não lançada ou quebra" in linha["reading"]
+
+
+def test_contagem_que_bate_nao_acusa_nada(loja):
+    from app.schemas import InventoryCount
+
+    _vende_copos(loja)
+    copo = _item(loja, "Copo 500 ml")
+    loja.count_inventory("copo-500", InventoryCount(quantity=copo["quantity"]))
+
+    linha = next(row for row in loja.packaging_audit(30)["packaging"] if row["inventory_id"] == "copo-500")
+    assert linha["missing"] == 0
+    assert "contagem bateu com o sistema" in linha["reading"]
+
+
+def test_sobra_de_copo_nao_vira_venda_negativa(loja):
+    """Copo a mais e erro de cadastro ou devolucao, nunca venda a menos."""
+
+    from app.schemas import InventoryCount
+
+    _vende_copos(loja)
+    copo = _item(loja, "Copo 500 ml")
+    loja.count_inventory("copo-500", InventoryCount(quantity=copo["quantity"] + 10))
+
+    linha = next(row for row in loja.packaging_audit(30)["packaging"] if row["inventory_id"] == "copo-500")
+    assert linha["count_difference"] == 10
+    assert linha["missing"] == 0
+    assert linha["implied_revenue"] == 0
+
+
+def test_so_embalagem_entra_na_conferencia(loja):
+    """Banana nao se conta em manga: a conferencia e do que sai um por venda."""
+
+    from app.schemas import InventoryCount
+
+    _vende_copos(loja)
+    loja.count_inventory("banana", InventoryCount(quantity=5.0))
+
+    ids = {row["inventory_id"] for row in loja.packaging_audit(30)["packaging"]}
+    assert "banana" not in ids
+    assert "copo-500" in ids

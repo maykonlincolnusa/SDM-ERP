@@ -35,6 +35,8 @@ const state = {
   productionRecipes: [],
   productionYield: null,
   productionEconomics: null,
+  productionAdvice: null,
+  packagingAudit: null,
   promotions: null,
   promotionMonth: null,
   promotionsPeriod: 90,
@@ -194,7 +196,7 @@ function setMobileNavigation(open) {
 async function loadAll() {
   setRefreshing(true);
   try {
-    const [config, dashboard, consumption, crossing, forecast, products, addons, inventory, orders, expenses, expenseSeries, operating, mediaSummary, media, channels, channelPerformance, lines, salesDay, growth, promotions, promotionMonth, pricing, marketPrices, productionRecipes, productionYield, productionEconomics, planning, couriers, deliveries, deliveryPerformance, catalogs, history] = await Promise.all([
+    const [config, dashboard, consumption, crossing, forecast, products, addons, inventory, orders, expenses, expenseSeries, operating, mediaSummary, media, channels, channelPerformance, lines, salesDay, growth, promotions, promotionMonth, pricing, marketPrices, productionRecipes, productionYield, productionEconomics, productionAdvice, packagingAudit, planning, couriers, deliveries, deliveryPerformance, catalogs, history] = await Promise.all([
       api("/api/config"),
       api(`/api/dashboard?days=${state.period}`),
       api(`/api/inventory/consumption?days=${state.period}`),
@@ -221,6 +223,8 @@ async function loadAll() {
       api("/api/production/recipes"),
       api("/api/production/yield?days=90"),
       api("/api/production/economics?days=30"),
+      api("/api/production/input-advice?days=30"),
+      api("/api/packaging/audit?days=30"),
       api(`/api/planning?days=90&horizon=7&service_level=${state.planningService}`),
       api("/api/couriers"),
       api(`/api/deliveries?days=${state.deliveryPeriod}`),
@@ -253,6 +257,8 @@ async function loadAll() {
     state.productionRecipes = productionRecipes;
     state.productionYield = productionYield;
     state.productionEconomics = productionEconomics;
+    state.productionAdvice = productionAdvice;
+    state.packagingAudit = packagingAudit;
     state.planning = planning;
     state.couriers = couriers;
     state.deliveries = deliveries;
@@ -323,6 +329,7 @@ function renderAll() {
   renderPricing();
   renderProductionRecipes();
   renderProductionCost();
+  renderPackagingAudit();
   renderMedia();
   renderCatalogs();
   renderHistory();
@@ -1460,6 +1467,48 @@ async function submitProduction(event) {
   await submitData("/api/production/runs", payload, "Fabricação registrada: barra baixada e base pronta em estoque.");
 }
 
+function renderProductionAdvice(recipeId) {
+  // A lista e conversao, nao recomendacao: o sistema nao sabe o que vai no
+  // liquidificador e o que vai por cima do copo. Ele responde "se este entra na
+  // batida, quanto vai" e deixa a escolha com quem bate.
+  const dados = state.productionAdvice;
+  const bloco = document.getElementById("production-recipe-advice");
+  if (!bloco) return;
+  const linhas = (dados?.suggestions || []).filter((linha) => !recipeId || linha.recipe_id === recipeId);
+  bloco.hidden = !linhas.length;
+  if (!linhas.length) return;
+  setText("#production-recipe-advice-note", dados.note);
+  document.getElementById("production-recipe-advice-list").innerHTML = linhas.map((linha) => {
+    const embalagem = linha.pack_size ? ` ≈ ${number.format(linha.per_batch / linha.pack_size)} ${escapeHtml(linha.pack_unit)}` : "";
+    return `<span title="${escapeHtml(linha.reading)}"><b>${number.format(linha.per_batch)} ${escapeHtml(linha.unit)}${embalagem}</b>${escapeHtml(linha.name)}</span>`;
+  }).join("");
+}
+
+function renderPackagingAudit() {
+  const dados = state.packagingAudit;
+  const painel = document.getElementById("packaging-audit-panel");
+  if (!painel) return;
+  const linhas = dados?.packaging || [];
+  painel.hidden = !linhas.length;
+  if (!linhas.length) return;
+
+  setText("#packaging-audit-headline", dados.totals.missing_cups
+    ? `${number.format(dados.totals.missing_cups)} copos · ${currency.format(dados.totals.implied_revenue)}`
+    : dados.counted_any ? "contagem bateu" : "aguardando contagem");
+  document.getElementById("packaging-audit-body").innerHTML = linhas.map((linha) => {
+    const diferenca = linha.counted
+      ? `<strong class="${linha.count_difference < 0 ? "negative" : ""}">${linha.count_difference > 0 ? "+" : ""}${number.format(linha.count_difference)}</strong>`
+      : '<span class="muted-value">não contado</span>';
+    const falta = linha.missing
+      ? `<strong class="negative">${number.format(linha.missing)}</strong><small class="muted-value"> ${number.format(linha.missing_percent)}%</small>`
+      : '<span class="muted-value">—</span>';
+    return `<tr title="${escapeHtml(linha.reading)}"><td><strong>${escapeHtml(linha.name)}</strong></td><td class="align-right">${number.format(linha.registered_sales)}</td><td class="align-right">${diferenca}</td><td class="align-right">${falta}</td><td class="align-right">${linha.implied_revenue ? `<strong class="negative">${currency.format(linha.implied_revenue)}</strong>` : '<span class="muted-value">—</span>'}</td></tr>`;
+  }).join("");
+  document.getElementById("packaging-audit-blockers").innerHTML = (dados.blockers || []).map((linha) => `
+    <article class="insight attention"><span class="insight-icon"><i data-lucide="triangle-alert"></i></span><div><strong>${escapeHtml(linha.title)}</strong><p>${escapeHtml(linha.description)}</p></div></article>`).join("");
+  refreshIcons();
+}
+
 function renderProductionCost() {
   const dados = state.productionEconomics;
   const painel = document.getElementById("production-cost-panel");
@@ -1499,6 +1548,11 @@ function renderProductionRecipes() {
         return `<tr><td><strong>${escapeHtml(ficha.name)}</strong>${ficha.note ? `<small class="muted-value"> ${escapeHtml(ficha.note)}</small>` : ""}</td><td class="muted-value">${consome}</td><td>${saida ? `<strong>${number.format(ficha.output_quantity)} ${escapeHtml(saida.unit)}</strong> de ${escapeHtml(saida.name)}${medido}` : '<span class="negative">item removido</span>'}</td><td class="align-right">${currency.format(custo)}</td><td class="align-right"><strong>${currency.format(custo / ficha.output_quantity)}</strong>${saida ? `<small class="muted-value">/${escapeHtml(saida.unit)}</small>` : ""}</td><td class="align-right"><div class="row-actions"><button class="row-action" type="button" data-edit-recipe="${ficha.id}" title="Editar ficha"><i data-lucide="pencil"></i></button></div></td></tr>`;
       }).join("")
     : emptyRow(6, "Nenhuma ficha cadastrada. Sem ela a batida é lançada do zero toda vez.");
+
+  // Insumo nos dois lugares sai do estoque duas vezes: ao bater e ao vender.
+  const duplicados = state.productionAdvice?.double_counted || [];
+  document.getElementById("production-double-counted").innerHTML = duplicados.map((linha) => `
+    <article class="insight attention"><span class="insight-icon"><i data-lucide="triangle-alert"></i></span><div><strong>${escapeHtml(linha.title)}</strong><p>${escapeHtml(linha.description)}</p></div></article>`).join("");
   refreshIcons();
 }
 

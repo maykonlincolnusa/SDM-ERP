@@ -1668,6 +1668,261 @@ class ERPService:
             "blockers": self._blockers_da_economia(barras, produzidos, estoque, days),
         }
 
+    def packaging_audit(self, days: int = 30) -> dict[str, Any]:
+        """O copo confere a venda, porque ele é o único item que a loja conta sem esforço.
+
+        Copo vem em manga contada. Contar quantos sobraram é a contagem mais
+        barata que existe nesta operação — e a mais reveladora, porque **um copo
+        é uma venda**. Se o estoque diz que saíram 800 copos de 500 ml e o caixa
+        registrou 750, os 50 restantes existiram: ou viraram venda que não foi
+        lançada, ou quebraram.
+
+        E como cada copo carrega uma porção de base, o copo que sumiu leva açaí
+        junto. Por isso este número não é só auditoria de caixa: ele corrige,
+        para cima, quanto açaí a loja de fato serviu — e portanto o custo real
+        por copo.
+
+        A diferença sai da contagem física, que é a única coisa aqui que não vem
+        do próprio sistema. Sem contagem no período não há o que conferir, e o
+        módulo diz isso em vez de inventar um número.
+        """
+
+        from app.services.costing import is_packaging
+
+        days = max(7, min(days, 365))
+        inicio = self._window_start(days)
+        estoque = {item["id"]: item for item in self.store.list("inventory")}
+        produtos = {item["id"]: item for item in self.store.list("products")}
+
+        # Que produto usa cada embalagem, e quanta base ele leva junto.
+        dono: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        for produto in produtos.values():
+            receita = {linha["inventory_id"]: linha["quantity"] for linha in produto.get("recipe", [])}
+            for inventory_id in receita:
+                item = estoque.get(inventory_id)
+                if item and is_packaging(item):
+                    dono[inventory_id].append({
+                        "product_id": produto["id"], "name": produto["name"],
+                        "price": float(produto["price"]),
+                        "per_cup": receita[inventory_id],
+                    })
+
+        vendidos: Counter[str] = Counter()
+        receita_por_produto: Counter[str] = Counter()
+        for pedido in self.store.list("orders"):
+            if not is_active_order(pedido) or self._timestamp(pedido["created_at"]) < inicio:
+                continue
+            for item in pedido.get("items", []):
+                vendidos[item["product_id"]] += item["quantity"]
+                receita_por_produto[item["product_id"]] += item["line_total"]
+
+        contagens: dict[str, float] = defaultdict(float)
+        contou: set[str] = set()
+        for movimento in self.store.list("inventory_movements"):
+            if movimento.get("kind") != "contagem" or self._timestamp(movimento["created_at"]) < inicio:
+                continue
+            contagens[movimento["inventory_id"]] += movimento["quantity_delta"]
+            contou.add(movimento["inventory_id"])
+        for item_id, item in estoque.items():
+            if item.get("counted_at") and self._timestamp(item["counted_at"]) >= inicio:
+                contou.add(item_id)
+
+        linhas: list[dict[str, Any]] = []
+        for inventory_id, usuarios in dono.items():
+            item = estoque[inventory_id]
+            registrados = sum(vendidos.get(linha["product_id"], 0) * linha["per_cup"] for linha in usuarios)
+            if not registrados and inventory_id not in contou:
+                continue
+            diferenca = contagens.get(inventory_id, 0.0)
+            # Contagem que acusa menos copo do que o sistema achava significa
+            # copo que saiu sem venda lançada. O sinal e invertido de propósito:
+            # falta de copo e excesso de servico.
+            faltando = round(-diferenca, 3) if diferenca < 0 else 0.0
+            preco_medio = (
+                sum(receita_por_produto.get(linha["product_id"], 0) for linha in usuarios)
+                / registrados if registrados else
+                fmean([linha["price"] for linha in usuarios])
+            )
+            linhas.append({
+                "inventory_id": inventory_id,
+                "name": item["name"],
+                "unit": item["unit"],
+                "counted": inventory_id in contou,
+                "registered_sales": round(registrados, 1),
+                "count_difference": round(diferenca, 3),
+                "missing": faltando,
+                "missing_percent": round(faltando / registrados * 100, 1) if registrados else None,
+                "implied_revenue": round(faltando * preco_medio, 2),
+                "products": [linha["name"] for linha in usuarios],
+                "reading": (
+                    f"{item['name']}: {registrados:g} vendido(s) pelo caixa"
+                    + (
+                        f", e a contagem acusou {faltando:g} a menos no estoque. "
+                        f"Esses copos existiram: viraram venda não lançada ou quebra, e valem cerca de "
+                        f"{self._money(faltando * preco_medio)}."
+                        if faltando else
+                        (" e a contagem bateu com o sistema." if inventory_id in contou
+                         else ". Sem contagem no período, não há o que conferir.")
+                    )
+                ),
+            })
+
+        linhas.sort(key=lambda linha: -linha["implied_revenue"])
+        total_faltando = round(sum(linha["missing"] for linha in linhas), 1)
+        return {
+            "period_days": days,
+            "packaging": linhas,
+            "counted_any": bool(contou & set(dono)),
+            "totals": {
+                "missing_cups": total_faltando,
+                "implied_revenue": round(sum(linha["implied_revenue"] for linha in linhas), 2),
+                "registered_sales": round(sum(linha["registered_sales"] for linha in linhas), 1),
+            },
+            "blockers": [{
+                "title": "Nenhum copo foi contado no período",
+                "description": (
+                    "Contar copo é a contagem mais barata da loja: ele vem em manga contada e não precisa de "
+                    "balança. E é a mais reveladora, porque um copo é uma venda — a diferença entre o que sobrou "
+                    "e o que o caixa registrou mostra, em unidades, o que saiu sem passar pelo caixa."
+                ),
+            }] if not (contou & set(dono)) else [],
+        }
+
+    def production_input_advice(self, days: int = 30) -> dict[str, Any]:
+        """Quanto de cada insumo vai na batida, para quem nunca mediu.
+
+        O guarana entra na batida, nao no copo — mas ele foi cadastrado na
+        ficha tecnica de cada copo, que e onde a maioria dos insumos mora. Mudar
+        de lugar esbarra na mesma pergunta de sempre: quanto vai em cada batida?
+
+        Nao precisa medir. A ficha do copo ja diz quanto vai por copo, a venda
+        diz quantos copos sairam, e a ficha de batida diz quanta base ela
+        produz. Com esses tres numeros a equivalencia sai por conta:
+
+            insumo por batida = insumo por copo x copos que a batida rende
+
+        E os copos que a batida rende saem do mix real de venda, nao de um copo
+        medio inventado: se a loja vende mais 500 que 300, o 500 pesa mais.
+
+        A funcao tambem aponta o insumo que ficou nos dois lugares. Esse e o
+        erro caro: ele sai do estoque na batida e sai de novo na venda, e o
+        saldo despenca sem ninguem entender por que.
+        """
+
+        # Import tardio: costing ja importa deste modulo, e o par no topo faria
+        # ciclo. A lista de dicas de embalagem mora la, e duplica-la aqui faria
+        # as duas discordarem no primeiro insumo novo.
+        from app.services.costing import is_packaging
+
+        days = max(7, min(days, 365))
+        inicio = self._window_start(days)
+        estoque = {item["id"]: item for item in self.store.list("inventory")}
+        produtos = {item["id"]: item for item in self.store.list("products")}
+        fichas = [linha for linha in self.store.list("production_recipes") if linha.get("active", True)]
+
+        # Quantos copos de cada produto sairam, para pesar o mix.
+        vendidos: Counter[str] = Counter()
+        for pedido in self.store.list("orders"):
+            if not is_active_order(pedido) or self._timestamp(pedido["created_at"]) < inicio:
+                continue
+            for item in pedido.get("items", []):
+                vendidos[item["product_id"]] += item["quantity"]
+
+        avisos: list[dict[str, str]] = []
+        sugestoes: list[dict[str, Any]] = []
+        for ficha in fichas:
+            produzido = ficha["output_inventory_id"]
+            ja_na_ficha = {linha["inventory_id"] for linha in ficha.get("inputs", [])}
+
+            # Quanto de base cada copo consome, e quanto de cada outro insumo.
+            por_copo: dict[str, dict[str, float]] = defaultdict(dict)
+            base_por_copo: dict[str, float] = {}
+            for produto in produtos.values():
+                if not produto.get("active", True):
+                    continue
+                receita = {linha["inventory_id"]: linha["quantity"] for linha in produto.get("recipe", [])}
+                if produzido not in receita:
+                    continue
+                base_por_copo[produto["id"]] = receita[produzido]
+                for inventory_id, quantidade in receita.items():
+                    if inventory_id != produzido:
+                        por_copo[inventory_id][produto["id"]] = quantidade
+
+            if not base_por_copo:
+                continue
+
+            for inventory_id, por_produto in por_copo.items():
+                item = estoque.get(inventory_id)
+                if not item:
+                    continue
+                # Embalagem fica no copo, sempre: um copo de 500 ml nao sai da
+                # batida, sai da prateleira na hora de servir.
+                if is_packaging(item):
+                    continue
+
+                if inventory_id in ja_na_ficha:
+                    avisos.append({
+                        "title": f"{item['name']} está na batida e também na ficha do copo",
+                        "description": (
+                            f"Ele sai do estoque uma vez quando a batida é registrada e de novo quando o copo é "
+                            f"vendido. O saldo de {item['name']} cai o dobro do que deveria. Tire-o da ficha "
+                            "técnica dos produtos, já que a batida passou a consumi-lo."
+                        ),
+                    })
+                    continue
+
+                # Pesa pelo mix vendido; sem venda no periodo, media simples.
+                pesos = {pid: vendidos.get(pid, 0) for pid in por_produto}
+                medido = sum(pesos.values()) > 0
+                if not medido:
+                    pesos = {pid: 1 for pid in por_produto}
+                total_insumo = sum(por_produto[pid] * pesos[pid] for pid in por_produto)
+                total_base = sum(base_por_copo[pid] * pesos[pid] for pid in por_produto if pid in base_por_copo)
+                if not total_base:
+                    continue
+                por_batida = ficha["output_quantity"] * (total_insumo / total_base)
+                copos = ficha["output_quantity"] / (total_base / sum(pesos.values()))
+
+                sugestoes.append({
+                    "recipe_id": ficha["id"],
+                    "recipe_name": ficha["name"],
+                    "inventory_id": inventory_id,
+                    "name": item["name"],
+                    "unit": item["unit"],
+                    "pack_unit": item.get("pack_unit"),
+                    "pack_size": item.get("pack_size"),
+                    "per_batch": round(por_batida, 4),
+                    "cups_per_batch": round(copos, 1),
+                    "cost_per_batch": round(por_batida * item.get("unit_cost", 0), 2),
+                    "measured": medido,
+                    "products": sorted(por_produto),
+                    "reading": (
+                        f"Uma batida de {ficha['output_quantity']:g} {estoque[produzido]['unit']} rende cerca de "
+                        f"{copos:.0f} copos, e cada um leva {total_insumo / sum(pesos.values()):.4g} {item['unit']} "
+                        f"de {item['name']}. Isso dá {por_batida:.4g} {item['unit']} por batida"
+                        + (f" (~{por_batida / item['pack_size']:.2g} {item['pack_unit']})" if item.get("pack_size") else "")
+                        + "."
+                        + ("" if medido else " Sem venda no período, o mix foi assumido igual entre os tamanhos.")
+                    ),
+                })
+
+        sugestoes.sort(key=lambda linha: -linha["cost_per_batch"])
+        return {
+            "period_days": days,
+            "suggestions": sugestoes,
+            "double_counted": avisos,
+            "note": (
+                "Esta lista não é recomendação: é conversão. O sistema não tem como saber o que vai no "
+                "liquidificador e o que vai por cima do copo — só quem bate sabe. O que ele faz é responder "
+                "\"se este insumo entra na batida, quanto vai?\" para cada um, usando o que a ficha do copo já diz "
+                "e o mix que a loja vendeu. Escolha os que de fato entram na batida e ignore o resto."
+            ),
+            "warning": (
+                "Ao mover um insumo para a ficha de batida, tire-o da ficha técnica dos copos. Deixar nos dois "
+                "lugares faz o estoque cair duas vezes: uma ao bater, outra ao vender."
+            ),
+        }
+
     def _blockers_da_economia(self, barras, produzidos, estoque, days) -> list[dict[str, str]]:
         bloqueios: list[dict[str, str]] = []
         # A contagem que bate exatamente nao gera movimento — e ela e a melhor

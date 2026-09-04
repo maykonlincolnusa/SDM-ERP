@@ -388,6 +388,7 @@
     form.elements.note.value = ficha.note || "";
     document.getElementById("production-recipe-delete").hidden = false;
     setText("#production-recipe-modal-title", "Editar ficha de batida");
+    renderProductionAdvice(ficha.id);
     openDialog("production-recipe-modal");
   }
 
@@ -1215,6 +1216,7 @@
       document.getElementById("production-recipe-output").innerHTML = inventoryOptions();
       addProductionLine("production-recipe-lines");
       setText("#production-recipe-modal-title", "Nova ficha de batida");
+      renderProductionAdvice();
     }
     if (name === "market-price") {
       document.getElementById("market-price-form").reset();

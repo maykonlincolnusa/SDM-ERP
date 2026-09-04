@@ -479,6 +479,26 @@ def production_economics(
     return service.production_economics(days)
 
 
+@app.get("/api/packaging/audit")
+def packaging_audit(
+    days: int = Query(default=30, ge=7, le=365),
+    service: ERPService = Depends(erp),
+    _: dict = Depends(current_user),
+) -> dict:
+    """O copo confere a venda: um copo e uma venda, e ele se conta em manga."""
+    return service.packaging_audit(days)
+
+
+@app.get("/api/production/input-advice")
+def production_input_advice(
+    days: int = Query(default=30, ge=7, le=365),
+    service: ERPService = Depends(erp),
+    _: dict = Depends(current_user),
+) -> dict:
+    """Quanto de cada insumo vai na batida, e o que ficou nos dois lugares."""
+    return service.production_input_advice(days)
+
+
 @app.post("/api/production/runs", status_code=status.HTTP_201_CREATED)
 def register_production(
     payload: ProductionRun,
