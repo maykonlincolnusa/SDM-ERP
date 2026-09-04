@@ -34,6 +34,7 @@ const state = {
   growthFilter: "all",
   productionRecipes: [],
   productionYield: null,
+  productionEconomics: null,
   promotions: null,
   promotionMonth: null,
   promotionsPeriod: 90,
@@ -193,7 +194,7 @@ function setMobileNavigation(open) {
 async function loadAll() {
   setRefreshing(true);
   try {
-    const [config, dashboard, consumption, crossing, forecast, products, addons, inventory, orders, expenses, expenseSeries, operating, mediaSummary, media, channels, channelPerformance, lines, salesDay, growth, promotions, promotionMonth, pricing, marketPrices, productionRecipes, productionYield, planning, couriers, deliveries, deliveryPerformance, catalogs, history] = await Promise.all([
+    const [config, dashboard, consumption, crossing, forecast, products, addons, inventory, orders, expenses, expenseSeries, operating, mediaSummary, media, channels, channelPerformance, lines, salesDay, growth, promotions, promotionMonth, pricing, marketPrices, productionRecipes, productionYield, productionEconomics, planning, couriers, deliveries, deliveryPerformance, catalogs, history] = await Promise.all([
       api("/api/config"),
       api(`/api/dashboard?days=${state.period}`),
       api(`/api/inventory/consumption?days=${state.period}`),
@@ -219,6 +220,7 @@ async function loadAll() {
       api("/api/market-prices"),
       api("/api/production/recipes"),
       api("/api/production/yield?days=90"),
+      api("/api/production/economics?days=30"),
       api(`/api/planning?days=90&horizon=7&service_level=${state.planningService}`),
       api("/api/couriers"),
       api(`/api/deliveries?days=${state.deliveryPeriod}`),
@@ -250,6 +252,7 @@ async function loadAll() {
     state.marketPrices = marketPrices;
     state.productionRecipes = productionRecipes;
     state.productionYield = productionYield;
+    state.productionEconomics = productionEconomics;
     state.planning = planning;
     state.couriers = couriers;
     state.deliveries = deliveries;
@@ -319,6 +322,7 @@ function renderAll() {
   renderPromotionMonth();
   renderPricing();
   renderProductionRecipes();
+  renderProductionCost();
   renderMedia();
   renderCatalogs();
   renderHistory();
@@ -1341,10 +1345,11 @@ function applyProductionRecipe() {
   }
   ficha.inputs.forEach((linha) => addProductionLine("production-lines", linha.inventory_id, linha.quantity));
   form.elements.output_inventory_id.value = ficha.output_inventory_id;
-  // O rendimento medido manda sobre o da ficha: a ficha e o que se planejou, o
-  // historico e o que a batida vem entregando.
-  const esperado = expectedOutput(ficha.id, readProductionLines("production-lines"));
-  form.elements.output_quantity.value = esperado ? Number(esperado.quantity.toFixed(3)) : ficha.output_quantity;
+  // O campo de saída fica vazio de propósito. Preenchê-lo com a previsão faz o
+  // funcionário confirmar o palpite do sistema em vez de informar o que viu — e
+  // aí o sistema passa a aprender com o próprio palpite, ganhando confiança num
+  // número que ele mesmo inventou. O esperado aparece como dica ao lado.
+  form.elements.output_quantity.value = "";
   refreshProductionPreview();
 }
 
@@ -1353,17 +1358,23 @@ function productionYieldFor(recipeId) {
 }
 
 function expectedOutput(recipeId, linhas) {
-  // Sem balanca, os dois lados ainda sao contaveis: barra na entrada, cuba na
-  // saida. O que falta e a razao entre eles, e ela se aprende.
+  // Sem balança, os dois lados ainda são contáveis: barra na entrada, cuba na
+  // saída. O que falta é a razão entre eles — e ela não é um número, é a faixa
+  // em que os lotes caíram. Devolver um ponto seria dar uma precisão que a
+  // operação não tem.
   const rendimento = productionYieldFor(recipeId);
-  if (!rendimento || !rendimento.suggested_ratio) return null;
+  if (!rendimento || !rendimento.range) return null;
   const entrada = linhas.reduce((total, linha) => total + linha.quantity, 0);
   if (!entrada) return null;
+  const faixa = rendimento.range;
   return {
-    quantity: entrada * rendimento.suggested_ratio,
-    ratio: rendimento.suggested_ratio,
+    low: entrada * faixa.low,
+    quantity: entrada * faixa.likely,
+    high: entrada * faixa.high,
+    basis: faixa.basis,
     source: rendimento.source,
     confidence: rendimento.confidence,
+    identical: Boolean(rendimento.observed?.identical),
     runs: rendimento.observed?.runs || 0,
   };
 }
@@ -1407,9 +1418,10 @@ function refreshProductionPreview() {
   const esperado = expectedOutput(document.getElementById("production-recipe").value, linhas);
   const dica = document.getElementById("production-output-unit");
   if (dica && esperado) {
-    const fonte = { contagem: "confirmado por contagem", "histórico": `média de ${esperado.runs} batida(s)`, ficha: "da ficha, ainda sem medição" }[esperado.source] || esperado.source;
     const embalagem = packLabel(saida, esperado.quantity);
-    dica.textContent = `Esperado: ${number.format(esperado.quantity)} ${saida.unit}${embalagem} — ${fonte}.`;
+    dica.textContent = esperado.identical
+      ? `Conte a saída antes de digitar: os ${esperado.runs} lotes anteriores têm todos o mesmo valor, então a estimativa está se confirmando sozinha.`
+      : `Deve dar entre ${number.format(esperado.low)} e ${number.format(esperado.high)} ${saida.unit}, mais provável ${number.format(esperado.quantity)}${embalagem} — ${esperado.basis}. Digite o que saiu de verdade.`;
   } else if (dica) {
     dica.textContent = saida ? `Na unidade do item: ${saida.unit}.` : "Na unidade do item.";
   }
@@ -1448,6 +1460,24 @@ async function submitProduction(event) {
   await submitData("/api/production/runs", payload, "Fabricação registrada: barra baixada e base pronta em estoque.");
 }
 
+function renderProductionCost() {
+  const dados = state.productionEconomics;
+  const painel = document.getElementById("production-cost-panel");
+  if (!painel) return;
+  painel.hidden = !dados || !dados.available;
+  if (!dados || !dados.available) return;
+
+  setText("#production-cost-headline", `${currency.format(dados.cost_per_cup_real)} por copo`);
+  setText("#production-cost-reading", dados.reading);
+  document.getElementById("production-cost-body").innerHTML = dados.products.map((linha) => {
+    const sinal = linha.difference_total >= 0 ? "negative" : "positive";
+    return `<tr><td><strong>${escapeHtml(linha.name)}</strong></td><td class="align-right">${number.format(linha.units)}</td><td class="align-right"><strong>${currency.format(linha.acai_cost_real)}</strong></td><td class="align-right muted-value">${currency.format(linha.acai_cost_registered)}</td><td class="align-right ${sinal}"><strong>${linha.difference_total >= 0 ? "+" : ""}${currency.format(linha.difference_total)}</strong></td></tr>`;
+  }).join("");
+  document.getElementById("production-cost-blockers").innerHTML = (dados.blockers || []).map((linha) => `
+    <article class="insight attention"><span class="insight-icon"><i data-lucide="triangle-alert"></i></span><div><strong>${escapeHtml(linha.title)}</strong><p>${escapeHtml(linha.description)}</p></div></article>`).join("");
+  refreshIcons();
+}
+
 function renderProductionRecipes() {
   const corpo = document.getElementById("production-recipes-body");
   if (!corpo) return;
@@ -1462,8 +1492,9 @@ function renderProductionRecipes() {
         const custo = ficha.inputs.reduce((total, linha) => total + (insumos[linha.inventory_id]?.unit_cost || 0) * linha.quantity, 0);
         const saida = insumos[ficha.output_inventory_id];
         const rendimento = productionYieldFor(ficha.id);
-        const medido = rendimento && rendimento.suggested_ratio && saida
-          ? `<small class="muted-value">medido: ${number.format(rendimento.suggested_ratio * ficha.inputs.reduce((t, l) => t + l.quantity, 0))} ${escapeHtml(saida.unit)} · ${escapeHtml(rendimento.source)}</small>`
+        const entradaDaFicha = ficha.inputs.reduce((t, l) => t + l.quantity, 0);
+        const medido = rendimento && rendimento.range && saida
+          ? `<small class="muted-value">na prática: ${number.format(rendimento.range.low * entradaDaFicha)} a ${number.format(rendimento.range.high * entradaDaFicha)} ${escapeHtml(saida.unit)} · ${escapeHtml(rendimento.range.basis)}</small>`
           : "";
         return `<tr><td><strong>${escapeHtml(ficha.name)}</strong>${ficha.note ? `<small class="muted-value"> ${escapeHtml(ficha.note)}</small>` : ""}</td><td class="muted-value">${consome}</td><td>${saida ? `<strong>${number.format(ficha.output_quantity)} ${escapeHtml(saida.unit)}</strong> de ${escapeHtml(saida.name)}${medido}` : '<span class="negative">item removido</span>'}</td><td class="align-right">${currency.format(custo)}</td><td class="align-right"><strong>${currency.format(custo / ficha.output_quantity)}</strong>${saida ? `<small class="muted-value">/${escapeHtml(saida.unit)}</small>` : ""}</td><td class="align-right"><div class="row-actions"><button class="row-action" type="button" data-edit-recipe="${ficha.id}" title="Editar ficha"><i data-lucide="pencil"></i></button></div></td></tr>`;
       }).join("")

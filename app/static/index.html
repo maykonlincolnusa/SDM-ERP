@@ -153,6 +153,14 @@
           <div class="inventory-summary" id="inventory-summary"></div>
           <section class="panel table-panel"><div class="filter-row"><span class="field-label">Itens cadastrados</span><label class="search-field"><i data-lucide="search"></i><input id="inventory-search" type="search" placeholder="Buscar insumo" /></label></div><div class="table-scroll"><table><thead><tr><th>Insumo</th><th>Categoria</th><th>Saldo atual</th><th>Estoque mínimo</th><th>Custo médio</th><th>Status</th><th class="align-right">Ações</th></tr></thead><tbody id="inventory-body"></tbody></table></div></section>
 
+          <section class="panel table-panel" aria-labelledby="production-cost-title" id="production-cost-panel" hidden>
+            <div class="panel-header"><div><p class="eyebrow">Custo medido</p><h2 id="production-cost-title">Quanto o açaí custa de verdade</h2></div><span class="soft-chip" id="production-cost-headline">--</span></div>
+            <p class="panel-note">Sem balança, e sem precisar de uma. Só dois números entram nesta conta, e os dois são contados: <strong>quantas barras saíram do freezer</strong> e <strong>quantos copos saíram pelo caixa</strong>. Dividir um pelo outro dá o custo real, sem passar por rendimento nenhum.</p>
+            <p class="panel-note" id="production-cost-reading"></p>
+            <div class="table-scroll"><table><thead><tr><th>Produto</th><th class="align-right">Copos</th><th class="align-right">Açaí por copo, real</th><th class="align-right">O que o cadastro supõe</th><th class="align-right">Diferença no período</th></tr></thead><tbody id="production-cost-body"></tbody></table></div>
+            <div id="production-cost-blockers" class="insight-list"></div>
+          </section>
+
           <section class="panel table-panel" aria-labelledby="production-recipes-title">
             <div class="panel-header"><div><p class="eyebrow">Fabricação</p><h2 id="production-recipes-title">Fichas de batida</h2></div><button class="secondary-button" type="button" data-modal="production-recipe"><i data-lucide="plus"></i><span>Nova ficha</span></button></div>
             <p class="panel-note">Isto não é a ficha técnica do copo. A ficha técnica diz o que um 500 ml consome da base pronta; a de batida diz como a base nasce — quantas barras de 8% ou 12% viram quantos quilos. Ela deixa a batida pré-pronta: o funcionário escolhe, confere e confirma.</p>

@@ -1,6 +1,7 @@
 import re
 import unicodedata
 from calendar import monthrange
+from statistics import fmean
 from collections import Counter, defaultdict
 from datetime import date, datetime, time, timedelta, timezone
 from typing import Any
@@ -1446,17 +1447,35 @@ class ERPService:
             if observados:
                 entrada = sum(linha["input"] for linha in observados)
                 saida = sum(linha["output"] for linha in observados)
+                # Cada lote e uma observacao. O rendimento nao e um numero: e a
+                # faixa em que esses lotes cairam, e ela nao pode ser mais
+                # estreita do que as observacoes permitem.
+                razoes = sorted(lote["output"] / lote["input"] for lote in observados if lote["input"])
+                iguais = len(set(round(r, 4) for r in razoes)) == 1 and len(razoes) >= 3
+                provavel = self._quantil(razoes, 0.5)
                 observado = {
                     "runs": len(observados),
                     "input": round(entrada, 3),
                     "output": round(saida, 3),
                     "ratio": round(saida / entrada, 4) if entrada else None,
+                    "ratios": [round(r, 4) for r in razoes],
+                    "low": round(self._quantil(razoes, 0.25), 4),
+                    "likely": round(provavel, 4),
+                    "high": round(self._quantil(razoes, 0.75), 4),
+                    "min": round(razoes[0], 4),
+                    "max": round(razoes[-1], 4),
+                    "spread_percent": round((razoes[-1] - razoes[0]) / provavel * 100, 1) if provavel else 0.0,
+                    # Todos os lotes com o mesmo rendimento nao e precisao: e
+                    # sinal de que a equipe confirmou o numero sugerido em vez
+                    # de informar o que viu. Historico assim nao e evidencia.
+                    "identical": iguais,
                 }
 
             saida_id = ficha["output_inventory_id"] if ficha else (observados[0]["output_id"] if observados else None)
             corrigido = self._rendimento_pela_contagem(saida_id, observados) if saida_id else None
 
             escolhido, origem, confianca = self._melhor_rendimento(corrigido, observado, declarado)
+            faixa = self._faixa_do_rendimento(escolhido, origem, observado, corrigido)
             item = estoque.get(saida_id or "")
             linhas.append({
                 "recipe_id": chave if ficha else None,
@@ -1470,9 +1489,10 @@ class ERPService:
                 "observed": observado,
                 "corrected": corrigido,
                 "suggested_ratio": escolhido,
+                "range": faixa,
                 "source": origem,
                 "confidence": confianca,
-                "reading": self._leitura_do_rendimento(escolhido, origem, observado, corrigido, item),
+                "reading": self._leitura_do_rendimento(faixa, origem, observado, corrigido, item),
             })
 
         linhas.sort(key=lambda linha: ((linha["observed"] or {}).get("runs", 0)), reverse=True)
@@ -1481,6 +1501,204 @@ class ERPService:
             "recipes": linhas,
             "blockers": self._blockers_do_rendimento(linhas),
         }
+
+    @staticmethod
+    def _quantil(valores: list[float], p: float) -> float:
+        """Quantil empirico, o mesmo metodo do planejamento.
+
+        Sem distribuicao ajustada: se os lotes nunca renderam acima de X, a
+        faixa nao inventa um X maior.
+        """
+
+        if not valores:
+            return 0.0
+        ordenados = sorted(valores)
+        if len(ordenados) == 1:
+            return ordenados[0]
+        posicao = min(max(p, 0.0), 1.0) * (len(ordenados) - 1)
+        baixo = int(posicao)
+        alto = min(baixo + 1, len(ordenados) - 1)
+        return ordenados[baixo] + (ordenados[alto] - ordenados[baixo]) * (posicao - baixo)
+
+    def production_economics(self, days: int = 30) -> dict[str, Any]:
+        """Quanto o açaí custa de verdade, medido pelos dois números que a loja conta.
+
+        A loja não tem balança, e por isso o rendimento da batida nunca vai ser
+        exato. Mas o rendimento é um número intermediário — dá para pular ele.
+
+        Só duas coisas são contadas com precisão nesta operação: **quantas
+        barras saíram do freezer** e **quantos copos foram vendidos**. Uma vem
+        do estoque, a outra do caixa, e nenhuma depende de alguém estimar peso.
+        Dividir a primeira pela segunda dá o custo real do açaí por copo, sem
+        passar pelo rendimento.
+
+        O que a conta assume: que o saldo de base ficou parecido no começo e no
+        fim da janela. Numa loja que bate e vende no mesmo ritmo isso é
+        razoável em 30 dias; se ela encheu ou esvaziou o freezer no período, a
+        premissa quebra e o aviso ao lado diz isso. Uma contagem da base em
+        qualquer ponta transforma a premissa em medida.
+        """
+
+        days = max(7, min(days, 365))
+        inicio = self._window_start(days)
+        estoque = {item["id"]: item for item in self.store.list("inventory")}
+        produtos = {item["id"]: item for item in self.store.list("products")}
+
+        # Lado 1: a barra que saiu do freezer, contada em barras.
+        barras: dict[str, dict[str, Any]] = {}
+        produzidos: set[str] = set()
+        for movimento in self.store.list("inventory_movements"):
+            if movimento.get("kind") != PRODUCTION_KIND:
+                continue
+            if self._timestamp(movimento["created_at"]) < inicio:
+                continue
+            if movimento["quantity_delta"] > 0:
+                produzidos.add(movimento["inventory_id"])
+                continue
+            item = estoque.get(movimento["inventory_id"])
+            if not item:
+                continue
+            linha = barras.setdefault(item["id"], {
+                "inventory_id": item["id"], "name": item["name"], "unit": item["unit"],
+                "pack_unit": item.get("pack_unit"), "pack_size": item.get("pack_size"),
+                "quantity": 0.0, "cost": 0.0,
+            })
+            linha["quantity"] += abs(movimento["quantity_delta"])
+            linha["cost"] += movimento.get("total_cost", 0.0)
+
+        custo_das_barras = round(sum(linha["cost"] for linha in barras.values()), 2)
+        for linha in barras.values():
+            linha["quantity"] = round(linha["quantity"], 3)
+            linha["cost"] = round(linha["cost"], 2)
+            linha["packs"] = round(linha["quantity"] / linha["pack_size"], 2) if linha.get("pack_size") else None
+
+        # Lado 2: os copos que saíram pelo caixa, e quanta base a ficha diz que
+        # eles levaram. A ficha erra no valor absoluto se o rendimento for
+        # outro, mas acerta a proporção entre os tamanhos — que é tudo o que
+        # ela precisa acertar para ratear o custo da barra.
+        vendidos: dict[str, dict[str, Any]] = {}
+        base_teorica = 0.0
+        receita = 0.0
+        for pedido in self.store.list("orders"):
+            if not is_active_order(pedido) or self._timestamp(pedido["created_at"]) < inicio:
+                continue
+            for item in pedido.get("items", []):
+                produto = produtos.get(item["product_id"])
+                if not produto:
+                    continue
+                por_copo = sum(
+                    linha["quantity"] for linha in produto.get("recipe", [])
+                    if linha["inventory_id"] in produzidos
+                )
+                if not por_copo:
+                    continue
+                linha = vendidos.setdefault(produto["id"], {
+                    "product_id": produto["id"], "name": produto["name"],
+                    "base_per_unit": round(por_copo, 4), "units": 0.0, "revenue": 0.0,
+                })
+                linha["units"] += item["quantity"]
+                linha["revenue"] += item["line_total"]
+                base_teorica += por_copo * item["quantity"]
+                receita += item["line_total"]
+
+        copos = sum(linha["units"] for linha in vendidos.values())
+        if not custo_das_barras or not base_teorica:
+            return {
+                "period_days": days,
+                "available": False,
+                "reason": (
+                    "Faltam os dois números da conta: barra consumida em fabricação e copo vendido com "
+                    "ficha técnica que use a base. Registre as batidas e as vendas do período."
+                ),
+                "bars": list(barras.values()),
+                "products": [],
+                "blockers": [],
+            }
+
+        # O número que interessa: quanto custou, de verdade, cada quilo de base
+        # que virou copo. Ele já carrega o rendimento dentro dele — se a batida
+        # rende menos, este custo sobe, sem ninguém ter pesado nada.
+        custo_real_por_base = custo_das_barras / base_teorica
+        cadastro = {item_id: estoque[item_id]["unit_cost"] for item_id in produzidos if item_id in estoque}
+        custo_cadastro = fmean(cadastro.values()) if cadastro else 0.0
+
+        linhas = []
+        for linha in vendidos.values():
+            real = linha["base_per_unit"] * custo_real_por_base
+            registrado = linha["base_per_unit"] * custo_cadastro
+            linhas.append({
+                **linha,
+                "units": round(linha["units"], 1),
+                "revenue": round(linha["revenue"], 2),
+                "acai_cost_real": round(real, 4),
+                "acai_cost_registered": round(registrado, 4),
+                "difference_per_unit": round(real - registrado, 4),
+                "difference_total": round((real - registrado) * linha["units"], 2),
+            })
+        linhas.sort(key=lambda row: -row["units"])
+
+        diferenca_total = round(sum(row["difference_total"] for row in linhas), 2)
+        return {
+            "period_days": days,
+            "available": True,
+            "bars": sorted(barras.values(), key=lambda row: -row["cost"]),
+            "bars_cost": custo_das_barras,
+            "cups": round(copos, 1),
+            "revenue": round(receita, 2),
+            "base_theoretical": round(base_teorica, 3),
+            # Rendimento implicito: quanta base a venda consumiu por kg de barra
+            # que saiu do freezer. Ninguem pesou; os dois lados foram contados.
+            "implied_yield": round(base_teorica / sum(l["quantity"] for l in barras.values()), 4),
+            "cost_per_base_real": round(custo_real_por_base, 4),
+            "cost_per_base_registered": round(custo_cadastro, 4),
+            "cost_per_cup_real": round(custo_das_barras / copos, 4) if copos else None,
+            "products": linhas,
+            "difference_total": diferenca_total,
+            "reading": (
+                f"No período saíram {self._money(custo_das_barras)} em barra do freezer e {copos:g} copos pelo caixa. "
+                f"Isso põe o açaí de cada copo a {self._money(custo_das_barras / copos)} em média — "
+                f"contra {self._money(custo_cadastro * (base_teorica / copos))} que o cadastro supõe. "
+                + (
+                    f"O custo real está {abs(round((custo_real_por_base / custo_cadastro - 1) * 100))}% "
+                    f"{'acima' if custo_real_por_base > custo_cadastro else 'abaixo'} do registrado, "
+                    f"o que dá {self._money(abs(diferenca_total))} no período."
+                    if custo_cadastro else "O cadastro ainda não tem custo para comparar."
+                )
+            ) if copos else "",
+            "blockers": self._blockers_da_economia(barras, produzidos, estoque, days),
+        }
+
+    def _blockers_da_economia(self, barras, produzidos, estoque, days) -> list[dict[str, str]]:
+        bloqueios: list[dict[str, str]] = []
+        # A contagem que bate exatamente nao gera movimento — e ela e a melhor
+        # evidencia que existe, porque confirma o saldo em vez de corrigi-lo.
+        # Por isso a checagem olha o carimbo no item, e nao so o movimento.
+        janela = self._window_start(days)
+        contou = any(
+            estoque.get(item_id, {}).get("counted_at")
+            and self._timestamp(estoque[item_id]["counted_at"]) >= janela
+            for item_id in produzidos
+        )
+        if not contou:
+            bloqueios.append({
+                "title": "A conta assume que o freezer de base começou e terminou parecido",
+                "description": (
+                    "Sem uma contagem da base no período, não dá para saber se sobrou ou faltou estoque entre as "
+                    "pontas — e essa diferença entra no custo por copo como se fosse rendimento. Uma contagem, "
+                    "mesmo em cubas, transforma a premissa em medida."
+                ),
+            })
+        sem_pack = [linha for linha in barras.values() if not linha.get("pack_size")]
+        if sem_pack:
+            nomes = ", ".join(linha["name"] for linha in sem_pack[:2])
+            bloqueios.append({
+                "title": f"{nomes} não diz quantos quilos tem uma barra",
+                "description": (
+                    "Sem isso a conta funciona em quilo, mas a tela não consegue mostrar em barra — que é como a "
+                    "equipe conta. Preencha 'como a equipe conta' e 'quanto vale uma' no cadastro do insumo."
+                ),
+            })
+        return bloqueios
 
     def _rendimento_pela_contagem(self, output_id: str, lotes: list[dict[str, Any]]) -> dict[str, Any] | None:
         """Rendimento corrigido pela ultima contagem fisica da base.
@@ -1529,7 +1747,8 @@ class ERPService:
         if corrigido and corrigido["runs"] >= 3:
             return corrigido["ratio"], "contagem", "alta"
         if observado and observado["ratio"] and observado["runs"] >= 3:
-            return observado["ratio"], "histórico", "media"
+            # Lotes todos iguais nao sao tres observacoes: sao uma, repetida.
+            return observado["ratio"], "histórico", "baixa" if observado.get("identical") else "media"
         if observado and observado["ratio"]:
             return observado["ratio"], "histórico", "baixa"
         if declarado:
@@ -1537,20 +1756,76 @@ class ERPService:
         return None, "sem base", "baixa"
 
     @staticmethod
-    def _leitura_do_rendimento(ratio, origem, observado, corrigido, item) -> str:
+    def _faixa_do_rendimento(ratio, origem, observado, corrigido) -> dict[str, Any] | None:
+        """A faixa em que o rendimento cai, e nao o ponto em que ele estaria.
+
+        Nada aqui foi pesado. Devolver um numero com quatro casas seria dar ao
+        gestor uma precisao que a operacao nao tem, e ele decidiria compra em
+        cima dela. A largura da faixa e a informacao honesta: ela encolhe
+        conforme os lotes se acumulam e a contagem confirma, e nunca desaparece.
+        """
+
         if ratio is None:
+            return None
+        if origem == "histórico" and observado and observado["runs"] >= 3 and not observado["identical"]:
+            return {
+                "low": observado["low"], "likely": observado["likely"], "high": observado["high"],
+                "width_percent": round((observado["high"] - observado["low"]) / observado["likely"] * 100, 1)
+                if observado["likely"] else 0.0,
+                "basis": f"{observado['runs']} lotes observados",
+                "observations": observado["runs"],
+            }
+        # Uma fonte so — a ficha, a contagem, ou poucos lotes iguais — nao tem
+        # dispersao para medir. A faixa entao vem de uma margem declarada, e o
+        # texto ao lado diz que ela e suposta, nao observada.
+        margem = 0.10 if origem == "contagem" else 0.20
+        return {
+            "low": round(ratio * (1 - margem), 4),
+            "likely": round(ratio, 4),
+            "high": round(ratio * (1 + margem), 4),
+            "width_percent": round(margem * 200, 1),
+            "basis": (
+                f"corrigido por contagem, com margem de ±{round(margem * 100)}%"
+                if origem == "contagem"
+                else f"sem lotes suficientes para medir a variação; margem de ±{round(margem * 100)}% assumida"
+            ),
+            "observations": (observado or {}).get("runs", 0),
+            "assumed": True,
+        }
+
+    @staticmethod
+    def _leitura_do_rendimento(faixa, origem, observado, corrigido, item) -> str:
+        if not faixa:
             return "Ainda não há batida registrada nem ficha cadastrada para estimar o rendimento."
         unidade = (item or {}).get("unit", "un")
-        base = f"Cada 1 kg de insumo rende cerca de {ratio:g} {unidade} de {(item or {}).get('name', 'base')}."
+        nome = (item or {}).get("name", "base")
+        base = (
+            f"Cada 1 kg de insumo deve render entre {faixa['low']:g} e {faixa['high']:g} {unidade} de {nome}, "
+            f"mais provável {faixa['likely']:g}."
+        )
         if origem == "contagem" and corrigido:
-            return (
-                f"{base} Número corrigido pela contagem de "
-                f"{corrigido['count_difference']:+g} {unidade}, sobre {corrigido['runs']} batida(s). "
-                "É um teto: dentro dessa diferença também cabem retirada não lançada, quebra e erro de ficha técnica."
+            texto = (
+                f"{base} Faixa corrigida pela contagem de {corrigido['count_difference']:+g} {unidade}, "
+                f"sobre {corrigido['runs']} batida(s). É um teto: dentro dessa diferença também cabem retirada "
+                "não lançada, quebra e erro de ficha técnica."
             )
-        if origem == "histórico" and observado:
-            return f"{base} Média de {observado['runs']} batida(s) declarada(s), ainda sem contagem que confirme."
-        return f"{base} Vem da ficha cadastrada — é ponto de partida, não medida."
+        elif origem == "histórico" and observado:
+            texto = (
+                f"{base} Vem de {observado['runs']} lote(s), que variaram {observado['spread_percent']:g}% entre si. "
+                "Nenhum foi pesado, então a faixa é o que a operação mostrou, não o que a balança diria."
+            )
+        else:
+            texto = f"{base} Vem da ficha cadastrada — é ponto de partida, não medida, e a margem é suposta."
+
+        # A ressalva se soma à leitura em vez de substituí-la: a contagem
+        # continua sendo a evidência mais forte mesmo quando os lotes vieram
+        # confirmados sem conferência.
+        if observado and observado.get("identical"):
+            texto += (
+                f" Atenção: os {observado['runs']} lotes têm exatamente o mesmo rendimento. Isso não é precisão — "
+                "é sinal de que a quantidade sugerida foi confirmada sem ser conferida."
+            )
+        return texto
 
     @staticmethod
     def _blockers_do_rendimento(linhas: list[dict[str, Any]]) -> list[dict[str, str]]:
@@ -1566,6 +1841,19 @@ class ERPService:
                     "e passa a apontar quanto do açaí está saindo sem registro."
                 ),
             })
+        suspeitos = [linha for linha in linhas if (linha["observed"] or {}).get("identical")]
+        for linha in suspeitos[:2]:
+            bloqueios.append({
+                "title": f"{linha['name']}: todos os lotes com o mesmo rendimento",
+                "description": (
+                    f"Os {linha['observed']['runs']} lotes registrados renderam exatamente o mesmo. Na prática "
+                    "isso não acontece — barra, gelo e ponto variam. O mais provável é que a quantidade sugerida "
+                    "pela tela esteja sendo confirmada sem ser conferida, e aí o sistema está aprendendo com o "
+                    "próprio palpite. Conte a saída em cubas ou potes antes de confirmar, nem que seja uma vez "
+                    "por semana."
+                ),
+            })
+
         divergentes = [
             linha for linha in linhas
             if linha["declared"] and linha["suggested_ratio"]

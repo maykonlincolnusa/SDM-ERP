@@ -495,3 +495,217 @@ def test_sem_contagem_o_modulo_avisa_que_ninguem_verificou(loja):
     bloqueios = loja.production_yield(90)["blockers"]
     assert any("não foi confirmado por contagem" in b["title"] for b in bloqueios)
     assert any("sem precisar de balança" in b["description"] for b in bloqueios)
+
+
+# ----------------------------------------------------------------------
+# Nada foi pesado: o rendimento e uma faixa, nao um numero
+# ----------------------------------------------------------------------
+
+
+def _abastece_barra(erp, barras=40, nome="Barra de açaí 12%", custo=58.0):
+    """Mais barra no freezer: a fixture compra 10, e os testes de faixa gastam mais."""
+
+    item = _item(erp, nome)
+    erp.register_inventory_purchase(item["id"], InventoryPurchase(
+        purchase_quantity=barras, purchase_unit="barra",
+        units_per_purchase=item["pack_size"], purchase_unit_cost=custo))
+
+
+def _bate_variado(erp, ficha, saidas):
+    _abastece_barra(erp)
+    for saida in saidas:
+        _bate(erp, entrada=7.0, saida=saida, recipe_id=ficha["id"])
+
+
+def test_o_rendimento_e_devolvido_como_faixa(loja):
+    """Um numero com quatro casas daria uma precisao que a operacao nao tem."""
+
+    ficha = _ficha(loja)
+    _bate_variado(loja, ficha, (7.5, 8.2, 7.8, 8.6, 8.0, 7.2))
+
+    faixa = _rendimento(loja)["range"]
+    assert faixa["low"] < faixa["likely"] < faixa["high"]
+    assert faixa["observations"] == 6
+    assert "6 lotes observados" in faixa["basis"]
+    assert "assumed" not in faixa
+
+
+def test_a_faixa_encolhe_conforme_os_lotes_se_acumulam(loja):
+    """A largura e a informacao honesta: ela diminui, mas nunca some."""
+
+    ficha = _ficha(loja)
+    sem_lote = _rendimento(loja)["range"]["width_percent"]
+
+    _bate_variado(loja, ficha, (7.5, 8.2, 7.8, 8.6, 8.0, 7.2))
+    com_lote = _rendimento(loja)["range"]["width_percent"]
+
+    assert com_lote < sem_lote
+    assert com_lote > 0, "a faixa nunca vira um ponto"
+
+
+def test_sem_lote_a_margem_e_declarada_como_suposta(loja):
+    _ficha(loja)
+
+    faixa = _rendimento(loja)["range"]
+    assert faixa["assumed"] is True
+    assert "margem de ±20% assumida" in faixa["basis"]
+    assert "a margem é suposta" in _rendimento(loja)["reading"]
+
+
+def test_lotes_todos_iguais_nao_viram_precisao(loja):
+    """Confirmar a sugestao da tela nao e medir: o sistema aprenderia o proprio palpite."""
+
+    ficha = _ficha(loja)
+    _bate_variado(loja, ficha, (8.0, 8.0, 8.0, 8.0))
+
+    r = _rendimento(loja)
+    assert r["observed"]["identical"] is True
+    # Quatro lotes iguais sao uma observacao repetida, nao quatro observacoes.
+    assert r["confidence"] == "baixa"
+    assert r["range"].get("assumed") is True
+    assert "não é precisão" in r["reading"]
+
+
+def test_lotes_iguais_viram_aviso_explicito(loja):
+    ficha = _ficha(loja)
+    _bate_variado(loja, ficha, (8.0, 8.0, 8.0, 8.0))
+
+    bloqueios = loja.production_yield(90)["blockers"]
+    aviso = next((b for b in bloqueios if "mesmo rendimento" in b["title"]), None)
+
+    assert aviso is not None
+    assert "aprendendo com o" in aviso["description"]
+    assert "cubas ou potes" in aviso["description"]
+
+
+def test_lotes_variados_nao_disparam_o_aviso(loja):
+    ficha = _ficha(loja)
+    _bate_variado(loja, ficha, (7.5, 8.2, 7.8, 8.6))
+
+    bloqueios = loja.production_yield(90)["blockers"]
+    assert not any("mesmo rendimento" in b["title"] for b in bloqueios)
+
+
+def test_a_faixa_nunca_extrapola_o_que_os_lotes_mostraram(loja):
+    """Se nenhum lote rendeu acima de X, a faixa nao inventa um X maior."""
+
+    ficha = _ficha(loja)
+    saidas = (7.5, 8.2, 7.8, 8.6, 8.0, 7.2)
+    _bate_variado(loja, ficha, saidas)
+
+    r = _rendimento(loja)
+    assert r["range"]["low"] >= r["observed"]["min"]
+    assert r["range"]["high"] <= r["observed"]["max"]
+
+
+# ----------------------------------------------------------------------
+# Custo real: os dois unicos numeros que a loja conta
+# ----------------------------------------------------------------------
+
+
+def _loja_com_movimento(erp, dias=28, copos_500=3, copos_300=2, entrada=8.4, saida=10.0):
+    """Barra saindo do freezer e copo saindo pelo caixa, que e tudo o que se conta."""
+
+    from datetime import datetime, timedelta
+
+    from app.schemas import ChannelCreate, OrderCreate, OrderLine
+    from app.services.erp import FUSO_LOJA
+
+    try:
+        erp.create_channel(ChannelCreate(name="Balcao", fee_percent=0.0))
+    except ValueError:
+        pass
+    _abastece_barra(erp, barras=60)
+    ficha = _ficha(erp, entrada=entrada, saida=saida)
+    hoje = datetime.now(FUSO_LOJA).date()
+    for atras in range(dias, 0, -1):
+        quando = datetime.combine(hoje - timedelta(days=atras), datetime.min.time(), tzinfo=FUSO_LOJA).replace(hour=15)
+        if atras % 4 == 0:
+            _bate(erp, entrada=entrada, saida=saida, recipe_id=ficha["id"])
+        erp.create_order(OrderCreate(
+            items=[OrderLine(product_id="acai-500", quantity=copos_500),
+                   OrderLine(product_id="acai-300", quantity=copos_300)],
+            channel="Balcao", occurred_at=quando))
+    return ficha
+
+
+def test_o_custo_real_sai_de_barra_consumida_e_copo_vendido(loja):
+    """Sem balanca e sem rendimento: os dois lados sao contados."""
+
+    _loja_com_movimento(loja)
+
+    e = loja.production_economics(30)
+    assert e["available"] is True
+    assert e["bars"][0]["packs"] > 0, "a barra aparece contada em barras, como a equipe conta"
+    assert e["cups"] > 0
+    assert e["cost_per_cup_real"] > 0
+    # O custo por copo e o custo da barra dividido pelos copos, e mais nada.
+    assert e["cost_per_cup_real"] == pytest.approx(e["bars_cost"] / e["cups"], abs=0.001)
+
+
+def test_o_rendimento_implicito_nao_precisa_de_ninguem_pesando(loja):
+    """Ele cai fora da conta: e a base que a venda consumiu sobre a barra que saiu."""
+
+    _loja_com_movimento(loja)
+
+    e = loja.production_economics(30)
+    barra = sum(linha["quantity"] for linha in e["bars"])
+    assert e["implied_yield"] == pytest.approx(e["base_theoretical"] / barra, abs=0.001)
+
+
+def test_a_diferenca_para_o_cadastro_e_quantificada_por_produto(loja):
+    _loja_com_movimento(loja)
+
+    e = loja.production_economics(30)
+    assert e["products"], "cada produto que usa a base entra na conta"
+    for linha in e["products"]:
+        assert linha["acai_cost_real"] > 0
+        assert linha["difference_total"] == pytest.approx(
+            (linha["acai_cost_real"] - linha["acai_cost_registered"]) * linha["units"], abs=0.01)
+    assert e["difference_total"] == pytest.approx(
+        sum(linha["difference_total"] for linha in e["products"]), abs=0.01)
+
+
+def test_a_premissa_do_estoque_estavel_e_declarada(loja):
+    """Sem contagem no periodo, a conta assume que o freezer comecou e terminou igual."""
+
+    _loja_com_movimento(loja)
+
+    bloqueios = loja.production_economics(30)["blockers"]
+    aviso = next((b for b in bloqueios if "começou e terminou parecido" in b["title"]), None)
+    assert aviso is not None
+    assert "transforma a premissa em medida" in aviso["description"]
+
+
+def test_a_contagem_no_periodo_tira_o_aviso_da_premissa(loja):
+    from app.schemas import InventoryCount
+
+    _loja_com_movimento(loja)
+    base = _item(loja, "Base de açaí")
+    loja.count_inventory("acai", InventoryCount(quantity=base["quantity"]))
+
+    bloqueios = loja.production_economics(30)["blockers"]
+    assert not any("começou e terminou parecido" in b["title"] for b in bloqueios)
+
+
+def test_sem_batida_ou_sem_venda_a_conta_nao_e_inventada(loja):
+    e = loja.production_economics(30)
+
+    assert e["available"] is False
+    assert "Faltam os dois números" in e["reason"]
+    assert e["products"] == []
+
+
+def test_contagem_que_bate_exatamente_tambem_conta_como_evidencia(loja):
+    """Ela nao gera movimento, e e a melhor prova que existe: confirma o saldo."""
+
+    from app.schemas import InventoryCount
+
+    _loja_com_movimento(loja)
+    base = _item(loja, "Base de açaí")
+    loja.count_inventory("acai", InventoryCount(quantity=base["quantity"]))
+
+    # Nenhum movimento de contagem foi criado, porque a diferença foi zero.
+    assert not [m for m in loja.store.list("inventory_movements") if m.get("kind") == "contagem"]
+    # Ainda assim a loja contou, e o carimbo no item registra isso.
+    assert _item(loja, "Base de açaí")["counted_at"]

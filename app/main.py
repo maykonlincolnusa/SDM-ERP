@@ -469,6 +469,16 @@ def production_yield(
     return service.production_yield(days)
 
 
+@app.get("/api/production/economics")
+def production_economics(
+    days: int = Query(default=30, ge=7, le=365),
+    service: ERPService = Depends(erp),
+    _: dict = Depends(current_user),
+) -> dict:
+    """Custo real do acai por copo, medido por barra consumida e copo vendido."""
+    return service.production_economics(days)
+
+
 @app.post("/api/production/runs", status_code=status.HTTP_201_CREATED)
 def register_production(
     payload: ProductionRun,
