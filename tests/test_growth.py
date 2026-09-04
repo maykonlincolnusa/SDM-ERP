@@ -232,3 +232,52 @@ def test_ranks_by_impact_and_keeps_unquantified_last(store):
     # Quem não tem número não some — parte do que importa não é quantificável.
     assert valores.index(None) == len(com_numero) if None in valores else True
     assert [s["rank"] for s in sugestoes] == list(range(1, len(sugestoes) + 1))
+
+
+def test_marketplace_com_taxa_zero_vira_aviso(tmp_path):
+    """O erro de cadastro mais perigoso: ele se disfarca de boa noticia.
+
+    Marketplace sem comissao lancada aparece com a melhor margem da loja, e a
+    decisao de para onde empurrar volume sai invertida.
+    """
+
+    from app.repositories.store import DemoStore
+    from app.schemas import ChannelCreate, OrderCreate, OrderLine
+    from app.services import ERPService, GrowthService
+
+    store = DemoStore(tmp_path / "store.json")
+    for pedido in store.list("orders"):
+        store.delete("orders", pedido["id"])
+    erp = ERPService(store)
+    erp.create_channel(ChannelCreate(name="99Food", fee_percent=0.0))
+    for _ in range(6):
+        erp.create_order(OrderCreate(items=[OrderLine(product_id="acai-500", quantity=1)], channel="99Food"))
+
+    sugestoes = GrowthService(store).opportunities(90)["suggestions"]
+    aviso = next((linha for linha in sugestoes if linha["id"] == "canal-taxa-zero-99food"), None)
+
+    assert aviso is not None, "marketplace com taxa zero tem de virar aviso"
+    assert "não é verdade" in aviso["title"]
+    # Nao e ganho: e erro de medicao, e por isso nao entra no potencial somado.
+    assert aviso["impact_monthly"] is None
+    assert aviso["confidence"] == "alta"
+
+
+def test_canal_proprio_com_taxa_zero_nao_vira_aviso(tmp_path):
+    """Balcao e link proprio nao cobram comissao de verdade: zero ali e correto."""
+
+    from app.repositories.store import DemoStore
+    from app.schemas import ChannelCreate, OrderCreate, OrderLine
+    from app.services import ERPService, GrowthService
+
+    store = DemoStore(tmp_path / "store.json")
+    for pedido in store.list("orders"):
+        store.delete("orders", pedido["id"])
+    erp = ERPService(store)
+    erp.create_channel(ChannelCreate(name="Balcao", fee_percent=0.0))
+    for _ in range(6):
+        erp.create_order(OrderCreate(items=[OrderLine(product_id="acai-500", quantity=1)], channel="Balcao"))
+
+    ids = {linha["id"] for linha in GrowthService(store).opportunities(90)["suggestions"]}
+
+    assert not any(identificador.startswith("canal-taxa-zero") for identificador in ids)

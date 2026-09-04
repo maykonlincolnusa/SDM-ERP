@@ -63,6 +63,8 @@ STATUS_VALIDOS = {"finalizado"}
 CANAIS = {
     "pdv": "Balcao",
     "ifood": "iFood",
+    "99food": "99Food",
+    "99": "99Food",
     "whatsapp": "WhatsApp",
     "site": "Site",
     "compartilhamento do menu": "Link proprio",
@@ -72,7 +74,20 @@ CANAIS = {
 # Canal que o relatorio revela e o cadastro ainda nao tem. Entra com taxa zero
 # porque canal proprio nao cobra comissao; o marketplace o gestor cadastra com
 # a taxa real, e ai a conta de margem passa a valer.
-TAXA_PADRAO_DO_CANAL = {"Balcao": 0.0, "Site": 0.0, "Link proprio": 0.0, "WhatsApp": 0.0, "iFood": 27.0}
+# Taxa com que o canal e criado quando o relatorio revela um que o cadastro
+# ainda nao tem. Canal proprio e zero de verdade. Marketplace entra com zero
+# tambem, mas por ignorancia, nao por certeza: a taxa do 99Food muda por praca e
+# por contrato, e chutar um numero seria pior do que admitir que nao se sabe.
+# Por isso a nota do canal manda conferir, e a tela de Canais destaca quem esta
+# com zero.
+TAXA_PADRAO_DO_CANAL = {
+    "Balcao": 0.0, "Site": 0.0, "Link proprio": 0.0, "WhatsApp": 0.0,
+    "iFood": 27.0, "99Food": 0.0,
+}
+
+# Canais que cobram comissao. Um deles com taxa zero no cadastro nao e boa
+# noticia: e margem sendo contada a mais em todo pedido que passa por ele.
+MARKETPLACES = ("ifood", "99food", "rappi", "ubereats")
 
 
 def _data(valor: Any) -> Any:
@@ -237,9 +252,15 @@ def cadastrar_canais(pedidos: list[dict[str, Any]], store: Store) -> int:
             continue
         taxa = TAXA_PADRAO_DO_CANAL.get(nome, 0.0)
         identificador = _slug(nome, "canal")
+        aviso = (
+            "Criado pela importação da Anota Aí. ATENÇÃO: marketplace cadastrado com taxa zero — "
+            "enquanto ela não for a real, a margem de todo pedido deste canal aparece maior do que é."
+            if identificador in MARKETPLACES and not taxa
+            else "Criado pela importação da Anota Aí. Confira a taxa com o contrato do canal."
+        )
         store.put("channels", identificador, {
             "id": identificador, "name": nome, "fee_percent": taxa, "fee_fixed": 0.0, "active": True,
-            "note": "Criado pela importacao da Anota Aí. Confira a taxa com o contrato do canal.",
+            "note": aviso,
         })
         criados += 1
     return criados

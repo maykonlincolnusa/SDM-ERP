@@ -30,6 +30,10 @@ from app.services.erp import ERPService, is_active_order
 
 DIAS = ("segunda", "terça", "quarta", "quinta", "sexta", "sábado", "domingo")
 
+# Canais que cobram comissao para operar. Um deles com taxa zero no cadastro
+# nao e vantagem: e margem contada a mais em todo pedido que passa por ele.
+MARKETPLACES = ("ifood", "99food", "99", "rappi", "uber eats", "ubereats")
+
 # Abaixo disso o par de produtos pode ter saido junto por acaso.
 MINIMO_PEDIDOS_PARA_CESTA = 20
 MINIMO_OCORRENCIAS_DO_PAR = 3
@@ -455,6 +459,39 @@ class GrowthService:
         sugestoes: list[dict[str, Any]] = []
         desempenho = self.erp.channel_performance(int(min(contexto["months"] * 30, 365)) or 30)
         meses = contexto["months"] or 1
+
+        # Marketplace cadastrado com taxa zero. É o erro mais perigoso do
+        # cadastro de canais porque ele se disfarça de boa notícia: o canal
+        # aparece com a melhor margem da loja justamente por ninguém ter
+        # lançado a comissão dele, e a decisão de para onde empurrar volume sai
+        # invertida.
+        for canal in desempenho["channels"]:
+            if not canal["orders"] or canal["fee_percent"] or canal["fee_fixed"]:
+                continue
+            if _fold(canal["name"]) not in MARKETPLACES:
+                continue
+            melhor = max(desempenho["channels"], key=lambda linha: linha["contribution_margin"] or 0)
+            sugestoes.append(self._suggestion(
+                f"canal-taxa-zero-{_fold(canal['name'])}", "canal",
+                f"{canal['name']} está cadastrado sem comissão — e isso não é verdade",
+                f"{canal['name']} tem {canal['orders']} pedido(s) e {_money(canal['revenue'])} no período, "
+                f"com taxa de 0% no cadastro. Por isso ele aparece com margem de "
+                f"{canal['contribution_margin']}%"
+                + (f", a melhor da loja" if melhor["name"] == canal["name"] else "")
+                + ". Marketplace não trabalha de graça.",
+                f"Abra o extrato de {canal['name']}, pegue a comissão real do seu contrato e lance em Canais. "
+                "Enquanto ela for zero, a margem deste canal está inflada, o resultado da loja também, e qualquer "
+                "decisão de para onde empurrar volume sai invertida.",
+                impact_monthly=None,
+                impact_note="Não é ganho: é erro de medição. O impacto só pode ser calculado depois que a taxa real entrar.",
+                confidence="alta",
+                confidence_note="taxa zero é dado do cadastro, não estimativa",
+                metrics=[
+                    {"label": "Faturamento no período", "value": _money(canal["revenue"])},
+                    {"label": "Margem exibida hoje", "value": f"{canal['contribution_margin']}%"},
+                    {"label": "Comissão lançada", "value": "0%"},
+                ],
+            ))
 
         # Comissão pesada: quantifica o que já foi pago e o que migrar economiza.
         for canal in desempenho["channels"]:
