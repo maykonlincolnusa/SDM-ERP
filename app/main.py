@@ -25,6 +25,7 @@ from app.schemas import (
     ExpenseUpdate,
     FixedCostSetup,
     InventoryAdjustment,
+    InventoryBulkCount,
     InventoryCount,
     InventoryItemCreate,
     InventoryItemUpdate,
@@ -427,6 +428,16 @@ def undo_inventory_withdrawal(
 ) -> dict:
     """Desfaz todas as linhas de uma retirada de uma vez."""
     return _run(lambda: service.undo_inventory_withdrawal(withdrawal_id))
+
+
+@app.post("/api/inventory/bulk-count")
+def bulk_count(
+    payload: InventoryBulkCount,
+    service: ERPService = Depends(erp),
+    _: dict = Depends(current_user),
+) -> dict:
+    """Contagem geral: alinha o cadastro inteiro com a prateleira, tudo ou nada."""
+    return _run(lambda: service.bulk_count(payload))
 
 
 @app.get("/api/production/recipes")

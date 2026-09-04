@@ -472,3 +472,141 @@ def test_daily_closing_uses_the_store_day_not_utc(service):
     fechamento = service.sales_day(hoje.isoformat())
 
     assert any(row["id"] == order["id"] for row in fechamento["orders"])
+
+
+# ----------------------------------------------------------------------
+# Contagem geral: alinhar o cadastro com a prateleira
+# ----------------------------------------------------------------------
+
+
+def test_contagem_geral_alinha_varios_de_uma_vez(service):
+    from app.schemas import InventoryBulkCount, InventoryCountLine
+
+    resultado = service.bulk_count(InventoryBulkCount(items=[
+        InventoryCountLine(inventory_id="acai", quantity=28.0),
+        InventoryCountLine(inventory_id="banana", quantity=9.5),
+    ], responsible="Maykon"))
+
+    assert _saldo(service, "acai") == 28.0
+    assert _saldo(service, "banana") == 9.5
+    assert resultado["totals"]["items_counted"] == 2
+    assert resultado["totals"]["items_changed"] == 2
+
+
+def test_campo_em_branco_nao_zera_o_insumo(service):
+    """Insumo não contado não é insumo que acabou."""
+
+    from app.schemas import InventoryBulkCount, InventoryCountLine
+
+    antes = _saldo(service, "morango")
+    service.bulk_count(InventoryBulkCount(items=[
+        InventoryCountLine(inventory_id="acai", quantity=28.0),
+        InventoryCountLine(inventory_id="morango"),
+    ]))
+
+    assert _saldo(service, "morango") == antes
+
+
+def test_a_contagem_geral_grava_movimento_para_cada_diferenca(service):
+    """Sem lançamento, a diferença some e reaparece como perda sem dono."""
+
+    from app.schemas import InventoryBulkCount, InventoryCountLine
+
+    service.bulk_count(InventoryBulkCount(items=[
+        InventoryCountLine(inventory_id="acai", quantity=28.0),
+        InventoryCountLine(inventory_id="granola", quantity=3.8),
+    ]))
+
+    contagens = [m for m in service.store.list("inventory_movements") if m.get("kind") == "contagem"]
+    assert len(contagens) == 1, "só o que mudou vira movimento"
+    assert contagens[0]["inventory_id"] == "acai"
+    assert contagens[0]["quantity_delta"] == -3.5
+
+
+def test_a_contagem_geral_soma_o_impacto_em_reais(service):
+    """Alinhar estoque não é neutro: o que falta vira custo no resultado."""
+
+    from app.schemas import InventoryBulkCount, InventoryCountLine
+
+    totais = service.bulk_count(InventoryBulkCount(items=[
+        InventoryCountLine(inventory_id="acai", quantity=28.0),
+        InventoryCountLine(inventory_id="banana", quantity=9.5),
+    ]))["totals"]
+
+    assert totais["missing_value"] == pytest.approx(-3.5 * 22.5, abs=0.01)
+    assert totais["extra_value"] == pytest.approx(0.9 * 6.9, abs=0.01)
+    assert totais["net_value"] == pytest.approx(totais["missing_value"] + totais["extra_value"], abs=0.01)
+
+
+def test_contagem_geral_exclui_o_que_nao_deveria_estar_no_cadastro(service):
+    from app.schemas import InventoryBulkCount, InventoryCountLine, InventoryItemCreate
+
+    service.create_inventory_item(InventoryItemCreate(
+        name="Item fantasma", unit="un", quantity=8, minimum_quantity=0,
+        unit_cost=3.0, category="Teste"))
+    fantasma = next(item for item in service.inventory() if item["name"] == "Item fantasma")
+
+    resultado = service.bulk_count(InventoryBulkCount(items=[
+        InventoryCountLine(inventory_id=fantasma["id"], remove=True),
+    ]))
+
+    assert not any(item["id"] == fantasma["id"] for item in service.inventory())
+    # O saldo descartado fica registrado: sumir com valor não pode ser silencioso.
+    assert resultado["removed"][0]["discarded_quantity"] == 8
+    assert resultado["totals"]["discarded_value"] == 24.0
+
+
+def test_a_exclusao_em_massa_respeita_a_ficha_tecnica(service):
+    """Produto sem insumo passa a vender com custo zero, e a margem sobe sozinha."""
+
+    from app.schemas import InventoryBulkCount, InventoryCountLine
+
+    with pytest.raises(ValueError, match="ficha técnica"):
+        service.bulk_count(InventoryBulkCount(items=[
+            InventoryCountLine(inventory_id="acai", remove=True),
+        ]))
+
+
+def test_uma_recusa_desfaz_a_contagem_inteira(service):
+    """Meia contagem aplicada é pior que nenhuma: ninguém sabe onde parou."""
+
+    from app.schemas import InventoryBulkCount, InventoryCountLine
+
+    antes = _saldo(service, "banana")
+    with pytest.raises(ValueError):
+        service.bulk_count(InventoryBulkCount(items=[
+            InventoryCountLine(inventory_id="banana", quantity=99.0),
+            InventoryCountLine(inventory_id="acai", remove=True),
+        ]))
+
+    assert _saldo(service, "banana") == antes
+
+
+def test_contagem_geral_vazia_e_recusada(service):
+    from app.schemas import InventoryBulkCount, InventoryCountLine
+
+    with pytest.raises(ValueError, match="ao menos uma contagem"):
+        InventoryBulkCount(items=[InventoryCountLine(inventory_id="acai")])
+
+
+def test_insumo_repetido_na_contagem_e_recusado(service):
+    from app.schemas import InventoryBulkCount, InventoryCountLine
+
+    with pytest.raises(ValueError, match="duas vezes"):
+        InventoryBulkCount(items=[
+            InventoryCountLine(inventory_id="acai", quantity=1),
+            InventoryCountLine(inventory_id="acai", quantity=2),
+        ])
+
+
+def test_a_contagem_geral_carimba_o_item_como_contado(service):
+    """É o carimbo que faz o custo medido saber que houve verificação."""
+
+    from app.schemas import InventoryBulkCount, InventoryCountLine
+
+    service.bulk_count(InventoryBulkCount(items=[
+        InventoryCountLine(inventory_id="granola", quantity=3.8),
+    ]))
+
+    granola = next(item for item in service.inventory() if item["id"] == "granola")
+    assert granola["counted_at"]

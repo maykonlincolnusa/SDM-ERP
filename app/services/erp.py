@@ -18,6 +18,7 @@ from app.schemas import (
     ExpenseUpdate,
     FixedCostSetup,
     InventoryAdjustment,
+    InventoryBulkCount,
     InventoryCount,
     InventoryItemCreate,
     InventoryItemUpdate,
@@ -944,6 +945,130 @@ class ERPService:
         self.store.delete("inventory", inventory_id)
         self._audit(self.store, "inventory", inventory_id, "excluido", f"Insumo {item['name']} removido")
         return {"id": inventory_id, "status": "excluido"}
+
+    def bulk_count(self, payload: InventoryBulkCount) -> dict[str, Any]:
+        """Alinha o cadastro inteiro com a prateleira, numa transação só.
+
+        A contagem item a item é a razão de a contagem nunca acontecer: são dez
+        idas ao mesmo formulário, e alguém desiste no meio. Aqui a loja percorre
+        o estoque uma vez e confirma tudo junto.
+
+        Tudo ou nada de propósito. Meia contagem aplicada é pior que nenhuma,
+        porque ninguém sabe onde parou — e a diferença que sobrar vira perda sem
+        dono na próxima leitura do resultado.
+
+        A diferença total sai em reais antes de confirmar. Alinhar estoque não é
+        operação neutra: o que falta vira custo no resultado do dia, e o gestor
+        precisa ver o tamanho disso antes de mandar aplicar.
+        """
+
+        now = datetime.now(timezone.utc)
+        reason = payload.reason.strip()
+        responsible = self._optional_text(payload.responsible)
+        pedidos = {linha.inventory_id: linha for linha in payload.items}
+
+        def aplicar(transaction: StoreTransaction) -> dict[str, Any]:
+            produtos = transaction.list("products")
+            complementos = transaction.list("addons")
+
+            contados: list[dict[str, Any]] = []
+            removidos: list[dict[str, Any]] = []
+            for inventory_id, linha in pedidos.items():
+                item = transaction.get("inventory", inventory_id)
+                if not item:
+                    raise ValueError(f"Item de estoque não encontrado: {inventory_id}.")
+
+                if linha.remove:
+                    # As mesmas travas da exclusão avulsa. Elas existem porque
+                    # produto sem insumo passa a vender com custo zero, e isso
+                    # sobe a margem do cardápio inteiro sem ninguém notar.
+                    usado_em = sorted({
+                        produto["name"] for produto in produtos
+                        for receita in produto.get("recipe", [])
+                        if receita["inventory_id"] == inventory_id
+                    })
+                    if usado_em:
+                        raise ValueError(
+                            f"{item['name']} está na ficha técnica de {', '.join(usado_em[:4])}. "
+                            "Remova-o dessas receitas antes de excluir."
+                        )
+                    oferecido = sorted({
+                        addon["name"] for addon in complementos
+                        if addon["inventory_id"] == inventory_id
+                    })
+                    if oferecido:
+                        raise ValueError(
+                            f"{item['name']} é a porção do complemento {', '.join(oferecido[:4])}. "
+                            "Remova esses complementos antes de excluir."
+                        )
+                    transaction.delete("inventory", inventory_id)
+                    removidos.append({
+                        "inventory_id": inventory_id, "name": item["name"], "unit": item["unit"],
+                        # O saldo descartado fica registrado: excluir item com
+                        # estoque some com valor, e isso nao pode ser silencioso.
+                        "discarded_quantity": item["quantity"],
+                        "discarded_value": round(item["quantity"] * item.get("unit_cost", 0), 2),
+                    })
+                    continue
+
+                if linha.quantity is None:
+                    continue
+
+                anterior = item["quantity"]
+                diferenca = round(linha.quantity - anterior, 3)
+                item["quantity"] = round(linha.quantity, 3)
+                item["updated_at"] = now.isoformat()
+                item["counted_at"] = now.isoformat()
+                transaction.put("inventory", inventory_id, item)
+                if diferenca:
+                    movimento = {
+                        "id": str(uuid4()),
+                        "inventory_id": inventory_id,
+                        "quantity_delta": diferenca,
+                        "reason": reason,
+                        "kind": "contagem",
+                        "responsible": responsible,
+                        "created_at": now.isoformat(),
+                    }
+                    transaction.put("inventory_movements", movimento["id"], movimento)
+                contados.append({
+                    "inventory_id": inventory_id, "name": item["name"], "unit": item["unit"],
+                    "previous_quantity": anterior, "counted_quantity": item["quantity"],
+                    "difference": diferenca,
+                    "value": round(diferenca * item.get("unit_cost", 0), 2),
+                })
+
+            faltou = round(sum(linha["value"] for linha in contados if linha["value"] < 0), 2)
+            sobrou = round(sum(linha["value"] for linha in contados if linha["value"] > 0), 2)
+            descartado = round(sum(linha["discarded_value"] for linha in removidos), 2)
+
+            self._audit(
+                transaction, "inventory", "contagem-geral", "aplicada",
+                f"Contagem geral: {len(contados)} item(ns) alinhado(s), {len(removidos)} excluído(s)",
+                {
+                    "motivo": reason,
+                    "responsável": responsible,
+                    "faltou": faltou,
+                    "sobrou": sobrou,
+                    "excluídos": [linha["name"] for linha in removidos],
+                    "valor descartado": descartado,
+                },
+            )
+            return {
+                "counted": contados,
+                "removed": removidos,
+                "totals": {
+                    "items_counted": len(contados),
+                    "items_changed": sum(1 for linha in contados if linha["difference"]),
+                    "items_removed": len(removidos),
+                    "missing_value": faltou,
+                    "extra_value": sobrou,
+                    "net_value": round(faltou + sobrou, 2),
+                    "discarded_value": descartado,
+                },
+            }
+
+        return self.store.run_transaction(aplicar)
 
     def adjust_inventory(self, inventory_id: str, payload: InventoryAdjustment) -> dict[str, Any]:
         now = datetime.now(timezone.utc)

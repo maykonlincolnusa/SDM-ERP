@@ -195,6 +195,45 @@ def test_ciclo_da_referencia_de_mercado_muda_o_veredito(client):
     assert veredito() == "sem-referencia"
 
 
+def test_contagem_geral_alinha_e_exclui_numa_chamada(client):
+    """Tudo ou nada: uma recusa nao pode deixar meia contagem aplicada."""
+
+    fantasma = client.post("/api/inventory", json={
+        "name": "Item fantasma", "unit": "un", "quantity": 8,
+        "minimum_quantity": 0, "unit_cost": 3.0, "category": "Teste",
+    }).json()
+
+    resposta = client.post("/api/inventory/bulk-count", json={
+        "items": [
+            {"inventory_id": "acai", "quantity": 28.0},
+            {"inventory_id": "morango"},
+            {"inventory_id": fantasma["id"], "remove": True},
+        ],
+        "responsible": "Maykon",
+    })
+
+    assert resposta.status_code == 200
+    assert _saldo(client, "acai") == 28.0
+    assert not any(i["id"] == fantasma["id"] for i in client.get("/api/inventory").json())
+    assert resposta.json()["totals"]["discarded_value"] == 24.0
+
+
+def test_contagem_geral_com_insumo_em_ficha_tecnica_e_recusada(client):
+    antes = _saldo(client, "banana")
+
+    resposta = client.post("/api/inventory/bulk-count", json={
+        "items": [
+            {"inventory_id": "banana", "quantity": 99.0},
+            {"inventory_id": "acai", "remove": True},
+        ],
+    })
+
+    assert resposta.status_code == 422
+    assert "ficha t" in resposta.json()["detail"]
+    # A recusa desfaz a contagem inteira.
+    assert _saldo(client, "banana") == antes
+
+
 def test_referencia_sem_alvo_e_recusada_na_rota(client):
     resposta = client.post("/api/market-prices", json={
         "competitor": "Vizinho", "description": "Copo grande", "price": 20.0,

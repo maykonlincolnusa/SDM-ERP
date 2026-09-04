@@ -921,6 +921,7 @@ function openModal(name) {
   if (name === "purchase") { openPurchase(); return; }
   if (name === "withdrawal") { openWithdrawal(); return; }
   if (name === "production") { openProduction(); return; }
+  if (name === "bulk-count") { openBulkCount(); return; }
   if (name === "product") { document.getElementById("product-form").reset(); document.getElementById("recipe-lines").innerHTML = ""; addRecipeLine(); }
   if (name === "fixed-cost") renderFixedCostSetup();
   if (name === "expense") { document.getElementById("expense-form").reset(); document.querySelector('#expense-form [name="due_date"]').value = dateInputValue(new Date()); toggleExpenseRepeat(); }
@@ -982,6 +983,9 @@ function bindForms() {
   document.getElementById("import-anota-report").addEventListener("click", () => document.getElementById("anota-report-file").click());
   document.getElementById("anota-report-file").addEventListener("change", importAnotaReport);
   document.getElementById("adjust-form").addEventListener("submit", submitAdjustment);
+  document.getElementById("bulk-count-form").addEventListener("submit", submitBulkCount);
+  document.getElementById("bulk-count-body").addEventListener("input", refreshBulkCountPreview);
+  document.getElementById("bulk-count-body").addEventListener("change", refreshBulkCountPreview);
   document.getElementById("production-form").addEventListener("submit", submitProduction);
   document.getElementById("production-recipe").addEventListener("change", applyProductionRecipe);
   document.getElementById("add-production-line").addEventListener("click", () => { addProductionLine("production-lines"); refreshProductionPreview(); });
@@ -1245,6 +1249,89 @@ async function submitAdjustment(event) {
   const form = new FormData(event.currentTarget);
   const inventoryId = form.get("inventory_id");
   await submitData(`/api/inventory/${inventoryId}/adjust`, { quantity_delta: Number(form.get("quantity_delta")), reason: form.get("reason") }, "Saldo de estoque atualizado.");
+}
+
+// -------------------------------------------------------- contagem geral
+//
+// Contar item a item pela tela de ajuste e a razao de a contagem nunca
+// acontecer: sao dez idas ao mesmo formulario, e alguem desiste no meio. Aqui a
+// loja percorre o estoque uma vez e confirma tudo junto.
+
+function openBulkCount() {
+  const form = document.getElementById("bulk-count-form");
+  form.reset();
+  document.getElementById("bulk-count-body").innerHTML = state.inventory.map((item) => {
+    const embalagem = item.pack_size
+      ? `<small class="muted-value"> \u2248 ${number.format(item.quantity / item.pack_size)} ${escapeHtml(item.pack_unit)}</small>`
+      : "";
+    return `<tr data-bulk-row="${item.id}"><td><strong>${escapeHtml(item.name)}</strong><small class="muted-value"> ${escapeHtml(item.category || "")}</small></td><td class="align-right muted-value">${number.format(item.quantity)} ${escapeHtml(item.unit)}${embalagem}</td><td class="align-right"><input type="number" min="0" step="0.001" class="bulk-count-input" placeholder="\u2014" aria-label="Contagem de ${escapeHtml(item.name)}" /></td><td class="align-right" data-bulk-diff>\u2014</td><td class="align-right"><input type="checkbox" class="bulk-count-remove" aria-label="Excluir ${escapeHtml(item.name)}" /></td></tr>`;
+  }).join("");
+  refreshBulkCountPreview();
+  openDialog("bulk-count-modal");
+}
+
+function readBulkCount() {
+  return [...document.querySelectorAll("#bulk-count-body [data-bulk-row]")].map((linha) => {
+    const valor = linha.querySelector(".bulk-count-input").value;
+    return {
+      inventory_id: linha.dataset.bulkRow,
+      // Vazio e "nao contei este", nao zero: insumo nao contado nao acabou.
+      quantity: valor === "" ? null : Number(valor),
+      remove: linha.querySelector(".bulk-count-remove").checked,
+    };
+  });
+}
+
+function refreshBulkCountPreview() {
+  const preview = document.getElementById("bulk-count-preview");
+  if (!preview) return;
+  let falta = 0;
+  let sobra = 0;
+  let contados = 0;
+  let excluidos = 0;
+  readBulkCount().forEach((linha) => {
+    const celula = document.querySelector(`[data-bulk-row="${linha.inventory_id}"] [data-bulk-diff]`);
+    const item = state.inventory.find((row) => row.id === linha.inventory_id);
+    if (!item || !celula) return;
+    if (linha.remove) excluidos += 1;
+    if (linha.quantity === null || Number.isNaN(linha.quantity)) {
+      celula.textContent = "\u2014";
+      celula.className = "align-right muted-value";
+      return;
+    }
+    contados += 1;
+    const diferenca = linha.quantity - item.quantity;
+    const valor = diferenca * item.unit_cost;
+    if (valor < 0) falta += valor; else sobra += valor;
+    celula.innerHTML = diferenca
+      ? `<strong class="${diferenca < 0 ? "negative" : "positive"}">${diferenca > 0 ? "+" : ""}${number.format(diferenca)}</strong>`
+      : '<span class="muted-value">bateu</span>';
+    celula.className = "align-right";
+  });
+  if (!contados && !excluidos) {
+    preview.textContent = "Preencha o que voc\u00ea contou. O que ficar em branco n\u00e3o muda.";
+    preview.className = "modal-result full neutral";
+    return;
+  }
+  const liquido = falta + sobra;
+  // Alinhar estoque nao e neutro: o que falta vira custo no resultado do dia, e
+  // o gestor precisa ver o tamanho disso antes de mandar aplicar.
+  preview.textContent = `${contados} contado(s), ${excluidos} para excluir. Falta ${currency.format(Math.abs(falta))}, sobra ${currency.format(sobra)} \u2014 l\u00edquido ${currency.format(liquido)}, que entra no resultado do dia.`;
+  preview.className = `modal-result full ${liquido < 0 ? "negative" : liquido > 0 ? "positive" : "neutral"}`;
+}
+
+async function submitBulkCount(event) {
+  event.preventDefault();
+  const form = new FormData(event.currentTarget);
+  const items = readBulkCount().filter((linha) => linha.remove || linha.quantity !== null);
+  if (!items.length) return toast("Informe ao menos uma contagem ou uma exclus\u00e3o.", "error");
+  const excluir = items.filter((linha) => linha.remove).length;
+  if (excluir && !confirm(`Excluir ${excluir} insumo(s) do cadastro?\n\nO saldo deles \u00e9 descartado e fica registrado na auditoria.`)) return;
+  await submitData("/api/inventory/bulk-count", {
+    items,
+    reason: form.get("reason") || "Contagem geral",
+    responsible: form.get("responsible") || null,
+  }, "Estoque alinhado com a contagem.");
 }
 
 // ---------------------------------------------------------- fabricação

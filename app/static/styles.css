@@ -1011,6 +1011,11 @@ tbody tr:hover .row-action.danger { color: var(--muted); }
 
 /* A linha da fabricacao precisa de mais espaco no campo de quantidade: ela
    mostra a conversao para barra logo abaixo. */
+.bulk-count-scroll { max-height: 46vh; }
+.bulk-count-input { width: 100px; height: 34px; padding: 0 10px; border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--canvas); color: var(--ink); text-align: right; font-weight: 600; }
+.bulk-count-input:focus { background: var(--paper); box-shadow: 0 0 0 3px var(--accent-soft), inset 0 0 0 1px var(--accent); }
+.bulk-count-remove { width: 18px; height: 18px; accent-color: var(--red); }
+
 .production-line { grid-template-columns: minmax(0, 1fr) 130px 34px; }
 
 .weekday-picker { display: flex; flex-wrap: wrap; gap: 6px; }

@@ -281,6 +281,42 @@ class InventoryCount(BaseModel):
     reason: str = Field(default="Contagem física", min_length=2, max_length=120)
 
 
+class InventoryCountLine(BaseModel):
+    """Uma linha da contagem geral: o que existe de verdade, ou o que sai do cadastro."""
+
+    inventory_id: str = Field(min_length=1, max_length=80)
+    # Vazio significa "não contei este". A linha é ignorada em vez de virar
+    # zero — insumo não contado não é insumo que acabou.
+    quantity: float | None = Field(default=None, ge=0)
+    remove: bool = False
+
+
+class InventoryBulkCount(BaseModel):
+    """Contagem geral: alinha o cadastro inteiro com a prateleira de uma vez.
+
+    Contar item a item pela tela de ajuste é a razão de a contagem nunca
+    acontecer: são dez idas ao mesmo formulário, e no meio do caminho alguém
+    desiste. Aqui a loja percorre o estoque uma vez, anota o que achou e
+    confirma tudo junto — inclusive o que não deveria estar no cadastro.
+
+    Tudo numa transação só: ou o estoque inteiro fica alinhado, ou nada muda.
+    Meia contagem aplicada é pior que nenhuma, porque ninguém sabe onde parou.
+    """
+
+    items: list[InventoryCountLine] = Field(min_length=1, max_length=200)
+    reason: str = Field(default="Contagem geral", min_length=2, max_length=120)
+    responsible: str | None = Field(default=None, max_length=80)
+
+    @model_validator(mode="after")
+    def alguma_coisa_para_fazer(self) -> "InventoryBulkCount":
+        if not any(linha.remove or linha.quantity is not None for linha in self.items):
+            raise ValueError("Informe ao menos uma contagem ou uma exclusão.")
+        repetidos = [linha.inventory_id for linha in self.items]
+        if len(set(repetidos)) != len(repetidos):
+            raise ValueError("O mesmo insumo aparece duas vezes na contagem.")
+        return self
+
+
 class MovementUpdate(BaseModel):
     """Corrige um lancamento de consumo ja gravado."""
 
