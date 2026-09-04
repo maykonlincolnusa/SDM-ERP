@@ -395,3 +395,103 @@ def test_a_unidade_de_manuseio_pode_ser_corrigida(loja):
     depois = _item(loja, "Barra de açaí 12%")
     assert depois["pack_unit"] == "caixa"
     assert depois["pack_size"] == 10.0
+
+
+# ----------------------------------------------------------------------
+# Rendimento aprendido, sem balanca
+# ----------------------------------------------------------------------
+
+
+def _rendimento(erp, nome="Batida de 12%"):
+    return next(linha for linha in erp.production_yield(90)["recipes"] if linha["name"] == nome)
+
+
+def _ficha(erp, entrada=8.4, saida=10.0):
+    barra = _item(erp, "Barra de açaí 12%")
+    return erp.create_production_recipe(ProductionRecipeCreate(
+        name="Batida de 12%", inputs=[ProductionLine(inventory_id=barra["id"], quantity=entrada)],
+        output_inventory_id="acai", output_quantity=saida))
+
+
+def _bate_com_ficha(erp, ficha, vezes=4, entrada=7.0, saida=8.0):
+    """Batida ligada a ficha. Sem o vinculo ela vai para o grupo 'sem ficha'."""
+
+    for _ in range(vezes):
+        _bate(erp, entrada=entrada, saida=saida, recipe_id=ficha["id"])
+
+
+def test_sem_batida_o_rendimento_vem_da_ficha_e_diz_isso(loja):
+    """Ficha e ponto de partida, nao medida — e o modulo nao finge o contrario."""
+
+    _ficha(loja)
+
+    r = _rendimento(loja)
+    assert r["suggested_ratio"] == pytest.approx(10.0 / 8.4, abs=0.001)
+    assert r["source"] == "ficha"
+    assert r["confidence"] == "baixa"
+    assert "ponto de partida" in r["reading"]
+
+
+def test_o_historico_das_batidas_substitui_a_ficha(loja):
+    """O que a batida entrega vale mais que o que foi planejado."""
+
+    _bate_com_ficha(loja, _ficha(loja, entrada=8.4, saida=10.0))
+
+    r = _rendimento(loja)
+    assert r["source"] == "histórico"
+    assert r["observed"]["runs"] == 4
+    assert r["suggested_ratio"] == pytest.approx(8.0 / 7.0, abs=0.001)
+    assert r["declared"]["ratio"] != r["suggested_ratio"]
+
+
+def test_uma_batida_so_nao_ganha_confianca(loja):
+    _bate_com_ficha(loja, _ficha(loja), vezes=1)
+
+    assert _rendimento(loja)["confidence"] == "baixa"
+
+
+def test_a_contagem_fisica_corrige_o_rendimento(loja):
+    """O jeito de medir sem balanca: contar a base e deixar a diferenca falar."""
+
+    from app.schemas import InventoryCount
+
+    _bate_com_ficha(loja, _ficha(loja))
+    base = _item(loja, "Base de açaí")
+    # A prateleira tem 3 kg a menos do que o sistema achava.
+    loja.count_inventory("acai", InventoryCount(quantity=round(base["quantity"] - 3.0, 3)))
+
+    r = _rendimento(loja)
+    assert r["source"] == "contagem"
+    assert r["confidence"] == "alta"
+    assert r["corrected"]["count_difference"] == -3.0
+    # 32 kg declarados menos 3 que faltaram, sobre 28 kg de barra.
+    assert r["suggested_ratio"] == pytest.approx((32.0 - 3.0) / 28.0, abs=0.001)
+
+
+def test_a_correcao_pela_contagem_e_apresentada_como_teto(loja):
+    """Dentro da diferenca cabe retirada nao lancada e quebra, nao so rendimento."""
+
+    from app.schemas import InventoryCount
+
+    _bate_com_ficha(loja, _ficha(loja))
+    base = _item(loja, "Base de açaí")
+    loja.count_inventory("acai", InventoryCount(quantity=round(base["quantity"] - 3.0, 3)))
+
+    leitura = _rendimento(loja)["reading"]
+    assert "teto" in leitura
+    assert "retirada não lançada" in leitura
+
+
+def test_divergencia_grande_entre_ficha_e_operacao_vira_aviso(loja):
+    _bate_com_ficha(loja, _ficha(loja, entrada=8.4, saida=12.0))
+
+    bloqueios = loja.production_yield(90)["blockers"]
+    assert any("rende" in b["title"] and "menos do que a ficha diz" in b["title"] for b in bloqueios)
+
+
+def test_sem_contagem_o_modulo_avisa_que_ninguem_verificou(loja):
+    _bate_com_ficha(loja, _ficha(loja))
+
+    bloqueios = loja.production_yield(90)["blockers"]
+    assert any("não foi confirmado por contagem" in b["title"] for b in bloqueios)
+    assert any("sem precisar de balança" in b["description"] for b in bloqueios)

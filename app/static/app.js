@@ -33,6 +33,7 @@ const state = {
   growthPeriod: 90,
   growthFilter: "all",
   productionRecipes: [],
+  productionYield: null,
   promotions: null,
   promotionMonth: null,
   promotionsPeriod: 90,
@@ -192,7 +193,7 @@ function setMobileNavigation(open) {
 async function loadAll() {
   setRefreshing(true);
   try {
-    const [config, dashboard, consumption, crossing, forecast, products, addons, inventory, orders, expenses, expenseSeries, operating, mediaSummary, media, channels, channelPerformance, lines, salesDay, growth, promotions, promotionMonth, pricing, marketPrices, productionRecipes, planning, couriers, deliveries, deliveryPerformance, catalogs, history] = await Promise.all([
+    const [config, dashboard, consumption, crossing, forecast, products, addons, inventory, orders, expenses, expenseSeries, operating, mediaSummary, media, channels, channelPerformance, lines, salesDay, growth, promotions, promotionMonth, pricing, marketPrices, productionRecipes, productionYield, planning, couriers, deliveries, deliveryPerformance, catalogs, history] = await Promise.all([
       api("/api/config"),
       api(`/api/dashboard?days=${state.period}`),
       api(`/api/inventory/consumption?days=${state.period}`),
@@ -217,6 +218,7 @@ async function loadAll() {
       api(`/api/pricing?days=${state.pricingPeriod}`),
       api("/api/market-prices"),
       api("/api/production/recipes"),
+      api("/api/production/yield?days=90"),
       api(`/api/planning?days=90&horizon=7&service_level=${state.planningService}`),
       api("/api/couriers"),
       api(`/api/deliveries?days=${state.deliveryPeriod}`),
@@ -247,6 +249,7 @@ async function loadAll() {
     state.pricing = pricing;
     state.marketPrices = marketPrices;
     state.productionRecipes = productionRecipes;
+    state.productionYield = productionYield;
     state.planning = planning;
     state.couriers = couriers;
     state.deliveries = deliveries;
@@ -1338,8 +1341,31 @@ function applyProductionRecipe() {
   }
   ficha.inputs.forEach((linha) => addProductionLine("production-lines", linha.inventory_id, linha.quantity));
   form.elements.output_inventory_id.value = ficha.output_inventory_id;
-  form.elements.output_quantity.value = ficha.output_quantity;
+  // O rendimento medido manda sobre o da ficha: a ficha e o que se planejou, o
+  // historico e o que a batida vem entregando.
+  const esperado = expectedOutput(ficha.id, readProductionLines("production-lines"));
+  form.elements.output_quantity.value = esperado ? Number(esperado.quantity.toFixed(3)) : ficha.output_quantity;
   refreshProductionPreview();
+}
+
+function productionYieldFor(recipeId) {
+  return (state.productionYield?.recipes || []).find((linha) => linha.recipe_id === recipeId) || null;
+}
+
+function expectedOutput(recipeId, linhas) {
+  // Sem balanca, os dois lados ainda sao contaveis: barra na entrada, cuba na
+  // saida. O que falta e a razao entre eles, e ela se aprende.
+  const rendimento = productionYieldFor(recipeId);
+  if (!rendimento || !rendimento.suggested_ratio) return null;
+  const entrada = linhas.reduce((total, linha) => total + linha.quantity, 0);
+  if (!entrada) return null;
+  return {
+    quantity: entrada * rendimento.suggested_ratio,
+    ratio: rendimento.suggested_ratio,
+    source: rendimento.source,
+    confidence: rendimento.confidence,
+    runs: rendimento.observed?.runs || 0,
+  };
 }
 
 function refreshProductionPreview() {
@@ -1377,6 +1403,17 @@ function refreshProductionPreview() {
     preview.className = "modal-result full negative";
     return;
   }
+  // Quanto a batida deveria render, e o quanto a de hoje fugiu disso.
+  const esperado = expectedOutput(document.getElementById("production-recipe").value, linhas);
+  const dica = document.getElementById("production-output-unit");
+  if (dica && esperado) {
+    const fonte = { contagem: "confirmado por contagem", "histórico": `média de ${esperado.runs} batida(s)`, ficha: "da ficha, ainda sem medição" }[esperado.source] || esperado.source;
+    const embalagem = packLabel(saida, esperado.quantity);
+    dica.textContent = `Esperado: ${number.format(esperado.quantity)} ${saida.unit}${embalagem} — ${fonte}.`;
+  } else if (dica) {
+    dica.textContent = saida ? `Na unidade do item: ${saida.unit}.` : "Na unidade do item.";
+  }
+
   const porUnidade = custo / quantidade;
   const anterior = saida.unit_cost;
   const resultante = saida.quantity > 0
@@ -1385,7 +1422,12 @@ function refreshProductionPreview() {
   const barras = pedido.size === 1
     ? packLabel(state.inventory.find((row) => row.id === [...pedido.keys()][0]), [...pedido.values()][0])
     : "";
-  preview.textContent = `${currency.format(custo)} em insumo${barras} para ${number.format(quantidade)} ${saida.unit} — ${currency.format(porUnidade)} por ${saida.unit}. O custo médio de ${saida.name} vai de ${currency.format(anterior)} para ${currency.format(resultante)}.`;
+  // Fugir do rendimento esperado nao e erro: e informacao. Ou a barra veio
+  // diferente, ou sobrou na cuba — e nos dois casos o custo do quilo muda.
+  const desvio = esperado && esperado.quantity
+    ? ` Esperava-se ${number.format(esperado.quantity)} ${saida.unit}: ${Math.abs(Math.round((quantidade / esperado.quantity - 1) * 100))}% ${quantidade < esperado.quantity ? "abaixo" : "acima"}.`
+    : "";
+  preview.textContent = `${currency.format(custo)} em insumo${barras} para ${number.format(quantidade)} ${saida.unit}${packLabel(saida, quantidade)} — ${currency.format(porUnidade)} por ${saida.unit}. O custo médio de ${saida.name} vai de ${currency.format(anterior)} para ${currency.format(resultante)}.${Math.abs((quantidade / (esperado?.quantity || quantidade)) - 1) >= 0.08 ? desvio : ""}`;
   preview.className = `modal-result full ${resultante <= anterior ? "positive" : "neutral"}`;
 }
 
@@ -1419,7 +1461,11 @@ function renderProductionRecipes() {
         }).join(" + ");
         const custo = ficha.inputs.reduce((total, linha) => total + (insumos[linha.inventory_id]?.unit_cost || 0) * linha.quantity, 0);
         const saida = insumos[ficha.output_inventory_id];
-        return `<tr><td><strong>${escapeHtml(ficha.name)}</strong>${ficha.note ? `<small class="muted-value"> ${escapeHtml(ficha.note)}</small>` : ""}</td><td class="muted-value">${consome}</td><td>${saida ? `<strong>${number.format(ficha.output_quantity)} ${escapeHtml(saida.unit)}</strong> de ${escapeHtml(saida.name)}` : '<span class="negative">item removido</span>'}</td><td class="align-right">${currency.format(custo)}</td><td class="align-right"><strong>${currency.format(custo / ficha.output_quantity)}</strong>${saida ? `<small class="muted-value">/${escapeHtml(saida.unit)}</small>` : ""}</td><td class="align-right"><div class="row-actions"><button class="row-action" type="button" data-edit-recipe="${ficha.id}" title="Editar ficha"><i data-lucide="pencil"></i></button></div></td></tr>`;
+        const rendimento = productionYieldFor(ficha.id);
+        const medido = rendimento && rendimento.suggested_ratio && saida
+          ? `<small class="muted-value">medido: ${number.format(rendimento.suggested_ratio * ficha.inputs.reduce((t, l) => t + l.quantity, 0))} ${escapeHtml(saida.unit)} · ${escapeHtml(rendimento.source)}</small>`
+          : "";
+        return `<tr><td><strong>${escapeHtml(ficha.name)}</strong>${ficha.note ? `<small class="muted-value"> ${escapeHtml(ficha.note)}</small>` : ""}</td><td class="muted-value">${consome}</td><td>${saida ? `<strong>${number.format(ficha.output_quantity)} ${escapeHtml(saida.unit)}</strong> de ${escapeHtml(saida.name)}${medido}` : '<span class="negative">item removido</span>'}</td><td class="align-right">${currency.format(custo)}</td><td class="align-right"><strong>${currency.format(custo / ficha.output_quantity)}</strong>${saida ? `<small class="muted-value">/${escapeHtml(saida.unit)}</small>` : ""}</td><td class="align-right"><div class="row-actions"><button class="row-action" type="button" data-edit-recipe="${ficha.id}" title="Editar ficha"><i data-lucide="pencil"></i></button></div></td></tr>`;
       }).join("")
     : emptyRow(6, "Nenhuma ficha cadastrada. Sem ela a batida é lançada do zero toda vez.");
   refreshIcons();

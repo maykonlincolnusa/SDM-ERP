@@ -459,6 +459,16 @@ def delete_production_recipe(recipe_id: str, service: ERPService = Depends(erp),
     return _run(lambda: service.delete_production_recipe(recipe_id))
 
 
+@app.get("/api/production/yield")
+def production_yield(
+    days: int = Query(default=90, ge=7, le=365),
+    service: ERPService = Depends(erp),
+    _: dict = Depends(current_user),
+) -> dict:
+    """Quanto de base sai de cada quilo de barra, medido em vez de suposto."""
+    return service.production_yield(days)
+
+
 @app.post("/api/production/runs", status_code=status.HTTP_201_CREATED)
 def register_production(
     payload: ProductionRun,

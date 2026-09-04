@@ -77,6 +77,7 @@ def test_health_e_config_respondem(client):
     "/api/market-prices",
     "/api/sport-anchors",
     "/api/production/recipes",
+    "/api/production/yield",
     "/api/audit",
 ])
 def test_toda_rota_de_leitura_responde(client, caminho):
@@ -97,7 +98,7 @@ def test_as_rotas_que_o_carregamento_inicial_usa_existem_todas(client):
         "/api/media", "/api/channels", "/api/channels/performance?days=30",
         "/api/products/lines?days=30", "/api/sales/daily", "/api/growth?days=90",
         "/api/promotions/week?days=90&horizon=7", "/api/promotions/month?days=90&weeks=4",
-        "/api/pricing?days=90", "/api/market-prices", "/api/production/recipes",
+        "/api/pricing?days=90", "/api/market-prices", "/api/production/recipes", "/api/production/yield?days=90",
         "/api/planning?days=90&horizon=7&service_level=0.9", "/api/couriers",
         "/api/deliveries?days=30", "/api/couriers/performance?days=30", "/api/catalogs",
         "/api/audit?limit=60",

@@ -1377,6 +1377,212 @@ class ERPService:
 
         return self.store.run_transaction(undo)
 
+    def production_yield(self, days: int = 90) -> dict[str, Any]:
+        """Quanto de base sai de cada quilo de barra, medido em vez de suposto.
+
+        A loja nao tem balanca, e por isso o rendimento parece impossivel de
+        saber. Mas ele nao precisa ser pesado: os dois lados da conta sao
+        contaveis. A barra entra contada em barras; a base sai contada em cubas,
+        potes ou baldes. Contar nao e pesar, e serve.
+
+        Tres fontes, da mais confiavel para a menos:
+
+        1. **Contagem fisica.** Entre duas contagens da base, a diferenca que a
+           contagem acusou revela o quanto o sistema estava errado. Ela nao
+           acusa so o rendimento — dentro dela tambem esta a retirada nao
+           lancada, a quebra e o erro de ficha tecnica. Por isso o modulo
+           apresenta o numero como teto, e diz o que mais pode estar ali.
+        2. **Historico dos lotes.** A media do que a equipe declarou nas batidas
+           anteriores da ficha. Vale mais que a ficha porque e o que aconteceu,
+           e menos que a contagem porque ninguem verificou.
+        3. **A ficha.** O que foi cadastrado como padrao. E ponto de partida,
+           nao medida.
+
+        O que sai daqui alimenta a sugestao da tela: ao lancar 10 barras, o
+        sistema propoe o rendimento esperado e diz de onde tirou o numero.
+        """
+
+        days = max(7, min(days, 365))
+        inicio = self._window_start(days)
+        fichas = {linha["id"]: linha for linha in self.store.list("production_recipes")}
+        estoque = {item["id"]: item for item in self.store.list("inventory")}
+
+        # Agrupa as batidas por lote: entrada de um lado, saida do outro.
+        lotes: dict[str, dict[str, Any]] = {}
+        for movimento in self.store.list("inventory_movements"):
+            if movimento.get("kind") != PRODUCTION_KIND:
+                continue
+            if self._timestamp(movimento["created_at"]) < inicio:
+                continue
+            lote = lotes.setdefault(movimento["production_id"], {
+                "recipe_id": movimento.get("recipe_id"), "input": 0.0, "output": 0.0,
+                "output_id": None, "created_at": movimento["created_at"],
+            })
+            if movimento["quantity_delta"] < 0:
+                lote["input"] += abs(movimento["quantity_delta"])
+            else:
+                lote["output"] += movimento["quantity_delta"]
+                lote["output_id"] = movimento["inventory_id"]
+
+        por_ficha: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        for lote in lotes.values():
+            if lote["input"] > 0 and lote["output"] > 0:
+                por_ficha[lote["recipe_id"] or "sem-ficha"].append(lote)
+
+        linhas: list[dict[str, Any]] = []
+        for chave, ficha in list(fichas.items()) + ([("sem-ficha", None)] if "sem-ficha" in por_ficha else []):
+            observados = por_ficha.get(chave, [])
+            declarado = None
+            if ficha:
+                entrada_declarada = sum(linha["quantity"] for linha in ficha.get("inputs", []))
+                if entrada_declarada > 0:
+                    declarado = {
+                        "input": round(entrada_declarada, 3),
+                        "output": ficha["output_quantity"],
+                        "ratio": round(ficha["output_quantity"] / entrada_declarada, 4),
+                    }
+
+            observado = None
+            if observados:
+                entrada = sum(linha["input"] for linha in observados)
+                saida = sum(linha["output"] for linha in observados)
+                observado = {
+                    "runs": len(observados),
+                    "input": round(entrada, 3),
+                    "output": round(saida, 3),
+                    "ratio": round(saida / entrada, 4) if entrada else None,
+                }
+
+            saida_id = ficha["output_inventory_id"] if ficha else (observados[0]["output_id"] if observados else None)
+            corrigido = self._rendimento_pela_contagem(saida_id, observados) if saida_id else None
+
+            escolhido, origem, confianca = self._melhor_rendimento(corrigido, observado, declarado)
+            item = estoque.get(saida_id or "")
+            linhas.append({
+                "recipe_id": chave if ficha else None,
+                "name": ficha["name"] if ficha else "Batidas sem ficha",
+                "output_inventory_id": saida_id,
+                "output_name": item["name"] if item else None,
+                "output_unit": item["unit"] if item else None,
+                "output_pack_unit": (item or {}).get("pack_unit"),
+                "output_pack_size": (item or {}).get("pack_size"),
+                "declared": declarado,
+                "observed": observado,
+                "corrected": corrigido,
+                "suggested_ratio": escolhido,
+                "source": origem,
+                "confidence": confianca,
+                "reading": self._leitura_do_rendimento(escolhido, origem, observado, corrigido, item),
+            })
+
+        linhas.sort(key=lambda linha: ((linha["observed"] or {}).get("runs", 0)), reverse=True)
+        return {
+            "period_days": days,
+            "recipes": linhas,
+            "blockers": self._blockers_do_rendimento(linhas),
+        }
+
+    def _rendimento_pela_contagem(self, output_id: str, lotes: list[dict[str, Any]]) -> dict[str, Any] | None:
+        """Rendimento corrigido pela ultima contagem fisica da base.
+
+        A contagem diz o quanto o saldo do sistema estava errado. Parte desse
+        erro e rendimento declarado a mais; a outra parte e tudo o que saiu sem
+        registro. O numero devolvido aqui e um teto, e o texto ao lado diz isso.
+        """
+
+        contagens = sorted(
+            (movimento for movimento in self.store.list("inventory_movements")
+             if movimento.get("kind") == "contagem" and movimento["inventory_id"] == output_id),
+            key=lambda linha: linha["created_at"],
+        )
+        if not contagens:
+            return None
+        ultima = contagens[-1]
+        anterior = contagens[-2]["created_at"] if len(contagens) > 1 else None
+
+        # So os lotes da janela entre as duas contagens entram na conta.
+        janela = [
+            lote for lote in lotes
+            if lote["created_at"] < ultima["created_at"]
+            and (anterior is None or lote["created_at"] >= anterior)
+        ]
+        entrada = sum(lote["input"] for lote in janela)
+        saida = sum(lote["output"] for lote in janela)
+        if not entrada or not janela:
+            return None
+
+        diferenca = ultima["quantity_delta"]
+        return {
+            "ratio": round(max(0.0, saida + diferenca) / entrada, 4),
+            "runs": len(janela),
+            "counted_at": ultima["created_at"],
+            "count_difference": round(diferenca, 3),
+            "declared_output": round(saida, 3),
+            "input": round(entrada, 3),
+            "since": anterior,
+        }
+
+    @staticmethod
+    def _melhor_rendimento(corrigido, observado, declarado) -> tuple[float | None, str, str]:
+        # Uma contagem so vira referencia com lote suficiente atras dela; senao
+        # ela mede mais o acaso do dia do que o rendimento da batida.
+        if corrigido and corrigido["runs"] >= 3:
+            return corrigido["ratio"], "contagem", "alta"
+        if observado and observado["ratio"] and observado["runs"] >= 3:
+            return observado["ratio"], "histórico", "media"
+        if observado and observado["ratio"]:
+            return observado["ratio"], "histórico", "baixa"
+        if declarado:
+            return declarado["ratio"], "ficha", "baixa"
+        return None, "sem base", "baixa"
+
+    @staticmethod
+    def _leitura_do_rendimento(ratio, origem, observado, corrigido, item) -> str:
+        if ratio is None:
+            return "Ainda não há batida registrada nem ficha cadastrada para estimar o rendimento."
+        unidade = (item or {}).get("unit", "un")
+        base = f"Cada 1 kg de insumo rende cerca de {ratio:g} {unidade} de {(item or {}).get('name', 'base')}."
+        if origem == "contagem" and corrigido:
+            return (
+                f"{base} Número corrigido pela contagem de "
+                f"{corrigido['count_difference']:+g} {unidade}, sobre {corrigido['runs']} batida(s). "
+                "É um teto: dentro dessa diferença também cabem retirada não lançada, quebra e erro de ficha técnica."
+            )
+        if origem == "histórico" and observado:
+            return f"{base} Média de {observado['runs']} batida(s) declarada(s), ainda sem contagem que confirme."
+        return f"{base} Vem da ficha cadastrada — é ponto de partida, não medida."
+
+    @staticmethod
+    def _blockers_do_rendimento(linhas: list[dict[str, Any]]) -> list[dict[str, str]]:
+        bloqueios: list[dict[str, str]] = []
+        sem_contagem = [linha for linha in linhas if linha["source"] in ("histórico", "ficha")]
+        if sem_contagem:
+            nomes = ", ".join(linha["name"] for linha in sem_contagem[:3])
+            bloqueios.append({
+                "title": "O rendimento ainda não foi confirmado por contagem",
+                "description": (
+                    f"{nomes} usa o que foi declarado nas batidas, e ninguém verificou. Uma contagem da base — "
+                    "em cubas, potes ou baldes, sem precisar de balança — transforma essa estimativa em medida, "
+                    "e passa a apontar quanto do açaí está saindo sem registro."
+                ),
+            })
+        divergentes = [
+            linha for linha in linhas
+            if linha["declared"] and linha["suggested_ratio"]
+            and abs(linha["suggested_ratio"] - linha["declared"]["ratio"]) / linha["declared"]["ratio"] >= 0.1
+        ]
+        for linha in divergentes[:2]:
+            declarado, real = linha["declared"]["ratio"], linha["suggested_ratio"]
+            lado = "menos" if real < declarado else "mais"
+            bloqueios.append({
+                "title": f"{linha['name']} rende {abs(round((real / declarado - 1) * 100))}% {lado} do que a ficha diz",
+                "description": (
+                    f"A ficha promete {declarado:g} por kg de insumo e a operação está entregando {real:g}. "
+                    "Corrija a ficha para o plano de compra parar de errar a quantidade de barra."
+                ),
+            })
+        return bloqueios
+
     def register_inventory_purchase(self, inventory_id: str, payload: InventoryPurchase) -> dict[str, Any]:
         """Recebe uma compra sem transformar a entrada em simples ajuste.
 
