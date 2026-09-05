@@ -1951,7 +1951,7 @@ async function submitMedia(event) {
     title: form.get("title"), category: form.get("category"),
     tags: String(form.get("tags") || "").split(",").map(tag => tag.trim()).filter(Boolean),
     entity_type: entityType, entity_id: entityId,
-  }, "Arquivo organizado no acervo.");
+  }, "Arquivo organizado no acervo.", "PATCH");
 }
 
 function populateEntityTargets(type, selectedId = "") {
@@ -1967,9 +1967,12 @@ function populateEntityTargets(type, selectedId = "") {
 
 async function submitData(path, payload, successMessage, method = "POST") {
   try {
-    await api(path, { method, body: JSON.stringify(payload) });
+    const resultado = await api(path, { method, body: JSON.stringify(payload) });
     closeModal();
-    toast(successMessage, "success");
+    // Quando o servidor explica o que realmente aconteceu — o produto foi
+    // desativado em vez de excluído, por exemplo — a explicação dele vale mais
+    // que a frase otimista escrita aqui.
+    toast(resultado?.detail || successMessage, "success");
     await loadAll();
   } catch (error) {
     toast(error.message || "Não foi possível salvar.", "error");
@@ -2014,10 +2017,29 @@ async function api(path, options = {}) {
   const response = await fetch(path, { ...options, headers });
   if (!response.ok) {
     let message = "Não foi possível concluir a operação.";
-    try { message = (await response.json()).detail || message; } catch (_) { /* keep default */ }
+    try { message = describeError((await response.json()).detail) || message; } catch (_) { /* keep default */ }
     throw new Error(message);
   }
   return response.json();
+}
+
+// O detalhe do erro vem em duas formas. A recusa de regra de negócio manda uma
+// frase pronta; a validação do FastAPI manda uma lista de objetos, e jogar essa
+// lista num texto imprimia "[object Object]" — o botão parecia quebrado sem
+// dizer o que faltava preencher.
+function describeError(detail) {
+  if (!detail) return "";
+  if (typeof detail === "string") return detail;
+  const linhas = (Array.isArray(detail) ? detail : [detail]).map((item) => {
+    if (typeof item === "string") return item;
+    const campo = Array.isArray(item?.loc)
+      ? item.loc.filter((parte) => parte !== "body" && typeof parte !== "number").join(" › ")
+      : "";
+    const texto = item?.msg || item?.detail || "";
+    if (!texto) return "";
+    return campo ? `${campo}: ${texto}` : texto;
+  }).filter(Boolean);
+  return linhas.join(" | ");
 }
 
 async function mediaContentUrl(mediaId) {

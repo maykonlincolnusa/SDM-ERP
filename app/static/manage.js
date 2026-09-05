@@ -98,7 +98,11 @@
       if (dossierProductId) openDossier(dossierProductId);
     });
     document.getElementById("dossier-edit").addEventListener("click", () => {
-      if (dossierProductId) editProduct(dossierProductId);
+      if (!dossierProductId) return;
+      // O dossiê precisa sair antes: dois modais empilhados deixam o formulário
+      // do produto sobre uma tela que ainda mostra o custo do produto antigo.
+      document.getElementById("dossier-modal").close();
+      editProduct(dossierProductId);
     });
   }
 
@@ -1274,9 +1278,13 @@
 
   async function send(path, method, payload, successMessage) {
     try {
-      await api(path, { method, ...(payload ? { body: JSON.stringify(payload) } : {}) });
+      const resultado = await api(path, { method, ...(payload ? { body: JSON.stringify(payload) } : {}) });
       closeModal();
-      toast(successMessage, "success");
+      // Excluir nem sempre exclui: canal, entregador, produto e complemento com
+      // histórico são desativados, e o servidor devolve o motivo. Dizer
+      // "removido" enquanto a linha continua na tela fazia o botão parecer
+      // quebrado — quem clicou precisa ler o que de fato aconteceu.
+      toast(resultado?.detail || successMessage, "success");
       await loadAll();
     } catch (error) {
       toast(error.message || "Não foi possível concluir a operação.", "error");
