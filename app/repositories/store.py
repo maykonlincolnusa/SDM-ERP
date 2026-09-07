@@ -161,7 +161,10 @@ class FirestoreStore:
     def run_transaction(self, operation: Callable[[StoreTransaction], T]) -> T:
         @self.firestore.transactional
         def execute(transaction):
-            return operation(_FirestoreTransaction(self.db, transaction))
+            adapter = _FirestoreTransaction(self.db, transaction)
+            result = operation(adapter)
+            adapter.flush()
+            return result
 
         return execute(self.db.transaction())
 
@@ -170,22 +173,42 @@ class _FirestoreTransaction:
     def __init__(self, database, transaction):
         self.database = database
         self.transaction = transaction
+        # Firestore requires every remote read before the first write. Keep a
+        # local overlay so services can read their own changes, just as in demo.
+        self.pending: dict[tuple[str, str], dict[str, Any] | None] = {}
 
     def list(self, collection: str) -> list[dict[str, Any]]:
         snapshots = self.database.collection(collection).stream(transaction=self.transaction)
-        return [{"id": snapshot.id, **snapshot.to_dict()} for snapshot in snapshots]
+        rows = {snapshot.id: {**snapshot.to_dict(), "id": snapshot.id} for snapshot in snapshots}
+        for (name, document_id), value in self.pending.items():
+            if name != collection:
+                continue
+            if value is None:
+                rows.pop(document_id, None)
+            else:
+                rows[document_id] = deepcopy(value)
+        return list(rows.values())
 
     def get(self, collection: str, document_id: str) -> dict[str, Any] | None:
+        if (collection, document_id) in self.pending:
+            return deepcopy(self.pending[collection, document_id])
         reference = self.database.collection(collection).document(document_id)
         snapshot = next(self.transaction.get(reference), None)
         return {"id": snapshot.id, **snapshot.to_dict()} if snapshot and snapshot.exists else None
 
     def put(self, collection: str, document_id: str, value: dict[str, Any]) -> None:
-        payload = {key: value for key, value in value.items() if key != "id"}
-        self.transaction.set(self.database.collection(collection).document(document_id), payload)
+        self.pending[collection, document_id] = {**deepcopy(value), "id": document_id}
 
     def delete(self, collection: str, document_id: str) -> None:
-        self.transaction.delete(self.database.collection(collection).document(document_id))
+        self.pending[collection, document_id] = None
+
+    def flush(self) -> None:
+        for (collection, document_id), value in self.pending.items():
+            reference = self.database.collection(collection).document(document_id)
+            if value is None:
+                self.transaction.delete(reference)
+            else:
+                self.transaction.set(reference, {key: item for key, item in value.items() if key != "id"})
 
 
 def build_store(settings: Settings) -> Store:

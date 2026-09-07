@@ -82,7 +82,11 @@ DEFAULT_CHANNELS = (
 def month_index(month: str) -> int:
     """Converte AAAA-MM num numero, para contar meses sem cair em aritmetica de data."""
 
-    return int(month[:4]) * 12 + int(month[5:7]) - 1
+    try:
+        parsed = date.fromisoformat(f"{month}-01")
+    except (ValueError, TypeError) as error:
+        raise ValueError("Informe o mês no formato AAAA-MM.") from error
+    return parsed.year * 12 + parsed.month - 1
 
 
 def month_label(index: int) -> str:
@@ -578,6 +582,8 @@ class ERPService:
         channel = self._channel_by_name(payload.channel)
 
         def create(transaction: StoreTransaction) -> dict[str, Any]:
+            if payload.courier_id and not transaction.get("couriers", payload.courier_id):
+                raise ValueError("Entregador não encontrado.")
             line_items, usage, total, total_cost = self._price_items(transaction, payload.items)
             if payload.discount > total:
                 raise ValueError("O desconto não pode ser maior que o valor da venda.")
@@ -653,17 +659,17 @@ class ERPService:
                 order["delivery_fee"] = frete
             else:
                 if payload.discount is not None or payload.delivery_fee is not None:
-                    gross = self._gross_total(order)
+                    gross = (self._gross_total(order) if order.get("items") else
+                             order["total"] + order.get("discount", 0) - order.get("delivery_fee", 0))
                     desconto = payload.discount if payload.discount is not None else order.get("discount", 0)
                     frete = payload.delivery_fee if payload.delivery_fee is not None else order.get("delivery_fee", 0)
-                    if gross and desconto > gross:
+                    if desconto > gross:
                         raise ValueError("O desconto não pode ser maior que o valor da venda.")
                     order["discount"] = desconto
                     order["delivery_fee"] = frete
                     if frete > 0:
                         order["is_delivery"] = True
-                    if gross:
-                        order["total"] = round(gross - desconto + frete, 2)
+                    order["total"] = round(gross - desconto + frete, 2)
                 if payload.total is not None:
                     # So o pedido sem itens aceita total digitado. Com ficha
                     # tecnica, o total e consequencia dos itens: deixar os dois
@@ -913,7 +919,11 @@ class ERPService:
         item = self.store.get("inventory", inventory_id)
         if not item:
             raise ValueError("Item de estoque não encontrado.")
-        changes = {key: value for key, value in payload.model_dump(exclude_unset=True).items() if value is not None}
+        changes = {key: value for key, value in payload.model_dump(exclude_unset=True).items()
+                   if value is not None or key in {"shelf_life_days", "pack_unit", "pack_size"}}
+        merged = {**item, **changes}
+        if (merged.get("pack_unit") is None) != (merged.get("pack_size") is None):
+            raise ValueError("Informe o nome e o tamanho da unidade de manuseio, ou deixe os dois em branco.")
         before = {key: item.get(key) for key in changes}
         item.update(changes)
         item["updated_at"] = datetime.now(timezone.utc).isoformat()
@@ -942,9 +952,18 @@ class ERPService:
         offered_as = [addon["name"] for addon in self.store.list("addons") if addon["inventory_id"] == inventory_id]
         if offered_as:
             raise ValueError(f"Este insumo é a porção do complemento: {', '.join(sorted(set(offered_as))[:4])}. Remova esses complementos primeiro.")
+        self._check_production_reference(inventory_id, self.store.list("production_recipes"))
         self.store.delete("inventory", inventory_id)
         self._audit(self.store, "inventory", inventory_id, "excluido", f"Insumo {item['name']} removido")
         return {"id": inventory_id, "status": "excluido"}
+
+    @staticmethod
+    def _check_production_reference(inventory_id: str, recipes: list[dict[str, Any]]) -> None:
+        used = sorted({row["name"] for row in recipes
+                      if row.get("output_inventory_id") == inventory_id
+                      or any(line["inventory_id"] == inventory_id for line in row.get("inputs", []))})
+        if used:
+            raise ValueError(f"Este insumo está na ficha de fabricação: {', '.join(used[:4])}. Remova-o dessas fichas primeiro.")
 
     def bulk_count(self, payload: InventoryBulkCount) -> dict[str, Any]:
         """Alinha o cadastro inteiro com a prateleira, numa transação só.
@@ -970,6 +989,7 @@ class ERPService:
         def aplicar(transaction: StoreTransaction) -> dict[str, Any]:
             produtos = transaction.list("products")
             complementos = transaction.list("addons")
+            fichas = transaction.list("production_recipes")
 
             contados: list[dict[str, Any]] = []
             removidos: list[dict[str, Any]] = []
@@ -1001,6 +1021,7 @@ class ERPService:
                             f"{item['name']} é a porção do complemento {', '.join(oferecido[:4])}. "
                             "Remova esses complementos antes de excluir."
                         )
+                    self._check_production_reference(inventory_id, fichas)
                     transaction.delete("inventory", inventory_id)
                     removidos.append({
                         "inventory_id": inventory_id, "name": item["name"], "unit": item["unit"],
@@ -1277,6 +1298,7 @@ class ERPService:
         changes = {key: value for key, value in payload.model_dump(exclude_unset=True).items() if value is not None}
         before = {key: recipe.get(key) for key in changes}
         recipe.update(changes)
+        ProductionRecipeCreate.model_validate(recipe)
         self._validar_itens_da_ficha(recipe)
         self.store.put("production_recipes", recipe_id, recipe)
         self._audit(
@@ -2945,12 +2967,15 @@ class ERPService:
         # a conta pode ainda estar na gaveta.
         settled = 0
         if payload.past_paid and created:
-            today = datetime.now(FUSO_LOJA).date()
+            # Compara o mes, nao o dia: passado o dia 5, a conta de setembro
+            # continua sendo a deste mes, e ela pode estar na gaveta. Comparar
+            # por data marcava "Paga" a partir do dia 6 e inventava um
+            # pagamento que a loja nunca declarou.
             series_ids = {row["series_id"] for row in created if row.get("series_id")}
             for expense in self.store.list("expenses"):
                 if expense.get("series_id") not in series_ids or expense.get("status") == "Paga":
                     continue
-                if date.fromisoformat(str(expense["due_date"])[:10]) >= today:
+                if str(expense["due_date"])[:7] >= current:
                     continue
                 expense["status"] = "Paga"
                 self.store.put("expenses", expense["id"], expense)
@@ -3015,10 +3040,11 @@ class ERPService:
         rule = self.store.get("expense_series", series_id)
         if not rule:
             raise ValueError("Despesa recorrente não encontrada.")
-        changes = {key: value for key, value in payload.model_dump(exclude_unset=True).items() if value is not None}
+        changes = {key: value for key, value in payload.model_dump(exclude_unset=True).items()
+                   if value is not None or key == "repeat_until"}
         if "repeat_until" in changes:
             changes["ends_on"] = changes.pop("repeat_until")
-            if month_index(changes["ends_on"]) < month_index(rule["starts_on"]):
+            if changes["ends_on"] is not None and month_index(changes["ends_on"]) < month_index(rule["starts_on"]):
                 raise ValueError("O mês final não pode ser anterior ao início da repetição.")
         before = {key: rule.get(key) for key in changes}
         rule.update(changes)

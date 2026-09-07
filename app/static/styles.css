@@ -602,7 +602,9 @@ td strong.negative { color: var(--orange-ink); }
 .recipe-fieldset legend { padding: 0 6px; color: var(--ink-soft); font-size: 11px; font-weight: 700; }
 .recipe-line { display: grid; grid-template-columns: minmax(0, 1fr) 108px 34px; gap: 10px; align-items: end; margin-bottom: 8px; }
 .recipe-line:last-of-type { margin-bottom: 0; }
-.recipe-line label { font-size: 10px; }
+.recipe-line label { display: grid; min-width: 0; gap: 6px; color: var(--muted); font-size: 10px; font-weight: 600; }
+.recipe-line input, .recipe-line select { width: 100%; min-width: 0; height: var(--tap-size); padding: 0 10px; border: 1px solid var(--line-strong); border-radius: var(--r-md); background: var(--canvas); color: var(--ink); font-weight: 500; }
+.recipe-line input:focus, .recipe-line select:focus { background: var(--paper); box-shadow: 0 0 0 3px var(--accent-soft), inset 0 0 0 1px var(--accent); }
 .recipe-line button { display: grid; place-items: center; width: 34px; height: 34px; padding: 0; border: 0; border-radius: 50%; color: var(--red); background: var(--red-soft); }
 .recipe-line button i { width: 15px; height: 15px; }
 .withdrawal-fieldset { margin-top: 16px; }
@@ -699,8 +701,14 @@ td strong.negative { color: var(--orange-ink); }
   .page-heading { align-items: stretch; flex-direction: column; gap: 16px; margin-bottom: 22px; }
   .page-heading h1 { font-size: 26px; }
   .page-description { font-size: 13px; }
-  .heading-actions { width: 100%; }
-  .heading-actions .primary-button, .heading-actions .secondary-button { flex: 1; min-width: 0; padding-right: 10px; padding-left: 10px; }
+  /* Sete acoes numa linha de 375px davam 40px a cada botao: o rotulo, que nao
+     quebra, vazava para fora do proprio botao e cobria o vizinho — tocar
+     "Registrar retirada" abria "Registrar compra". Duas por linha devolvem
+     largura ao alvo, e o corte do rotulo mantem cada toque dentro do seu. */
+  .heading-actions { flex-wrap: wrap; width: 100%; }
+  .heading-actions .primary-button, .heading-actions .secondary-button { flex: 1 1 calc(50% - 5px); min-width: 0; overflow: hidden; padding-right: 10px; padding-left: 10px; }
+  .heading-actions .primary-button i, .heading-actions .secondary-button i { flex: none; }
+  .heading-actions .primary-button span, .heading-actions .secondary-button span { overflow: hidden; text-overflow: ellipsis; }
   .period-control { width: 100%; justify-content: space-between; gap: 7px; font-size: 11px; }
   .period-control select { flex: 1; }
 
@@ -1017,6 +1025,27 @@ tbody tr:hover .row-action.danger { color: var(--muted); }
 .bulk-count-remove { width: 18px; height: 18px; accent-color: var(--red); }
 
 .production-line { grid-template-columns: minmax(0, 1fr) 130px 34px; }
+
+@media (max-width: 480px) {
+  .recipe-line { grid-template-columns: minmax(0, 1fr) 34px; }
+  .recipe-line > label:first-child { grid-column: 1 / -1; }
+  .recipe-line input, .recipe-line select { font-size: 16px; }
+}
+
+/* Integracao com o iFood: a ativacao e uma conversa de tres passos com um
+   portal de fora, entao a tela precisa mostrar em qual passo a loja esta. */
+.ifood-body { padding: 4px 22px 22px; }
+.ifood-body .form-grid { margin-top: 12px; }
+.ifood-steps { display: grid; gap: 10px; margin: 14px 0 0; padding: 0; list-style: none; counter-reset: passo; }
+.ifood-step { display: grid; grid-template-columns: 22px minmax(0, 1fr); gap: 10px; align-items: start; color: var(--ink-soft); font-size: 13px; }
+.ifood-step::before { counter-increment: passo; content: counter(passo); display: grid; place-items: center; width: 22px; height: 22px; border-radius: 50%; background: var(--accent-soft); color: var(--accent); font-size: 11px; font-weight: 700; }
+.ifood-code { display: block; margin: 14px 0 4px; padding: 16px; border: 1px dashed var(--line-strong); border-radius: var(--r-md); background: var(--canvas); color: var(--ink); font-size: 26px; font-weight: 700; letter-spacing: 3px; text-align: center; }
+.ifood-summary { display: grid; gap: 8px; margin: 14px 0 0; padding: 0; }
+.ifood-summary div { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; padding-bottom: 8px; border-bottom: 1px solid var(--line); font-size: 13px; }
+.ifood-summary dt { color: var(--muted); font-weight: 600; }
+.ifood-summary dd { margin: 0; color: var(--ink); font-weight: 600; }
+.ifood-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 16px; }
+.ifood-warning { margin: 14px 0 0; padding: 12px 14px; border-radius: var(--r-md); background: var(--orange-soft); color: var(--orange-ink); font-size: 13px; }
 
 .weekday-picker { display: flex; flex-wrap: wrap; gap: 6px; }
 .weekday-picker label { display: inline-flex; align-items: center; gap: 5px; padding: 7px 11px; border: 1px solid var(--line); border-radius: 999px; color: var(--ink-soft); font-size: 12px; font-weight: 600; cursor: pointer; }

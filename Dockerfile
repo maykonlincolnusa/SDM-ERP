@@ -5,7 +5,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PORT=8080
 
 WORKDIR /app
-COPY pyproject.toml ./
+COPY pyproject.toml LICENSE ./
 COPY app ./app
 COPY etl ./etl
 COPY scripts ./scripts

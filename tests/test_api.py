@@ -30,6 +30,10 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setenv("DATA_MODE", "demo")
     monkeypatch.setenv("DEMO_DATA_PATH", str(tmp_path / "store.json"))
     monkeypatch.setenv("AUTH_REQUIRED", "false")
+    monkeypatch.setenv("DATA_RAW_PATH", str(tmp_path / "raw"))
+    monkeypatch.setenv("MEDIA_INBOX_PATH", str(tmp_path / "inbox"))
+    monkeypatch.setenv("MEDIA_LIBRARY_PATH", str(tmp_path / "library"))
+    monkeypatch.setenv("MEDIA_SYNC_LEGACY_FILES", "false")
     get_settings.cache_clear()
     with TestClient(app) as cliente:
         yield cliente
@@ -317,3 +321,10 @@ def test_ficha_de_fabricacao_circular_e_recusada_na_rota(client):
     })
 
     assert resposta.status_code == 422
+
+
+@pytest.mark.parametrize('path', ['/api/imports/anota-ai', '/api/imports/anota-ai/items'])
+def test_corrupt_spreadsheet_returns_validation_error(client, path):
+    response = client.post(path, files={'report': ('report.xlsx', b'not a zip file', 'application/octet-stream')})
+    assert response.status_code == 422
+    assert 'corrompida' in response.json()['detail']

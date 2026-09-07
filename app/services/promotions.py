@@ -1114,6 +1114,19 @@ class PromotionService:
     # Regra 2: o que vai vencer antes de vender
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _primeiro_dia_aberto(semana: list[dict[str, Any]]) -> dict[str, Any]:
+        """O primeiro dia do horizonte em que a loja de fato abre.
+
+        Insumo perto do vencimento gira sendo vendido, e porta fechada nao
+        vende. Marcar o aviso para hoje so porque hoje e o primeiro dia do
+        horizonte manda a loja promover num dia em que nao abre — o excedente
+        vence do mesmo jeito. Sem nenhum dia aberto no horizonte, o primeiro
+        dia continua valendo: o aviso ainda precisa aparecer.
+        """
+
+        return next((dia for dia in semana if dia["open_days"]), semana[0])
+
     def _promocao_de_estoque(self, semana, economia, produtos, insumos, days) -> list[dict[str, Any]]:
         """Promoção que economiza em vez de custar.
 
@@ -1145,7 +1158,7 @@ class PromotionService:
             risco = round(excedente * insumo.get("unit_cost", 0), 2)
             if risco < 5:
                 continue
-            dia = semana[0]
+            dia = self._primeiro_dia_aberto(semana)
             sugestoes.append({
                 "id": f"estoque-{insumo['id']}",
                 "day": dia["date"],

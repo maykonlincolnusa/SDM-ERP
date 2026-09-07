@@ -2,10 +2,21 @@ rules_version = '2';
 
 service cloud.firestore {
   match /databases/{database}/documents {
-    // The FastAPI service uses the Admin SDK. Direct browser access is reserved
-    // for explicitly trusted owners and is denied to every other user.
+    // Nada acessa o Firestore pelo navegador. O front carrega apenas
+    // `firebase-app` e `firebase-auth`; todo dado passa pela API, que usa o
+    // Admin SDK — e o Admin SDK ignora estas regras. Negar aqui não retira
+    // nenhuma capacidade em uso.
+    //
+    // O que ela fecha: `integrations/ifood` guarda a chave, o segredo e os
+    // tokens do iFood. A API nunca devolve nada disso, mas a permissão ampla
+    // anterior deixava qualquer sessão com `erp_admin` lê-los direto pelo SDK
+    // do Firebase — e um token roubado levaria as credenciais junto.
+    //
+    // A negação precisa estar nesta regra, e não numa mais específica: as
+    // regras do Firestore são aditivas, e uma permissão ampla não é revogada
+    // por uma regra restritiva escrita depois.
     match /{document=**} {
-      allow read, write: if request.auth != null && request.auth.token.erp_admin == true;
+      allow read, write: if false;
     }
   }
 }

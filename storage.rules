@@ -2,10 +2,14 @@ rules_version = '2';
 
 service firebase.storage {
   match /b/{bucket}/o {
-    // Media is served through the authenticated API. In particular, documents
-    // in the legal domain must never be readable from a public Storage URL.
+    // Mesmo raciocínio do `firestore.rules`: o navegador não carrega o SDK de
+    // Storage, e todo arquivo é servido pela API autenticada em
+    // `/api/media/{id}/content`, que usa o Admin SDK e ignora estas regras.
+    //
+    // Documentos do acervo incluem material jurídico e fiscal, que nunca pode
+    // ser alcançável por URL pública nem por sessão de navegador.
     match /{allPaths=**} {
-      allow read, write: if request.auth != null && request.auth.token.erp_admin == true;
+      allow read, write: if false;
     }
   }
 }

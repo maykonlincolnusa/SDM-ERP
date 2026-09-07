@@ -57,7 +57,7 @@ const state = {
 };
 
 const currency = new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" });
-const number = new Intl.NumberFormat("pt-BR", { maximumFractionDigits: 2 });
+const number = new Intl.NumberFormat("pt-BR", { maximumFractionDigits: 3 });
 const shortDate = new Intl.DateTimeFormat("pt-BR", { day: "2-digit", month: "short" });
 
 document.addEventListener("DOMContentLoaded", init);
@@ -72,6 +72,7 @@ async function init() {
   bindForms();
   bindPwaInstall();
   bindConnectionStatus();
+  bindIFood();
   const requestedView = window.location.hash.slice(1);
   if (document.getElementById(requestedView)) activateView(requestedView, false);
   document.getElementById("refresh-data").addEventListener("click", loadAll);
@@ -267,8 +268,10 @@ async function loadAll() {
     state.history = history;
     document.getElementById("storage-mode").textContent = config.storage === "firebase" ? "Firebase conectado" : "Modo demonstrativo";
     renderAll();
+    return true;
   } catch (error) {
     toast(error.message || "Não foi possível carregar os dados.", "error");
+    return false;
   } finally {
     setRefreshing(false);
   }
@@ -896,6 +899,9 @@ function bindNavigation() {
 
 function activateView(target, updateHash = true) {
   document.querySelectorAll(".view").forEach(view => view.classList.toggle("active", view.id === target));
+  // O estado da integração é buscado ao abrir a tela, e não no carregamento
+  // geral: o iFood fora do ar não pode derrubar o painel inteiro.
+  if (target === "settings") loadIFood();
   document.querySelectorAll(".nav-item").forEach(item => item.classList.toggle("active", item.dataset.viewTarget === target));
   setMobileNavigation(false);
   if (updateHash) history.replaceState(null, "", `#${target}`);
@@ -1488,7 +1494,7 @@ function refreshProductionPreview() {
   const faltando = [];
   let custo = 0;
   const pedido = new Map();
-  linhas.forEach((linha) => pedido.set(linha.inventory_id, (pedido.get(linha.inventory_id) || 0) + linha.quantity));
+  linhas.forEach((linha) => pedido.set(linha.inventory_id, Math.round(((pedido.get(linha.inventory_id) || 0) + linha.quantity) * 1000) / 1000));
   pedido.forEach((quantity, inventoryId) => {
     const item = state.inventory.find((row) => row.id === inventoryId);
     if (!item) return;
@@ -1498,9 +1504,14 @@ function refreshProductionPreview() {
   overrideField.hidden = !faltando.length;
   if (!faltando.length) override.checked = false;
 
-  if (!linhas.length || !saida || !quantidade) {
+  if (!linhas.length || !saida || !Number.isFinite(quantidade) || quantidade <= 0) {
     preview.textContent = "Escolha as barras e diga quanto saiu da batida.";
     preview.className = "modal-result full neutral";
+    return;
+  }
+  if (pedido.has(saida.id)) {
+    preview.textContent = "O item produzido deve ser diferente dos insumos consumidos.";
+    preview.className = "modal-result full negative";
     return;
   }
   if (faltando.length && !override.checked) {
@@ -1684,6 +1695,8 @@ function refreshWithdrawalPreview() {
   if (!preview) return;
   const lines = readWithdrawalLines();
   if (!lines.length) {
+    document.getElementById("withdrawal-override").checked = false;
+    document.getElementById("withdrawal-override-field").hidden = true;
     preview.textContent = "Escolha o insumo e quanto saiu do estoque.";
     preview.className = "modal-result full neutral";
     return;
@@ -1692,7 +1705,7 @@ function refreshWithdrawalPreview() {
   // faz: mostrar cada linha isolada aprovaria aqui uma retirada que lá seria
   // recusada por saldo.
   const requested = new Map();
-  lines.forEach((line) => requested.set(line.inventory_id, (requested.get(line.inventory_id) || 0) + line.quantity));
+  lines.forEach((line) => requested.set(line.inventory_id, Math.round(((requested.get(line.inventory_id) || 0) + line.quantity) * 1000) / 1000));
   let cost = 0;
   const missing = [];
   requested.forEach((quantity, inventoryId) => {
@@ -1770,7 +1783,7 @@ function refreshPurchasePreview() {
   const purchaseQuantity = Number(form.elements.purchase_quantity.value || 0);
   const unitsPerPurchase = Number(form.elements.units_per_purchase.value || 0);
   const purchaseUnitCost = Number(form.elements.purchase_unit_cost.value || 0);
-  if (!purchaseQuantity || !unitsPerPurchase || !purchaseUnitCost) {
+  if (![purchaseQuantity, unitsPerPurchase, purchaseUnitCost].every(value => Number.isFinite(value) && value > 0)) {
     preview.textContent = "Informe a quantidade, o conteúdo e o custo da unidade comprada.";
     preview.className = "modal-result full neutral";
     return;
@@ -1822,7 +1835,9 @@ async function submitInventory(event) {
   // preenchida seria recusada pelo servidor.
   payload.pack_unit = payload.pack_unit ? payload.pack_unit : null;
   payload.pack_size = payload.pack_size === "" ? null : Number(payload.pack_size);
-  if (!payload.pack_unit || !payload.pack_size) { payload.pack_unit = null; payload.pack_size = null; }
+  if ((payload.pack_unit === null) !== (payload.pack_size === null)) {
+    return toast("Informe o nome e o tamanho da unidade de manuseio, ou deixe os dois em branco.", "error");
+  }
   // Custo por embalagem existe só para poupar a divisão de cabeça; o que o
   // sistema guarda é sempre o custo por unidade de estoque.
   delete payload.pack_cost;
@@ -1966,16 +1981,28 @@ function populateEntityTargets(type, selectedId = "") {
 }
 
 async function submitData(path, payload, successMessage, method = "POST") {
+  if (submitData.pending) return;
+  submitData.pending = true;
+  const form = document.querySelector("dialog[open] form");
+  const buttons = form ? [...form.querySelectorAll('button[type="submit"]:not(:disabled)')] : [];
+  buttons.forEach(button => { button.disabled = true; });
+  form?.setAttribute("aria-busy", "true");
   try {
-    const resultado = await api(path, { method, body: JSON.stringify(payload) });
+    const resultado = await api(path, { method, ...(payload == null ? {} : { body: JSON.stringify(payload) }) });
     closeModal();
     // Quando o servidor explica o que realmente aconteceu — o produto foi
     // desativado em vez de excluído, por exemplo — a explicação dele vale mais
     // que a frase otimista escrita aqui.
     toast(resultado?.detail || successMessage, "success");
-    await loadAll();
+    if (await loadAll() === false) {
+      toast("Operação salva, mas os dados da tela não foram atualizados. Atualize a tela antes de continuar; não repita o lançamento.", "error");
+    }
   } catch (error) {
     toast(error.message || "Não foi possível salvar.", "error");
+  } finally {
+    submitData.pending = false;
+    buttons.forEach(button => { button.disabled = false; });
+    form?.removeAttribute("aria-busy");
   }
 }
 
@@ -2014,13 +2041,22 @@ async function api(path, options = {}) {
   const token = await window.erpAuth?.getToken?.();
   if (token) headers.Authorization = `Bearer ${token}`;
   if (options.body && !(options.body instanceof FormData) && !headers["Content-Type"]) headers["Content-Type"] = "application/json";
-  const response = await fetch(path, { ...options, headers });
+  let response;
+  try {
+    response = await fetch(path, { ...options, headers });
+  } catch (error) {
+    throw new Error((options.method || "GET") === "GET"
+      ? "Falha de conexão. Verifique sua internet e atualize os dados."
+      : "A conexão foi interrompida e não foi possível confirmar o resultado. Confira o histórico antes de repetir o lançamento.");
+  }
   if (!response.ok) {
     let message = "Não foi possível concluir a operação.";
     try { message = describeError((await response.json()).detail) || message; } catch (_) { /* keep default */ }
+    const requestId = response.headers?.get("X-Request-ID");
+    if (response.status >= 500 && requestId) message += ` Referência: ${requestId}.`;
     throw new Error(message);
   }
-  return response.json();
+  return response.status === 204 ? null : response.json();
 }
 
 // O detalhe do erro vem em duas formas. A recusa de regra de negócio manda uma
@@ -2055,6 +2091,149 @@ async function mediaContentUrl(mediaId) {
 
 function itemSummary(order) { return order.items.map(item => `${item.quantity}x ${item.name}`).join(", "); }
 function mediaIcon(kind) { return { spreadsheet: "sheet", document: "file-text", image: "image" }[kind] || "file"; }
+// ----------------------------------------------------------------------
+// Integração com o iFood
+// ----------------------------------------------------------------------
+//
+// Fica fora de loadAll de propósito. O carregamento geral já espera trinta e
+// poucas respostas, e pendurar a integração nele faria uma indisponibilidade
+// do iFood derrubar o painel inteiro. Aqui o estado é buscado quando a tela de
+// Ajustes abre, e depois de cada ação.
+//
+// A ativação tem três estados porque o iFood a fez assim, e a tela mostra em
+// qual deles a loja está: sem credencial, com código à espera do portal, ou
+// conectada. Mostrar os três de uma vez faria a loja adivinhar o próximo passo.
+
+const IFOOD_ROTULOS = {
+  desconectado: "Desconectado",
+  aguardando_autorizacao: "Aguardando o portal",
+  conectado: "Conectado",
+};
+
+const IFOOD_ACOES = {
+  start: (ler) => ({
+    path: "/api/integrations/ifood/activation", method: "POST",
+    body: { client_id: ler("client_id"), client_secret: ler("client_secret") },
+    ok: "Código de ativação gerado.",
+  }),
+  renew: () => ({
+    path: "/api/integrations/ifood/activation/renew", method: "POST",
+    ok: "Código de ativação gerado.",
+  }),
+  confirm: (ler) => ({
+    path: "/api/integrations/ifood/activation/confirm", method: "POST",
+    body: { authorization_code: ler("authorization_code") },
+    ok: "iFood conectado.",
+  }),
+  sync: () => ({ path: "/api/integrations/ifood/sync", method: "POST", ok: "Busca concluída." }),
+  disconnect: () => ({ path: "/api/integrations/ifood", method: "DELETE", ok: "Integração desligada." }),
+};
+
+async function loadIFood() {
+  const corpo = document.getElementById("ifood-body");
+  if (!corpo) return;
+  try {
+    renderIFood(await api("/api/integrations/ifood"));
+  } catch (error) {
+    setText("#ifood-state", "Indisponível");
+    corpo.innerHTML = `<p class="ifood-warning">${escapeHtml(error.message || "Não foi possível ler o estado da integração.")}</p>`;
+  }
+}
+
+function renderIFood(estado) {
+  const corpo = document.getElementById("ifood-body");
+  setText("#ifood-state", IFOOD_ROTULOS[estado.status] || "Desconectado");
+  if (estado.status === "aguardando_autorizacao") corpo.innerHTML = ifoodAguardando(estado);
+  else if (estado.connected) corpo.innerHTML = ifoodConectado(estado);
+  else corpo.innerHTML = ifoodDesconectado();
+  refreshIcons();
+}
+
+function ifoodDesconectado() {
+  return `
+    <ol class="ifood-steps">
+      <li class="ifood-step"><span>No Portal do Desenvolvedor do iFood, crie um aplicativo e copie a chave e o segredo dele.</span></li>
+      <li class="ifood-step"><span>Gere aqui o código de ativação e leve-o ao Portal do Parceiro, em Serviços e soluções → Integrações → Ativar aplicativo via código.</span></li>
+      <li class="ifood-step"><span>Cole de volta aqui o código de autorização que o portal devolver.</span></li>
+    </ol>
+    <div class="form-grid two">
+      <label>Chave do aplicativo<input name="client_id" autocomplete="off" placeholder="clientId" /></label>
+      <label>Segredo do aplicativo<input name="client_secret" type="password" autocomplete="off" placeholder="clientSecret" /></label>
+      <p class="field-hint full">A chave e o segredo ficam no servidor e servem só para renovar o acesso sozinho. Nenhum dos dois volta para esta tela.</p>
+    </div>
+    <div class="ifood-actions"><button class="primary-button" type="button" data-ifood="start"><i data-lucide="key-round"></i><span>Gerar código de ativação</span></button></div>`;
+}
+
+function ifoodAguardando(estado) {
+  const prazo = estado.code_expires_at ? ` Ele vale até ${timeOnly(estado.code_expires_at)}.` : "";
+  return `
+    <p class="field-hint">No Portal do Parceiro do iFood, abra Serviços e soluções → Integrações → Ativar aplicativo via código e informe este código:</p>
+    <strong class="ifood-code">${escapeHtml(estado.user_code || "")}</strong>
+    <p class="field-hint">O portal devolve um código de autorização; cole-o abaixo para concluir.${prazo}${estado.verification_url ? ` Portal: ${escapeHtml(estado.verification_url)}` : ""}</p>
+    <div class="form-grid two">
+      <label class="full">Código de autorização devolvido pelo portal<input name="authorization_code" autocomplete="off" placeholder="Cole aqui o código do portal" /></label>
+    </div>
+    <div class="ifood-actions">
+      <button class="primary-button" type="button" data-ifood="confirm"><i data-lucide="check"></i><span>Concluir ativação</span></button>
+      <button class="secondary-button" type="button" data-ifood="renew"><i data-lucide="refresh-cw"></i><span>Gerar outro código</span></button>
+    </div>`;
+}
+
+function ifoodConectado(estado) {
+  const soltos = estado.unmapped_items || [];
+  return `
+    <dl class="ifood-summary">
+      <div><dt>Loja conectada</dt><dd>${escapeHtml(estado.merchant_name || estado.merchant_id || "—")}</dd></div>
+      <div><dt>Aplicativo</dt><dd>${escapeHtml(estado.client_id_hint || "—")}</dd></div>
+      <div><dt>Última busca</dt><dd>${estado.last_sync_at ? formatDateTime(estado.last_sync_at) : "ainda não houve"}</dd></div>
+      <div><dt>Resultado</dt><dd>${escapeHtml(estado.last_sync_summary || "—")}</dd></div>
+      <div><dt>Pedidos trazidos</dt><dd>${number.format(estado.orders_imported || 0)}</dd></div>
+    </dl>
+    ${estado.last_error ? `<p class="ifood-warning">Última falha: ${escapeHtml(estado.last_error)}</p>` : ""}
+    ${soltos.length ? `<p class="ifood-warning">Sem produto correspondente no cardápio daqui: ${escapeHtml(soltos.join(", "))}. Enquanto o item do iFood não trouxer o código do produto, esses pedidos entram com o faturamento certo e o custo desconhecido — a margem deles fica de fora das contas.</p>` : ""}
+    <p class="field-hint">Deste momento em diante o pedido do iFood entra por aqui. Se o Relatório de Pedidos da Anota Aí continuar sendo importado cobrindo os mesmos dias, o mesmo pedido entra duas vezes: importe só até a data da ativação.</p>
+    <div class="ifood-actions">
+      <button class="primary-button" type="button" data-ifood="sync"><i data-lucide="refresh-cw"></i><span>Buscar pedidos agora</span></button>
+      <button class="danger-button" type="button" data-ifood="disconnect"><i data-lucide="unplug"></i><span>Desconectar</span></button>
+    </div>`;
+}
+
+function bindIFood() {
+  const corpo = document.getElementById("ifood-body");
+  if (!corpo) return;
+  corpo.addEventListener("click", (event) => {
+    const botao = event.target.closest("[data-ifood]");
+    if (botao && !botao.disabled) runIFood(botao.dataset.ifood);
+  });
+}
+
+async function runIFood(nome) {
+  const corpo = document.getElementById("ifood-body");
+  const acao = IFOOD_ACOES[nome];
+  if (!acao || runIFood.pending) return;
+  const pedido = acao((campo) => (corpo.querySelector(`[name="${campo}"]`)?.value || "").trim());
+  const botoes = [...corpo.querySelectorAll("[data-ifood]")];
+  runIFood.pending = true;
+  botoes.forEach((item) => { item.disabled = true; });
+  corpo.setAttribute("aria-busy", "true");
+  try {
+    const resultado = await api(pedido.path, {
+      method: pedido.method,
+      ...(pedido.body ? { body: JSON.stringify(pedido.body) } : {}),
+    });
+    toast(resultado?.detail || resultado?.instructions || pedido.ok, "success");
+    await loadIFood();
+    // Pedido novo muda estoque, custo e faturamento: a tela inteira envelheceu.
+    if (resultado?.created) await loadAll();
+  } catch (error) {
+    toast(error.message || "Não foi possível concluir a operação.", "error");
+    botoes.forEach((item) => { item.disabled = false; });
+  } finally {
+    runIFood.pending = false;
+    corpo.removeAttribute("aria-busy");
+  }
+}
+
 function linkLabel(type) { return { expense: "Despesa", product: "Produto", inventory: "Insumo", supplier: "Fornecedor" }[type] || type; }
 function linkTargetLabel(type, item) { return type === "expense" ? `${item.description} · ${currency.format(item.amount)}` : item.name; }
 function hasSelectOption(select, value) { return [...select.options].some(option => option.value === value); }
@@ -2062,7 +2241,7 @@ function formatBytes(bytes) { if (!bytes) return "0 KB"; const units = ["B", "KB
 function paymentLabel(value) { return { Credito: "Crédito", Debito: "Débito", Dinheiro: "Dinheiro", Pix: "Pix" }[value] || value; }
 function formatDate(value) { return new Intl.DateTimeFormat("pt-BR", { day: "2-digit", month: "short", year: "numeric" }).format(new Date(`${value.slice(0, 10)}T12:00:00`)); }
 function formatDateTime(value) { return new Intl.DateTimeFormat("pt-BR", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" }).format(new Date(value)); }
-function dateInputValue(date) { return date.toISOString().slice(0, 10); }
+function dateInputValue(date) { return localDateTimeValue(date).slice(0, 10); }
 
 function localDateTimeValue(date) {
   const local = new Date(date.getTime() - date.getTimezoneOffset() * 60_000);

@@ -152,6 +152,9 @@ class DeliveryService:
         if limpo.get("date") and not self._dia(limpo["date"]):
             raise ValueError("Data inválida. Use o formato AAAA-MM-DD.")
 
+        if limpo.get("date") and self._dia(limpo["date"]) > datetime.now(FUSO_LOJA).date():
+            raise ValueError("Não dá para lançar turno no futuro.")
+
         antes = self._resumo(entry)
         entry.update(limpo)
         if entry.get("payout_override") is not None and not (entry.get("note") or "").strip():

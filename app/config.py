@@ -28,6 +28,11 @@ class Settings(BaseSettings):
     data_silver_path: Path = Path("data/silver")
     data_gold_path: Path = Path("data/gold")
     data_runtime_path: Path = Path("data/runtime")
+    # Cofre de credencial de terceiro. "auto" acompanha o modo do banco: com
+    # Firestore em produção o segredo vai para o Secret Manager, nunca para o
+    # lado dos dados de negócio.
+    secrets_backend: Literal["auto", "secret-manager", "file"] = "auto"
+    secrets_file_path: Path = Path("data/runtime/secrets.json")
     media_inbox_path: Path = Path("data/raw/inbox")
     media_library_path: Path = Path("data/runtime/media_library")
     media_sync_legacy_files: bool = False

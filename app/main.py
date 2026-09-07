@@ -1,12 +1,17 @@
 from contextlib import asynccontextmanager
 from pathlib import Path
 from tempfile import NamedTemporaryFile
+from urllib.parse import quote
+from zipfile import BadZipFile
+from xml.etree.ElementTree import ParseError
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, UploadFile, status
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from app.config import Settings, get_settings
+from app.observability import observe_request
+from app.repositories.secrets import build_secret_vault
 from app.repositories.store import Store, build_store
 from app.schemas import (
     AddonCreate,
@@ -24,6 +29,8 @@ from app.schemas import (
     ExpenseSeriesUpdate,
     ExpenseUpdate,
     FixedCostSetup,
+    IFoodActivationConfirm,
+    IFoodActivationStart,
     InventoryAdjustment,
     InventoryBulkCount,
     InventoryCount,
@@ -54,6 +61,7 @@ from app.services import (
     ERPService,
     ForecastService,
     GrowthService,
+    IFoodService,
     MediaService,
     PlanningService,
     PricingService,
@@ -82,6 +90,8 @@ async def lifespan(app: FastAPI):
     app.state.planning = PlanningService(app.state.store)
     app.state.delivery = DeliveryService(app.state.store)
     app.state.catalog = CatalogService(app.state.store)
+    app.state.secrets = build_secret_vault(settings, app.state.store.mode)
+    app.state.ifood = IFoodService(app.state.store, app.state.erp, app.state.secrets)
     app.state.media = MediaService(app.state.store, settings)
     app.state.media.sync_workspace()
     yield
@@ -94,6 +104,7 @@ app = FastAPI(
     lifespan=lifespan,
 )
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+app.middleware("http")(observe_request)
 
 
 def erp(request: Request) -> ERPService:
@@ -122,6 +133,10 @@ def delivery_service(request: Request) -> DeliveryService:
 
 def catalog_service(request: Request) -> CatalogService:
     return request.app.state.catalog
+
+
+def ifood_service(request: Request) -> IFoodService:
+    return request.app.state.ifood
 
 
 def store(request: Request) -> Store:
@@ -171,8 +186,10 @@ def service_worker() -> FileResponse:
 
 
 @app.get("/health")
-def health_check(database: Store = Depends(store)) -> dict[str, str]:
-    return {"status": "healthy", "storage": database.mode}
+def health_check(request: Request, database: Store = Depends(store)) -> dict[str, str]:
+    # O modo do cofre entra aqui porque é a única forma de conferir, depois de
+    # um deploy, que a credencial de terceiro não caiu num arquivo efêmero.
+    return {"status": "healthy", "storage": database.mode, "secrets": request.app.state.secrets.mode}
 
 
 @app.get("/api/config")
@@ -629,7 +646,7 @@ async def import_anota_ai_report(
     """Importa o relatório XLSX da Anota AI com deduplicação por pedido."""
     if not (report.filename or "").lower().endswith(".xlsx"):
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Envie o relatório da Anota AI em formato .xlsx.")
-    content = await report.read()
+    content = await report.read(10 * 1024 * 1024 + 1)
     if len(content) > 10 * 1024 * 1024:
         raise HTTPException(status_code=status.HTTP_413_CONTENT_TOO_LARGE, detail="O relatório excede o limite de 10 MB.")
 
@@ -647,6 +664,9 @@ async def import_anota_ai_report(
             "discarded": discarded,
             "detail": "Pedidos importados. Itens que não vierem no relatório continuam sem custo até serem detalhados.",
         }
+    except (BadZipFile, ParseError, KeyError) as error:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                            detail="A planilha está inválida ou corrompida. Exporte um novo arquivo .xlsx.") from error
     except ValueError as error:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error)) from error
     finally:
@@ -670,7 +690,7 @@ async def import_anota_ai_items(
 
     if not (report.filename or "").lower().endswith(".xlsx"):
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Envie o relatório de itens em formato .xlsx.")
-    content = await report.read()
+    content = await report.read(10 * 1024 * 1024 + 1)
     if len(content) > 10 * 1024 * 1024:
         raise HTTPException(status_code=status.HTTP_413_CONTENT_TOO_LARGE, detail="O relatório excede o limite de 10 MB.")
 
@@ -681,6 +701,9 @@ async def import_anota_ai_items(
             temp_path = Path(temporary.name)
         items, discarded = ler_relatorio_itens_anota_ai(temp_path)
         return {**aplicar_itens_anota_ai(items, database), "discarded": discarded}
+    except (BadZipFile, ParseError, KeyError) as error:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                            detail="A planilha está inválida ou corrompida. Exporte um novo arquivo .xlsx.") from error
     except ValueError as error:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error)) from error
     finally:
@@ -1054,7 +1077,7 @@ async def upload_media(
 ) -> list[dict]:
     uploaded = []
     for file in files:
-        content = await file.read()
+        content = await file.read(25 * 1024 * 1024 + 1)
         uploaded.append(_run(lambda: service.upload(file.filename or "arquivo", content, category)))
     return uploaded
 
@@ -1077,12 +1100,67 @@ def media_content(media_id: str, service: MediaService = Depends(media), _: dict
     local_path = service.local_path(record)
     if local_path:
         return FileResponse(local_path, media_type=record["mime_type"], filename=record["original_name"], content_disposition_type="inline")
-    safe_name = record["original_name"].replace('"', "")
+    safe_name = quote(record["original_name"], safe="")
     return Response(
         content=service.content(record),
         media_type=record["mime_type"],
-        headers={"Content-Disposition": f'inline; filename="{safe_name}"'},
+        headers={"Content-Disposition": f"inline; filename*=utf-8''{safe_name}"},
     )
+
+
+# ----------------------------------------------------------------------
+# Integração com o iFood
+# ----------------------------------------------------------------------
+#
+# A ativação tem duas metades porque o iFood a fez assim: aqui se gera o código
+# que a loja leva ao Portal do Parceiro, e o portal devolve um código de
+# autorização que volta na segunda chamada. Nada que autentica sai por estas
+# rotas — o estado responde se está conectado, nunca com o quê.
+
+
+@app.get("/api/integrations/ifood")
+def ifood_status(service: IFoodService = Depends(ifood_service), _: dict = Depends(current_user)) -> dict:
+    return service.status()
+
+
+@app.post("/api/integrations/ifood/activation")
+def ifood_start_activation(
+    payload: IFoodActivationStart,
+    service: IFoodService = Depends(ifood_service),
+    _: dict = Depends(current_user),
+) -> dict:
+    return _run(lambda: service.start_activation(payload))
+
+
+@app.post("/api/integrations/ifood/activation/renew")
+def ifood_renew_activation(
+    service: IFoodService = Depends(ifood_service),
+    _: dict = Depends(current_user),
+) -> dict:
+    return _run(service.renew_activation)
+
+
+@app.post("/api/integrations/ifood/activation/confirm")
+def ifood_confirm_activation(
+    payload: IFoodActivationConfirm,
+    service: IFoodService = Depends(ifood_service),
+    _: dict = Depends(current_user),
+) -> dict:
+    return _run(lambda: service.confirm_activation(payload))
+
+
+@app.post("/api/integrations/ifood/sync")
+def ifood_sync(
+    force: bool = Query(default=False),
+    service: IFoodService = Depends(ifood_service),
+    _: dict = Depends(current_user),
+) -> dict:
+    return _run(lambda: service.sync(force))
+
+
+@app.delete("/api/integrations/ifood")
+def ifood_disconnect(service: IFoodService = Depends(ifood_service), _: dict = Depends(current_user)) -> dict:
+    return _run(service.disconnect)
 
 
 def _run(action):

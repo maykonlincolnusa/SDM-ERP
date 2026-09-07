@@ -1,7 +1,33 @@
 from datetime import date, datetime
 from typing import Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel as PydanticBaseModel, ConfigDict, Field, field_validator, model_validator
+
+
+class BaseModel(PydanticBaseModel):
+    # NaN/Infinity cannot represent stock or money and break JSON responses.
+    model_config = ConfigDict(allow_inf_nan=False, str_strip_whitespace=True)
+
+    @field_validator("due_date", "date", "observed_on", check_fields=False)
+    @classmethod
+    def valid_calendar_date(cls, value):
+        if value is None:
+            return None
+        try:
+            return date.fromisoformat(value).isoformat()
+        except (ValueError, TypeError) as error:
+            raise ValueError("Informe uma data válida no formato AAAA-MM-DD.") from error
+
+    @field_validator("starts_on", "repeat_until", check_fields=False)
+    @classmethod
+    def valid_calendar_month(cls, value):
+        if value is None:
+            return None
+        try:
+            date.fromisoformat(f"{value}-01")
+        except (ValueError, TypeError) as error:
+            raise ValueError("Informe um mês válido no formato AAAA-MM.") from error
+        return value
 
 # A loja pode cadastrar os proprios canais, entao o pedido nao valida mais o
 # canal contra uma lista fixa: quem valida e o cadastro de canais no servico.
@@ -753,3 +779,23 @@ class MediaUpdate(BaseModel):
     tags: list[str] | None = Field(default=None, max_length=12)
     entity_type: str | None = Field(default=None, max_length=40)
     entity_id: str | None = Field(default=None, max_length=120)
+
+
+class IFoodActivationStart(BaseModel):
+    """Chave e segredo do aplicativo criado no Portal do Desenvolvedor do iFood.
+
+    Eles chegam uma vez, para gerar o código de ativação e depois renovar o
+    token sozinhos. Nenhum dos dois volta para a tela.
+    """
+
+    client_id: str = Field(min_length=8, max_length=120)
+    client_secret: str = Field(min_length=8, max_length=200)
+
+
+class IFoodActivationConfirm(BaseModel):
+    """O código de autorização que o Portal do Parceiro devolve à loja."""
+
+    authorization_code: str = Field(min_length=4, max_length=200)
+    # Uma chave pode enxergar mais de uma loja; sem escolha explícita vale a
+    # primeira que o iFood listar.
+    merchant_id: str | None = Field(default=None, max_length=120)

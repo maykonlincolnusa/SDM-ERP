@@ -84,3 +84,12 @@ def test_a_synced_file_does_not_come_back_on_the_next_sync(tmp_path):
 
     assert not any(row["original_name"] == "planilha antiga.xlsx" for row in service.list())
     assert (tmp_path / "planilha antiga.xlsx").exists(), "o arquivo original do usuário não pode ser apagado"
+
+
+def test_media_partial_link_update_uses_existing_type(tmp_path):
+    service = media_service(tmp_path)
+    record = service.upload('nota.pdf', b'pdf')
+    service.update(record['id'], MediaUpdate(entity_type='order', entity_id='one'))
+    updated = service.update(record['id'], MediaUpdate(entity_id='two'))
+    assert updated['entity_type'] == 'order'
+    assert updated['entity_id'] == 'two'

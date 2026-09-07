@@ -15,6 +15,7 @@ dependencies = [
     "pydantic>=2.8,<3.0",
     "pydantic-settings>=2.4,<3.0",
     "firebase-admin>=6.6,<7.0",
+    "google-cloud-secret-manager>=2.20,<3.0",
     "openpyxl>=3.1,<4.0",
     "python-multipart>=0.0.9,<1.0",
 ]
@@ -23,8 +24,11 @@ dependencies = [
 dev = ["pytest>=8.0", "httpx>=0.27"]
 
 [tool.setuptools.packages.find]
-include = ["app*", "etl*"]
+include = ["app*", "etl*", "scripts*"]
 exclude = ["data*", "artifacts*", "tests*"]
+
+[tool.setuptools.package-data]
+app = ["static/*", "static/assets/*", "static/icons/*", "static/vendor/*"]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]

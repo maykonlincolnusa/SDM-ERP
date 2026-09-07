@@ -35,6 +35,8 @@ This is the difference between a system a shop owner trusts and one they stop op
 
 **Channels and delivery.** Each sales channel carries its real commission, so per-channel contribution is measured, not assumed. Couriers can be paid by delivery, by commission, by day rate, by salary, or any combination — because that is how neighbourhood shops actually pay. Shift settlements reconcile against the orders of the day.
 
+**iFood, connected rather than imported.** The marketplace is the one channel that outlives the current delivery aggregator, so it gets a real integration instead of another spreadsheet importer. Activation follows iFood's distributed-application flow: the ERP asks for a user code, the shop types that code into the Partner Portal under Services and solutions → Integrations → Activate application by code, and pastes the authorisation code back here — no secret is ever typed into a third-party screen, and neither key nor token is ever returned to the browser. From then on the event queue is polled, and an order is written when the shop *confirms* it, not when it merely arrives: deducting ingredients for an order that can still be refused would be inventing consumption. The bill of materials deducts stock and computes the cost, while the revenue recorded is what iFood charged rather than what this menu would have charged — the gap between the two is stored, not smoothed. An item whose iFood menu entry carries no external code cannot be costed, so that order is recorded with the right revenue and the cost declared unknown; inventing a recipe for it would poison every other margin. Events are acknowledged only after the order is persisted, and each iFood order maps to exactly one ERP order, so a repeated event cannot invent a second sale. The credentials do not live with the data: application secret and refresh token go to Secret Manager, while the business database keeps only the connection state — one active version at a time, because the token rotates every six hours and stale versions bill monthly.
+
 **Fixed cost.** Rent, payroll, utilities and subscriptions are recurring series: the system posts each month as it falls due, and projects the months ahead from the contract rather than from an average of the past.
 
 **Forecasting.** Daily revenue is decomposed into a baseline, a weekday factor and a trend, each visible and arguable. The forecast converts into a purchase plan through the recipes, and into a projected P&L combining forecast volume, current costs, channel fees, delivery and fixed expenses.
@@ -68,6 +70,7 @@ Everything runs in pure Python. No NumPy, no scikit-learn. The container stays s
 ```
 FastAPI  ·  Pydantic v2  ·  Python 3.12
 Storage  ·  Firestore in production, JSON file locally — one interface, chosen at boot
+Secrets  ·  Secret Manager in production, local file in dev — same pattern, never beside the data
 Frontend ·  Vanilla JS PWA, no build step, installable, offline shell
 Auth     ·  Firebase Authentication with a custom admin claim
 Deploy   ·  Docker → Google Cloud Run, scale to zero
@@ -83,6 +86,7 @@ app/
   config.py          settings, validated at boot
   schemas/           Pydantic models — the contract, with the reasoning in comments
   repositories/      storage protocol + Firestore and JSON implementations
+                     secret vault: Secret Manager in production, local file in dev
   services/
     erp.py           orders, inventory, expenses, channels, audit
     costing.py       cost dossier, simulator, brand-line performance
@@ -90,12 +94,13 @@ app/
     planning.py      newsvendor production plan, reorder points, ABC/XYZ
     delivery.py      couriers, shift settlement, reconciliation
     growth.py        opportunity detection with the arithmetic attached
+    ifood.py         iFood activation by code, event polling, order ingestion
     catalog.py       editable option lists
     media.py         document and receipt library
   static/            the PWA
 etl/                 spreadsheet ingestion: bronze → silver → gold
 scripts/             importers and operational tooling
-tests/               178 tests, no mocks of the storage layer
+tests/               490 tests, no mocks of the storage layer
 ```
 
 ---
@@ -114,7 +119,7 @@ uvicorn app.main:app --reload
 Open http://localhost:8000. The first run seeds a small demo shop — products with recipes, ingredients, add-ons, a week of sales — so every screen has something to show.
 
 ```bash
-pytest                             # 178 tests, about two minutes
+pytest                             # 490 tests, about five minutes
 ```
 
 Tests exercise the services directly against a temporary JSON store. There are no mocks for storage, so concurrency, transactions and reversal logic are tested for real.
@@ -131,7 +136,7 @@ Set `DATA_MODE=firebase`, `AUTH_REQUIRED=true`, and the Firebase project variabl
 
 ## Status
 
-Running in production at one shop. 178 tests passing.
+Running in production at one shop. 490 tests passing.
 
 Known limits, stated plainly:
 

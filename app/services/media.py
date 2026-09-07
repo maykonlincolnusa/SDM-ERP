@@ -161,9 +161,12 @@ class MediaService:
         values = payload.model_dump(exclude_unset=True)
         if "tags" in values and values["tags"] is not None:
             values["tags"] = list(dict.fromkeys(tag.strip().lower()[:30] for tag in values["tags"] if tag.strip()))
-        if values.get("entity_type") and not values.get("entity_id"):
+        values = {key: value for key, value in values.items()
+                  if value is not None or key in {"entity_type", "entity_id"}}
+        merged = {**record, **values}
+        if merged.get("entity_type") and not merged.get("entity_id"):
             raise ValueError("Informe o identificador do vínculo ou remova o tipo de vínculo.")
-        if values.get("entity_id") and not values.get("entity_type"):
+        if merged.get("entity_id") and not merged.get("entity_type"):
             raise ValueError("Informe o tipo do vínculo para salvar o identificador.")
         record.update(values)
         record["status"] = "Organizado" if record.get("category") else "Revisar"

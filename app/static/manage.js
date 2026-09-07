@@ -1226,7 +1226,7 @@
       document.getElementById("market-price-form").reset();
       document.getElementById("market-price-id").value = "";
       document.getElementById("market-price-delete").hidden = true;
-      document.querySelector('#market-price-form [name="observed_on"]').value = new Date().toISOString().slice(0, 10);
+      document.querySelector('#market-price-form [name="observed_on"]').value = dateInputValue(new Date());
       populateMarketProducts();
       setText("#market-price-modal-title", "Preço de concorrente");
     }
@@ -1277,18 +1277,7 @@
   }
 
   async function send(path, method, payload, successMessage) {
-    try {
-      const resultado = await api(path, { method, ...(payload ? { body: JSON.stringify(payload) } : {}) });
-      closeModal();
-      // Excluir nem sempre exclui: canal, entregador, produto e complemento com
-      // histórico são desativados, e o servidor devolve o motivo. Dizer
-      // "removido" enquanto a linha continua na tela fazia o botão parecer
-      // quebrado — quem clicou precisa ler o que de fato aconteceu.
-      toast(resultado?.detail || successMessage, "success");
-      await loadAll();
-    } catch (error) {
-      toast(error.message || "Não foi possível concluir a operação.", "error");
-    }
+    return submitData(path, payload, successMessage, method);
   }
 
   function setSelectValue(select, value) {
