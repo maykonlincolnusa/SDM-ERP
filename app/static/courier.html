@@ -1,0 +1,141 @@
+<!--
+  Aplicativo de rua.
+
+  Página separada do ERP de propósito, e não uma tela a mais dentro dele. Duas
+  razões, e as duas importam:
+
+  - A conta do entregador não tem `erp_admin`, então nenhuma rota da loja
+    responde para ela. Servir o mesmo pacote traria para o aparelho um código
+    que só sabe pedir dados que ele nunca vai receber.
+  - O celular está na calçada, com sinal ruim e uma mão só. O painel da loja
+    dispara trinta e quatro requisições para montar; aqui é uma, e a tela cabe
+    no polegar.
+-->
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<meta name="theme-color" content="#4c1d95" />
+<title>Entregas · Açaí Gestão</title>
+<link rel="manifest" href="/static/manifest.webmanifest" />
+<link rel="icon" href="/static/icons/icon-192.png" />
+<link rel="stylesheet" href="/static/styles.css" />
+
+<div class="auth-gate" id="auth-gate" hidden>
+  <form class="auth-card" id="auth-form">
+    <p class="eyebrow">Entregas</p>
+    <h1>Entrar</h1>
+    <p class="auth-note">Use a conta que a loja cadastrou para você.</p>
+    <label>Email<input name="email" type="email" autocomplete="email" required /></label>
+    <label>Senha<input name="password" type="password" autocomplete="current-password" required /></label>
+    <button class="primary-button" type="submit">Entrar</button>
+    <p class="auth-status" id="auth-status"></p>
+  </form>
+</div>
+
+<main class="field" id="field" hidden>
+  <header class="field-header">
+    <div>
+      <p class="eyebrow">Entregas</p>
+      <h1 id="field-name">--</h1>
+    </div>
+    <button class="icon-button" type="button" id="field-signout" title="Sair" hidden><i data-lucide="log-out"></i></button>
+  </header>
+
+  <!-- A loja abriu a tela de rua: ela não é entregador, então escolhe por quem
+       vai lançar. Recusar aqui foi o beco sem saída que o gestor encontrou. -->
+  <section class="field-card" id="field-pick" hidden>
+    <p class="field-lead">Você entrou como loja.</p>
+    <p class="field-note">Esta é a tela do entregador. Escolha por quem quer lançar — serve para fechar o turno de quem ficou sem bateria no meio da rua.</p>
+    <div id="field-pick-list"></div>
+  </section>
+
+  <!-- Fora de turno a tela tem um botão só. Menu com opção que não se aplica
+       agora é o que faz alguém tocar na errada com a moto ligada. -->
+  <section class="field-card" id="field-closed" hidden>
+    <p class="field-lead">Você não está em turno.</p>
+    <p class="field-note">O check-in começa a contar o tempo e libera o registro das entregas. No check-out, o acerto do dia é montado sozinho com o que você registrar aqui.</p>
+    <button class="field-action primary" type="button" id="field-checkin"><i data-lucide="log-in"></i><span>Fazer check-in</span></button>
+    <!-- Lançar o dia esquecido não pode exigir reabrir um turno encerrado:
+         seria mais barato esquecer, e o registro se perderia de vez. -->
+    <button class="field-action ghost" type="button" id="field-late"><i data-lucide="calendar-plus"></i><span>Lançar entrega de outro dia</span></button>
+  </section>
+
+  <section id="field-open" hidden>
+    <div class="field-strip">
+      <div><span id="field-since">--</span><small>em turno</small></div>
+      <div><span id="field-count">0</span><small>entregas</small></div>
+      <div><span id="field-freight">--</span><small>frete</small></div>
+      <div><span id="field-median">--</span><small>por entrega</small></div>
+    </div>
+
+    <section class="field-block" id="field-route-block" hidden>
+      <h2>Em rota</h2>
+      <div id="field-route"></div>
+    </section>
+
+    <section class="field-block">
+      <div class="field-block-head">
+        <h2>Pedidos para levar</h2>
+        <button class="text-button" type="button" id="field-refresh"><i data-lucide="refresh-cw"></i>Atualizar</button>
+      </div>
+      <div id="field-queue"></div>
+      <button class="field-action ghost" type="button" id="field-manual"><i data-lucide="plus"></i><span>Entrega sem pedido no sistema</span></button>
+    </section>
+
+    <section class="field-block" id="field-done-block" hidden>
+      <h2>Já entregues hoje</h2>
+      <div id="field-done"></div>
+    </section>
+
+    <button class="field-action ghost" type="button" id="field-late-open"><i data-lucide="calendar-plus"></i><span>Lançar entrega de outro dia</span></button>
+    <button class="field-action danger" type="button" id="field-checkout"><i data-lucide="log-out"></i><span>Encerrar turno</span></button>
+  </section>
+
+  <!-- Sem isto o entregador não tem como conferir o próprio acerto — e
+       conferir o próprio acerto é a razão de o registro ser feito. -->
+  <section class="field-block" id="field-history-block">
+    <div class="field-block-head">
+      <h2>Meus turnos</h2>
+      <button class="text-button" type="button" id="field-history-toggle">Ver</button>
+    </div>
+    <div id="field-history" hidden></div>
+  </section>
+
+  <p class="field-status" id="field-message" hidden></p>
+</main>
+
+<!-- A zona é o único dado que o pedido não traz. Ela abre já marcada no que o
+     cliente usou da última vez, e quando não há histórico o campo é o primeiro
+     da tela, com alvo grande. -->
+<dialog class="modal compact" id="run-modal" aria-labelledby="run-modal-title">
+  <form method="dialog" class="modal-shell" id="run-form">
+    <header class="modal-header">
+      <div><p class="eyebrow">Saindo para entrega</p><h2 id="run-modal-title">Confirmar</h2></div>
+      <button class="icon-button" type="button" data-close-run title="Fechar"><i data-lucide="x"></i></button>
+    </header>
+    <div class="modal-body">
+      <p class="modal-note" id="run-summary"></p>
+      <label class="field-label">Zona<select id="run-zone" required></select></label>
+      <label class="field-label">Ponto de referência<input id="run-reference" maxlength="120" placeholder="Ex.: portão azul depois da praça" /></label>
+      <div id="run-manual" hidden>
+        <label class="field-label" id="run-date-field">Quando foi<input id="run-date" type="date" /><small class="field-hint">Deixe em branco para agora. Dá para lançar até 7 dias atrás.</small></label>
+        <label class="field-label">Cliente<input id="run-customer" maxlength="80" placeholder="Opcional" /></label>
+        <label class="field-label">Frete<input id="run-freight" type="text" inputmode="decimal" placeholder="Usa o da zona" /></label>
+        <fieldset class="recipe-fieldset"><legend>O que vai</legend><div id="run-items"></div><button class="text-button recipe-add" type="button" id="run-add-item"><i data-lucide="plus"></i>Adicionar produto</button></fieldset>
+        <label class="field-label">Quanto você recebeu<input id="run-total" type="text" inputmode="decimal" placeholder="Total pago pelo cliente, com o frete" /><small class="field-hint">A loja confere antes de virar faturamento.</small></label>
+        <label class="field-label">Pagamento<select id="run-payment"><option value="">Não informado</option><option>Pix</option><option>Dinheiro</option><option>Credito</option><option>Debito</option><option>Voucher</option><option>Outro</option></select></label>
+      </div>
+    </div>
+    <footer class="modal-footer">
+      <button class="secondary-button" type="button" data-close-run>Cancelar</button>
+      <button class="primary-button" type="submit"><i data-lucide="bike"></i><span>Saí para entrega</span></button>
+    </footer>
+  </form>
+</dialog>
+
+<div class="toast" id="toast" hidden></div>
+
+<script src="/static/vendor/lucide.js"></script>
+<script src="/static/pwa-register.js"></script>
+<script>window.erpAuthClaim = "courier";</script>
+<script src="/static/firebase-auth.js"></script>
+<script src="/static/courier.js"></script>

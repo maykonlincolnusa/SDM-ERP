@@ -411,6 +411,12 @@ class OrderCreate(BaseModel):
     # pagar a entrega, e somar os dois esconde se a entrega se paga.
     delivery_fee: float = Field(default=0, ge=0)
     courier_id: str | None = Field(default=None, max_length=80)
+    # Para onde vai. Preenchidos no balcao, no momento em que o cliente diz o
+    # endereco — que e a unica hora em que alguem sabe. Sem eles o entregador
+    # recebia o pedido sem destino: escolhia a zona de cabeca e procurava a rua
+    # no grupo do WhatsApp, o que e onde o tempo da entrega se perde.
+    delivery_zone_id: str | None = Field(default=None, max_length=80)
+    delivery_address: str | None = Field(default=None, max_length=160)
     # Cadastro do pedido de ontem. Sem isso a loja so consegue lancar o que
     # esta vendendo neste instante, e o movimento de ontem entra com a data de
     # hoje — o que desloca o historico que a previsao aprende.
@@ -426,6 +432,8 @@ class OrderUpdate(BaseModel):
     is_delivery: bool | None = None
     delivery_fee: float | None = Field(default=None, ge=0)
     courier_id: str | None = Field(default=None, max_length=80)
+    delivery_zone_id: str | None = Field(default=None, max_length=80)
+    delivery_address: str | None = Field(default=None, max_length=160)
     occurred_at: datetime | None = None
     # Pedido importado da Anota Ai nao tem itens; o faturamento e o unico fato
     # conhecido. Corrigir o total desses precisa ser possivel sem inventar uma
@@ -579,6 +587,11 @@ class CourierCreate(BaseModel):
     phone: str | None = Field(default=None, max_length=30)
     vehicle: str | None = Field(default=None, max_length=30)
     active: bool = True
+    # E-mail da conta com que o entregador entra no aplicativo de rua. E o
+    # vinculo entre a pessoa autenticada e o cadastro: sem ele o check-in nao
+    # sabe de quem e o turno, e o entregador teria de se identificar numa lista
+    # — que e exatamente onde alguem marca o nome do colega por engano.
+    email: str | None = Field(default=None, max_length=120)
     # Remuneracao. Todos os componentes podem coexistir.
     fee_per_delivery: float = Field(default=0, ge=0)
     commission_percent: float = Field(default=0, ge=0, le=100)
@@ -592,6 +605,7 @@ class CourierUpdate(BaseModel):
     phone: str | None = Field(default=None, max_length=30)
     vehicle: str | None = Field(default=None, max_length=30)
     active: bool | None = None
+    email: str | None = Field(default=None, max_length=120)
     fee_per_delivery: float | None = Field(default=None, ge=0)
     commission_percent: float | None = Field(default=None, ge=0, le=100)
     daily_rate: float | None = Field(default=None, ge=0)
@@ -799,3 +813,179 @@ class IFoodActivationConfirm(BaseModel):
     # Uma chave pode enxergar mais de uma loja; sem escolha explícita vale a
     # primeira que o iFood listar.
     merchant_id: str | None = Field(default=None, max_length=120)
+
+
+# ----------------------------------------------------------------------
+# Operacao de rua: zona, turno e entrega
+#
+# O acerto do entregador (DeliveryEntryCreate, acima) continua sendo por turno,
+# porque e assim que o pagamento acontece no balcao. O que entra aqui e outra
+# coisa: o registro que o proprio entregador faz no celular, entrega a entrega,
+# enquanto o turno acontece. Ele existe para responder a pergunta que o
+# fechamento por turno nunca respondeu — de onde vem o pedido — e o fechamento
+# passa a ser calculado a partir dele em vez de digitado de novo.
+# ----------------------------------------------------------------------
+
+
+class DeliveryZoneCreate(BaseModel):
+    """Um bairro, condominio ou trecho que a loja atende.
+
+    A zona e escolhida numa lista em vez de digitada a cada entrega por um
+    motivo pratico: "Centro", "centro" e "Ctr" sao a mesma rua e tres linhas
+    diferentes em qualquer relatorio. Sem lista fechada, "onde mais pedem" nao
+    tem resposta — tem tres respostas parciais que ninguem consegue somar.
+
+    O ponto de referencia continua livre no lancamento da entrega, porque
+    "portao azul depois da praca" e informacao util e nao cabe em cadastro.
+    """
+
+    name: str = Field(min_length=2, max_length=60)
+    # Frete que a loja cobra para chegar ali. Preenche o lancamento sozinho: o
+    # entregador confirma em vez de digitar, e um frete digitado errado na rua
+    # e a divergencia que aparece so no acerto do fim do mes.
+    default_fee: float = Field(default=0, ge=0)
+    # Quantos minutos a loja considera normais ate a porta do cliente. E o que
+    # transforma "demorou" em "passou do combinado", que e uma frase acionavel.
+    target_minutes: int | None = Field(default=None, ge=1, le=240)
+    note: str | None = Field(default=None, max_length=160)
+    active: bool = True
+
+
+class DeliveryZoneUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=2, max_length=60)
+    default_fee: float | None = Field(default=None, ge=0)
+    target_minutes: int | None = Field(default=None, ge=1, le=240)
+    note: str | None = Field(default=None, max_length=160)
+    active: bool | None = None
+
+
+class CourierCheckIn(BaseModel):
+    """Chegada do entregador. Abre o turno e passa a contar o tempo.
+
+    `courier_id` so e aceito quando a loja opera sem autenticacao (modo
+    demonstrativo e desenvolvimento). Com autenticacao ligada, quem fala e a
+    conta: aceitar o identificador do corpo deixaria um entregador abrir turno
+    no nome de outro.
+    """
+
+    courier_id: str | None = Field(default=None, min_length=1, max_length=80)
+    note: str | None = Field(default=None, max_length=160)
+
+
+class CourierCheckOut(BaseModel):
+    """Saida do entregador. Fecha o turno e monta o acerto do dia.
+
+    O fechamento nao pede numero nenhum: entregas e frete sao a soma do que foi
+    registrado durante o turno. Pedir de novo seria pedir para digitar duas
+    vezes o mesmo fato, e a segunda digitacao e sempre a que diverge.
+    """
+
+    note: str | None = Field(default=None, max_length=160)
+
+
+class DeliveryRunItem(BaseModel):
+    """Um produto e quantas unidades saem numa entrega."""
+
+    product_id: str = Field(min_length=1, max_length=80)
+    quantity: int = Field(gt=0, le=50)
+
+
+class DeliveryRunCreate(BaseModel):
+    """Uma entrega saindo da loja.
+
+    Quando ela nasce de um pedido ja registrado, `order_id` basta: produtos,
+    quantidade e frete vem de la e o entregador so confirma a zona. E o caminho
+    normal, e o unico que se sustenta numa noite cheia — digitar item a item na
+    calcada e o que faz qualquer registro de rua ser abandonado.
+
+    `items` existe para a entrega que nao tem pedido no sistema: a encomenda
+    combinada por telefone, o pedido que o balcao ainda nao lancou.
+    """
+
+    zone_id: str = Field(min_length=1, max_length=80)
+    order_id: str | None = Field(default=None, max_length=80)
+    items: list[DeliveryRunItem] = Field(default_factory=list, max_length=30)
+    # Vazio herda o frete do pedido, e na falta dele o frete cadastrado na zona.
+    freight: float | None = Field(default=None, ge=0)
+    # "Portao azul depois da praca". Nao cabe em cadastro e ajuda na proxima.
+    reference: str | None = Field(default=None, max_length=120)
+    customer_name: str | None = Field(default=None, max_length=80)
+    note: str | None = Field(default=None, max_length=160)
+    # Quando a entrega aconteceu, para o dia esquecido nao se perder. Vazio e
+    # agora. O limite de quanto da para retroagir e do servico, nao do schema:
+    # ele depende do relogio, e um teto fixo aqui envelheceria em silencio.
+    occurred_at: datetime | None = None
+    # Quanto o entregador recebeu do cliente, **frete incluido** — o cliente
+    # paga uma coisa so, e o total do pedido tambem soma os dois. So valem para
+    # a entrega que nao tem pedido no sistema: dela nasce a venda que a loja vai
+    # conferir. Vazio deixa a loja preencher na conferencia.
+    declared_total: float | None = Field(default=None, ge=0)
+    payment_method: str | None = Field(default=None, min_length=2, max_length=30)
+
+    @model_validator(mode="after")
+    def tem_o_que_entregar(self) -> "DeliveryRunCreate":
+        if not self.order_id and not self.items:
+            raise ValueError("Escolha o pedido da fila ou informe os produtos que saíram.")
+        vistos = {linha.product_id for linha in self.items}
+        if len(vistos) != len(self.items):
+            raise ValueError("O mesmo produto aparece duas vezes na entrega.")
+        return self
+
+
+class DeliveryRunFinish(BaseModel):
+    """Chegada na porta do cliente.
+
+    O minuto vem do relogio, nao do dedo: a diferenca entre a saida e este
+    momento e o unico tempo de entrega que nao depende de alguem lembrar.
+    `failed` cobre o cliente que nao atendeu — entrega que voltou tambem
+    consumiu a rua, e esconde-la faria a media de tempo mentir para baixo.
+    """
+
+    failed: bool = False
+    note: str | None = Field(default=None, max_length=160)
+
+
+class DeliveryRunUpdate(BaseModel):
+    """Correcao da entrega ja registrada, pela loja.
+
+    O entregador registra; quem corrige e o balcao. Zona trocada na pressa e o
+    erro mais comum, e ele contamina exatamente o relatorio que a zona existe
+    para alimentar.
+    """
+
+    zone_id: str | None = Field(default=None, min_length=1, max_length=80)
+    freight: float | None = Field(default=None, ge=0)
+    reference: str | None = Field(default=None, max_length=120)
+    customer_name: str | None = Field(default=None, max_length=80)
+    note: str | None = Field(default=None, max_length=160)
+
+
+class PendingOrderConfirm(BaseModel):
+    """A loja confere a venda que o entregador trouxe da rua.
+
+    O entregador declara o que levou e quanto recebeu; quem transforma isso em
+    faturamento e baixa de estoque e a loja, aqui. A conferencia existe porque
+    quem recebe o dinheiro nao deveria ser tambem quem lanca o proprio valor
+    sem revisao — e porque a ficha tecnica so pode baixar contra um pedido que
+    alguem confirmou que aconteceu.
+
+    Tudo e opcional: confirmar sem mexer em nada aceita o que veio da rua.
+    """
+
+    # O que a loja de fato recebeu, quando difere do declarado. Vazio aceita o
+    # valor que o entregador informou.
+    total: float | None = Field(default=None, ge=0)
+    payment_method: str | None = Field(default=None, min_length=2, max_length=30)
+    channel: str | None = Field(default=None, min_length=2, max_length=40)
+    note: str | None = Field(default=None, max_length=160)
+
+
+class PendingOrderReject(BaseModel):
+    """Recusa a venda trazida da rua, com o motivo.
+
+    Recusar sem motivo transformaria a conferencia num botao de apagar, e a
+    diferenca entre "nao aconteceu" e "ja estava lancado" e exatamente o que
+    alguem vai querer saber daqui a um mes.
+    """
+
+    reason: str = Field(min_length=2, max_length=160)

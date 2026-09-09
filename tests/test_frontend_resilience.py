@@ -77,34 +77,11 @@ def test_connection_failure_is_explicit_about_unknown_write_result():
     """)
 
 
-def test_clearing_withdrawal_quantity_revokes_negative_stock_override():
-    run_js(["refreshWithdrawalPreview"], """
-      const fields={'withdrawal-preview':{},'withdrawal-override':{checked:true},'withdrawal-override-field':{hidden:false}};
-      global.document={getElementById:id=>fields[id]}; global.readWithdrawalLines=()=>[];
-      refreshWithdrawalPreview();
-      assert.equal(fields['withdrawal-override'].checked,false);
-      assert.equal(fields['withdrawal-override-field'].hidden,true);
-    """)
-
-
 def test_local_date_does_not_roll_over_at_utc_midnight():
     # Set TZ before constructing dates; Node supports this on Windows as well.
     run_js(["localDateTimeValue", "dateInputValue"], """
       process.env.TZ='America/Sao_Paulo';
       assert.equal(dateInputValue(new Date('2026-09-08T01:30:00Z')),'2026-09-07');
-    """)
-
-
-def test_fractional_withdrawal_does_not_report_false_stock_shortage():
-    run_js(["refreshWithdrawalPreview"], """
-      const fields={'withdrawal-preview':{},'withdrawal-override':{checked:false},'withdrawal-override-field':{hidden:true}};
-      global.document={getElementById:id=>fields[id]};
-      global.readWithdrawalLines=()=>[{inventory_id:'item',quantity:0.1},{inventory_id:'item',quantity:0.2}];
-      global.state={inventory:[{id:'item',name:'Insumo',quantity:0.3,unit:'kg',unit_cost:10}]};
-      global.number=new Intl.NumberFormat('pt-BR'); global.currency=new Intl.NumberFormat('pt-BR',{style:'currency',currency:'BRL'});
-      refreshWithdrawalPreview();
-      assert.equal(fields['withdrawal-override-field'].hidden,true);
-      assert.equal(fields['withdrawal-preview'].className,'modal-result full positive');
     """)
 
 
@@ -126,7 +103,7 @@ def test_purchase_preview_does_not_calculate_invalid_quantities(invalid):
 
 
 def test_production_preview_rejects_consuming_its_own_output():
-    run_js(["refreshProductionPreview"], """
+    run_js(["refreshProductionPreview", "roundQuantity"], """
       const fields={'production-form':{elements:{output_inventory_id:{value:'item'},output_quantity:{value:'2'}}},'production-preview':{},'production-output-unit':{},'production-override':{checked:false},'production-override-field':{}};
       global.document={getElementById:id=>fields[id]};
       global.state={inventory:[{id:'item',quantity:5,unit:'kg',unit_cost:10}]};

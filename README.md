@@ -35,6 +35,14 @@ This is the difference between a system a shop owner trusts and one they stop op
 
 **Channels and delivery.** Each sales channel carries its real commission, so per-channel contribution is measured, not assumed. Couriers can be paid by delivery, by commission, by day rate, by salary, or any combination — because that is how neighbourhood shops actually pay. Shift settlements reconcile against the orders of the day.
 
+**The street, recorded from the street.** Couriers get their own account and their own page — `/entregador`, one screen, one API call, targets sized for a gloved thumb. They check in on arrival, take an order off the day's queue, and mark arrival at the customer's door. Two taps per delivery, because the delivery is born from the order already in the ERP: products, quantity and freight come from it, and the courier confirms only the zone — which the system guesses from where that same customer ordered last time. The shift settlement is no longer typed at all; check-out computes it from what was recorded in the street and writes it into the same collection the payroll maths already reads. Nobody enters the same fact twice, and the second entry is always the one that diverges.
+
+The courier is not limited to what the counter typed. A delivery can be registered for any of the last seven days — the shift that was forgotten does not have to be reopened, because making forgetting the cheaper option is how a record gets lost for good — and a delivery with no order in the system carries what was collected and how. That becomes a **sale pending review**: it counts immediately for the courier's settlement and for the territory reading, and it is not revenue until someone at the shop confirms it, which is the moment the bill of materials deducts stock. Whoever takes the money does not close their own revenue. The courier also sees their own history: every shift with its check-in and check-out times, and the deliveries that fell outside a shift, because checking your own settlement is the reason for keeping the record at all.
+
+Their account reaches nothing else. Every ERP route already required an admin claim, so the restriction needs no blocklist to maintain: P&L, costing and pricing are simply unreachable from a phone that spends the day on a motorbike.
+
+**Where the orders come from.** The system held no address anywhere — not in the order, not in the delivery aggregator's report, not in what the iFood integration kept. "Which neighbourhoods order most" was a question with no data behind it. Zones are now registered rather than typed, because *Centro*, *centro* and *Ctr* are one street and three rows in any report; the free-text landmark stays on the delivery, where it belongs. From that come demand per zone, delivery time against the time the shop promised for that zone, and the reading a single menu hides: the product that is average shop-wide and the champion of one neighbourhood.
+
 **iFood, connected rather than imported.** The marketplace is the one channel that outlives the current delivery aggregator, so it gets a real integration instead of another spreadsheet importer. Activation follows iFood's distributed-application flow: the ERP asks for a user code, the shop types that code into the Partner Portal under Services and solutions → Integrations → Activate application by code, and pastes the authorisation code back here — no secret is ever typed into a third-party screen, and neither key nor token is ever returned to the browser. From then on the event queue is polled, and an order is written when the shop *confirms* it, not when it merely arrives: deducting ingredients for an order that can still be refused would be inventing consumption. The bill of materials deducts stock and computes the cost, while the revenue recorded is what iFood charged rather than what this menu would have charged — the gap between the two is stored, not smoothed. An item whose iFood menu entry carries no external code cannot be costed, so that order is recorded with the right revenue and the cost declared unknown; inventing a recipe for it would poison every other margin. Events are acknowledged only after the order is persisted, and each iFood order maps to exactly one ERP order, so a repeated event cannot invent a second sale. The credentials do not live with the data: application secret and refresh token go to Secret Manager, while the business database keeps only the connection state — one active version at a time, because the token rotates every six hours and stale versions bill monthly.
 
 **Fixed cost.** Rent, payroll, utilities and subscriptions are recurring series: the system posts each month as it falls due, and projects the months ahead from the contract rather than from an average of the past.
@@ -61,6 +69,8 @@ Three choices avoid that, and each is visible in the code:
 2. **Shrinkage on weekday effects.** Each factor is pulled back toward 1 by `n / (n + k)`. A Tuesday seen three times barely moves the plan; seen twenty times, it moves most of it.
 3. **Empirical convolution for lead time.** Three-day demand comes from observed three-day rolling sums, with no normality assumption over a short horizon where it is weakest.
 
+The same rule governs the newest reading, demand by zone. A zone's forecast is the product of three numbers that all appear on screen — the average per day the shop actually opened, that weekday's weight, and the trend of the last fortnight — and the trend is clamped to [0.5, 1.5] so one unusual week cannot project double the month. "This neighbourhood orders more X" is lift, the same measure the basket analysis already uses: how many times more that product leaves for that zone than it would if the zone changed nothing. A zone below the sample threshold still appears, flagged as thin rather than hidden — a new zone must not look like a nonexistent one.
+
 Everything runs in pure Python. No NumPy, no scikit-learn. The container stays small, and every step can be shown to the shop owner in their own language — which is the point, because a forecast the owner cannot argue with is a forecast they will not act on.
 
 ---
@@ -72,7 +82,7 @@ FastAPI  ·  Pydantic v2  ·  Python 3.12
 Storage  ·  Firestore in production, JSON file locally — one interface, chosen at boot
 Secrets  ·  Secret Manager in production, local file in dev — same pattern, never beside the data
 Frontend ·  Vanilla JS PWA, no build step, installable, offline shell
-Auth     ·  Firebase Authentication with a custom admin claim
+Auth     ·  Firebase Authentication, two custom claims: erp_admin (the shop) and courier (the street)
 Deploy   ·  Docker → Google Cloud Run, scale to zero
 ```
 
@@ -100,7 +110,7 @@ app/
   static/            the PWA
 etl/                 spreadsheet ingestion: bronze → silver → gold
 scripts/             importers and operational tooling
-tests/               490 tests, no mocks of the storage layer
+tests/               580 tests, no mocks of the storage layer
 ```
 
 ---
@@ -119,7 +129,7 @@ uvicorn app.main:app --reload
 Open http://localhost:8000. The first run seeds a small demo shop — products with recipes, ingredients, add-ons, a week of sales — so every screen has something to show.
 
 ```bash
-pytest                             # 490 tests, about five minutes
+pytest                             # 580 tests, about six minutes
 ```
 
 Tests exercise the services directly against a temporary JSON store. There are no mocks for storage, so concurrency, transactions and reversal logic are tested for real.
@@ -132,11 +142,20 @@ gcloud run deploy sdm --source . --region <region>
 
 Set `DATA_MODE=firebase`, `AUTH_REQUIRED=true`, and the Firebase project variables. The container refuses to boot in production with authentication disabled — the settings validator enforces it rather than trusting a checklist.
 
+Access is granted per role, and never by editing a list in the code:
+
+```bash
+python -m scripts.grant_erp_admin --email owner@shop.com     # the shop
+python -m scripts.grant_courier   --email rider@shop.com     # the street
+```
+
+The courier script refuses an account with no matching courier record, because granting access to someone the system cannot resolve produces an authenticated person who cannot open a shift — and the error would surface on the pavement.
+
 ---
 
 ## Status
 
-Running in production at one shop. 490 tests passing.
+Running in production at one shop. 580 tests passing.
 
 Known limits, stated plainly:
 

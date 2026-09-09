@@ -23,6 +23,7 @@ Três regras estruturam o módulo:
 from __future__ import annotations
 
 import re
+import unicodedata
 from collections import defaultdict
 from datetime import date, datetime, timedelta
 from statistics import median
@@ -77,7 +78,15 @@ FATIA_DA_CONTRIBUICAO = 0.5
 AMOSTRAS_MINIMAS_POR_DIA = 3
 
 
-def _money(value: float) -> str:
+def _fold(value: str) -> str:
+    """Sem acento e em minusculas, para "Açaí" e "acai" serem a mesma familia."""
+
+    return unicodedata.normalize("NFKD", str(value)).encode("ascii", "ignore").decode("ascii").lower()
+
+
+def _money(value: float | None) -> str:
+    if value is None:
+        return "sem medida"
     return f"R$ {value:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
 
 
@@ -561,6 +570,13 @@ class PromotionService:
 
         if not bloco or not economia:
             return None
+        # Sem media medida nao ha oferta: a justificativa desta promocao e
+        # "este pedaco da semana rende menos por dia aberto", e sem o numero a
+        # frase nao existe. Antes ele ia direto para o formatador de dinheiro e
+        # derrubava a rota inteira com TypeError — e junto dela iam previsao,
+        # planejamento e financeiro, que carregam no mesmo lote.
+        if bloco.get("average_per_open_day") is None:
+            return None
         promovveis = [linha for linha in economia.values() if linha["promotable"]]
         if not promovveis:
             return None
@@ -711,6 +727,17 @@ class PromotionService:
     # Bloco cheio: a oferta que sobe o ticket sem descontar
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _familia(produto: dict[str, Any], medida: str) -> str:
+        """O nome do produto sem o tamanho: "Acai Banana 500 ml" vira "acai banana".
+
+        E o que faz a escada subir dentro do mesmo sabor. O que sobra depois de
+        tirar a medida e o que o cliente escolheu; o tamanho e o degrau.
+        """
+
+        nome = _fold(produto["name"]).replace(_fold(medida), " ")
+        return f"{_fold(produto.get('category') or '')}|{' '.join(nome.split())}"
+
     def _oferta_de_ticket(
         self, bloco, comeco, indice, alavancas, economia, produtos, insumos, addons, ancoras, canal, usados,
     ) -> dict[str, Any] | None:
@@ -762,6 +789,16 @@ class PromotionService:
         sobra por pedido ao mesmo tempo — sem tocar no preço de nada.
         """
 
+        # A escada e por sabor, nao por categoria.
+        #
+        # Agrupar so pela categoria juntava "Acai Banana 330" com "Acai Morango
+        # 500" e chamava isso de upgrade de tamanho — o cliente que pediu banana
+        # nao quer morango maior. Pior: com dois produtos do mesmo tamanho na
+        # mesma categoria (330 de banana e 330 de morango, que e o cardapio real
+        # da loja), a ordenacao caia no segundo item da tupla e tentava comparar
+        # dicionarios. Isso derrubava a rota inteira com 500, e como o painel
+        # carrega os relatorios juntos, levava previsao, planejamento e
+        # financeiro junto — telas que nao tem nada a ver com promocao.
         escadas: dict[str, list[tuple[int, dict[str, Any]]]] = defaultdict(list)
         for produto in produtos.values():
             linha = economia.get(produto["id"])
@@ -769,12 +806,14 @@ class PromotionService:
                 continue
             medida = re.search(r"(\d{2,4})\s*ml", produto["name"].lower())
             if medida:
-                escadas[produto.get("category") or "—"].append((int(medida.group(1)), linha))
+                escadas[self._familia(produto, medida.group(0))].append((int(medida.group(1)), linha))
 
         melhor = None
         self._escadas_apertadas = []
         for degraus in escadas.values():
-            degraus.sort()
+            # A chave e o tamanho, e so ele: sem isso a ordenacao desempata
+            # comparando os dicionarios da linha, que nao sao comparaveis.
+            degraus.sort(key=lambda degrau: degrau[0])
             for (tamanho_menor, menor), (tamanho_maior, maior) in zip(degraus, degraus[1:]):
                 diferenca_tabela = maior["price"] - menor["price"]
                 custo_extra = maior["cost"] - menor["cost"]

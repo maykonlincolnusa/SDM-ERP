@@ -9,6 +9,8 @@ from uuid import uuid4
 from fastapi import Request
 from fastapi.responses import JSONResponse
 
+from app.repositories import readcache
+
 
 logger = logging.getLogger("uvicorn.error")
 
@@ -17,6 +19,10 @@ async def observe_request(request: Request, call_next):
     request_id = uuid4().hex
     request.state.request_id = request_id
     start = perf_counter()
+    # Uma requisicao le cada colecao uma vez so. Sem isto, uma rota que encadeia
+    # cinco servicos varre `orders` cinco vezes — a causa medida dos 16 s de
+    # mediana em /api/promotions/month.
+    readcache.abrir_escopo()
     try:
         response = await call_next(request)
     except Exception as error:
@@ -27,6 +33,7 @@ async def observe_request(request: Request, call_next):
         response = JSONResponse(status_code=500, content={
             "detail": "Não foi possível concluir a operação. Consulte o histórico antes de tentar novamente.",
         })
+    readcache.fechar_escopo()
     duration_ms = (perf_counter() - start) * 1000
     route = getattr(request.scope.get("route"), "path", "unmatched")
     if request.url.path.startswith("/api/") or response.status_code >= 500:

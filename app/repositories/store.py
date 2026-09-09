@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Callable, Protocol, TypeVar
 
 from app.config import Settings
+from app.repositories import readcache
 from app.firebase import get_firebase_app
 
 logger = logging.getLogger(__name__)
@@ -62,8 +63,12 @@ class DemoStore:
         temporary.replace(self.path)
 
     def list(self, collection: str) -> list[dict[str, Any]]:
+        escopo = readcache.escopo_atual()
+        if escopo is not None and collection in escopo:
+            return readcache.copiar(escopo[collection])
         with self.lock:
-            return deepcopy(self._read().get(collection, []))
+            linhas = self._read().get(collection, [])
+        return readcache.guardar(escopo, collection, linhas) if escopo is not None else deepcopy(linhas)
 
     def get(self, collection: str, document_id: str) -> dict[str, Any] | None:
         with self.lock:
@@ -74,6 +79,7 @@ class DemoStore:
             return deepcopy(item)
 
     def put(self, collection: str, document_id: str, value: dict[str, Any]) -> None:
+        readcache.invalidar(collection)
         with self.lock:
             data = self._read()
             records = data.setdefault(collection, [])
@@ -86,6 +92,7 @@ class DemoStore:
             self._write(data)
 
     def delete(self, collection: str, document_id: str) -> None:
+        readcache.invalidar(collection)
         with self.lock:
             data = self._read()
             records = data.get(collection, [])
@@ -96,6 +103,7 @@ class DemoStore:
             self._write(data)
 
     def run_transaction(self, operation: Callable[[StoreTransaction], T]) -> T:
+        readcache.invalidar()
         with self.lock:
             data = self._read()
             result = operation(_DemoTransaction(data))
@@ -145,20 +153,30 @@ class FirestoreStore:
         self.db = firestore.client(app=self.app)
 
     def list(self, collection: str) -> list[dict[str, Any]]:
-        return [{"id": snap.id, **snap.to_dict()} for snap in self.db.collection(collection).stream()]
+        escopo = readcache.escopo_atual()
+        if escopo is not None and collection in escopo:
+            return readcache.copiar(escopo[collection])
+        linhas = [{"id": snap.id, **snap.to_dict()} for snap in self.db.collection(collection).stream()]
+        return readcache.guardar(escopo, collection, linhas) if escopo is not None else linhas
 
     def get(self, collection: str, document_id: str) -> dict[str, Any] | None:
         snap = self.db.collection(collection).document(document_id).get()
         return {"id": snap.id, **snap.to_dict()} if snap.exists else None
 
     def put(self, collection: str, document_id: str, value: dict[str, Any]) -> None:
+        readcache.invalidar(collection)
         payload = {key: value for key, value in value.items() if key != "id"}
         self.db.collection(collection).document(document_id).set(payload)
 
     def delete(self, collection: str, document_id: str) -> None:
+        readcache.invalidar(collection)
         self.db.collection(collection).document(document_id).delete()
 
     def run_transaction(self, operation: Callable[[StoreTransaction], T]) -> T:
+        # A transacao mexe em varias colecoes e nao diz em quais: o retrato
+        # inteiro cai, em vez de tentar adivinhar o que ficou velho.
+        readcache.invalidar()
+
         @self.firestore.transactional
         def execute(transaction):
             adapter = _FirestoreTransaction(self.db, transaction)

@@ -32,7 +32,6 @@ CLASSES_EXTERNAS = {
     "lucide",
     "data-form",             # marca os formulários que o JS intercepta no submit
     "expense-repeat-field",  # alvo do toggle de despesa recorrente
-    "withdrawal-line",       # seletor das linhas da retirada, dentro do modal
     "insight-item",
 }
 
@@ -211,6 +210,43 @@ def test_a_conversao_do_insumo_e_refeita_quando_qualquer_ponta_muda():
     # Editar um insumo tem de devolver a conversao, senao ela se perde na edicao.
     assert "form.elements.pack_unit.value = item.pack_unit" in MANAGE_JS
     assert "refreshInventoryPack();" in MANAGE_JS
+
+
+# ----------------------------------------------------------------------
+# A entrega, do balcao ao mapa
+# ----------------------------------------------------------------------
+
+
+def test_os_campos_de_entrega_so_aparecem_quando_a_venda_e_entrega():
+    """O CSS ja previa `[hidden]`, mas nada ligava o gatilho.
+
+    Os campos de frete, zona, endereco e entregador ficavam visiveis na venda de
+    balcao, onde nao significam nada — e a caixa "Sai para entrega" parecia nao
+    comandar coisa alguma.
+    """
+
+    assert ".sale-delivery-field[hidden]" in CSS
+    assert 'document.getElementById("sale-is-delivery").addEventListener("change", toggleSaleDelivery)' in APP_JS
+    assert "function toggleSaleDelivery()" in APP_JS
+    # E o formulario tem os quatro campos que o gatilho esconde.
+    for campo in ("delivery_fee", "delivery_zone_id", "delivery_address", "courier_id"):
+        assert f'name="{campo}"' in HTML, f"o formulario de venda perdeu {campo}"
+
+
+def test_a_zona_preenche_o_frete_da_venda():
+    """Digitar o frete de novo e a chance de digita-lo diferente."""
+
+    assert "function applySaleZoneFee" in APP_JS
+    assert 'document.getElementById("sale-zone").addEventListener("change", applySaleZoneFee)' in APP_JS
+
+
+def test_o_entregador_tem_um_caminho_para_o_mapa():
+    courier_js = (ESTATICO / "courier.js").read_text(encoding="utf-8")
+    assert "function linkDoMapa" in courier_js
+    # O mapa e o aplicativo que ele ja tem no bolso: link, nao biblioteca.
+    assert "google.com/maps/search/" in courier_js
+    assert 'rel="noopener noreferrer"' in courier_js
+    assert ".field-map" in CSS
 
 
 # ----------------------------------------------------------------------

@@ -5,7 +5,8 @@
  * insumo — ficam todas juntas, com a confirmação e a explicação do efeito no
  * mesmo lugar, em vez de espalhadas no meio das telas de leitura.
  *
- * Depende do estado global carregado por app.js (state, api, toast, loadAll).
+ * Depende do estado global carregado por app.js (state, api, toast, loadAll)
+ * e dos helpers de leitura que ele define (number, packOf, roundQuantity).
  */
 
 (function () {
@@ -41,6 +42,10 @@
     "delete-channel": (id) => deleteChannel(id),
     "edit-courier": (id) => editCourier(id),
     "edit-delivery": (id) => editDelivery(id),
+    "edit-zone": (id) => editZone(id),
+    "check-pending": (id) => openPending(id),
+    "edit-run": (id) => editRun(id),
+    "delete-run": (id) => deleteRun(id),
     "delete-delivery": (id) => deleteDelivery(id),
     "add-catalog": (id) => openCatalogItem(id, null),
   };
@@ -79,6 +84,11 @@
     document.getElementById("import-is-delivery").addEventListener("change", toggleImportDelivery);
     document.getElementById("media-delete").addEventListener("click", deleteMedia);
     document.getElementById("courier-form").addEventListener("submit", submitCourier);
+    document.getElementById("zone-form").addEventListener("submit", submitZone);
+    document.getElementById("zone-delete").addEventListener("click", () => deleteZone(document.getElementById("zone-id").value));
+    document.getElementById("run-fix-form").addEventListener("submit", submitRunFix);
+    document.getElementById("pending-form").addEventListener("submit", submitPending);
+    document.getElementById("pending-reject").addEventListener("click", () => rejectPending(document.getElementById("pending-id").value));
     document.getElementById("courier-delete").addEventListener("click", () => deleteCourier(document.getElementById("courier-id").value));
     document.getElementById("delivery-form").addEventListener("submit", submitDelivery);
     document.getElementById("delivery-delete").addEventListener("click", () => deleteDelivery(document.getElementById("delivery-entry-id").value));
@@ -370,7 +380,14 @@
   async function undoWithdrawal(withdrawalId) {
     const lines = (state.consumption?.history || []).filter((row) => row.withdrawal_id === withdrawalId);
     if (!lines.length) return;
-    const resumo = lines.map((row) => `- ${number.format(Math.abs(row.quantity_delta))} ${row.unit} de ${row.name}`).join("\n");
+    // Quem lançou "3 barras" precisa reconhecer a retirada aqui. Só o quilo
+    // obrigaria a dividir de cabeça justo na hora de decidir se desfaz.
+    const resumo = lines.map((row) => {
+      const quantidade = Math.abs(row.quantity_delta);
+      const pack = packOf(state.inventory.find((item) => item.id === row.inventory_id));
+      const manuseio = pack ? ` (${number.format(roundQuantity(quantidade / pack.size))} ${pack.unit})` : "";
+      return `- ${number.format(quantidade)} ${row.unit}${manuseio} de ${row.name}`;
+    }).join("\n");
     const quem = lines[0].responsible ? ` registrada por ${lines[0].responsible}` : "";
     if (!confirm(`Desfazer a retirada${quem}?\n\n${resumo}\n\nTudo volta para o saldo do estoque e os lançamentos somem do consumo.`)) return;
     await send(`/api/inventory/withdrawals/${withdrawalId}`, "DELETE", null, "Retirada desfeita e saldo devolvido.");
@@ -892,6 +909,7 @@
     form.elements.name.value = courier.name;
     form.elements.phone.value = courier.phone || "";
     form.elements.vehicle.value = courier.vehicle || "";
+    form.elements.email.value = courier.email || "";
     form.elements.active.checked = Boolean(courier.active);
     ["fee_per_delivery", "commission_percent", "daily_rate", "monthly_salary"].forEach((campo) => {
       form.elements[campo].value = courier[campo] ?? 0;
@@ -910,6 +928,7 @@
       name: form.get("name"),
       phone: form.get("phone") || null,
       vehicle: form.get("vehicle") || null,
+      email: form.get("email") || null,
       active: form.get("active") === "on",
       note: form.get("note") || null,
     };
@@ -1272,6 +1291,7 @@
       setText("#courier-modal-title", "Novo entregador");
     }
     if (name === "delivery") openDelivery(null);
+    if (name === "zone") openZone(null);
     if (name === "count") openCount(state.inventory[0]?.id);
     if (name === "simulate" && !document.querySelector("#simulate-recipe-lines .recipe-line")) addSimulateLine();
   }
@@ -1301,6 +1321,147 @@
     if (countSelect && !countSelect.options.length && state.inventory.length) {
       countSelect.innerHTML = state.inventory.map((item) => `<option value="${item.id}">${escapeHtml(item.name)}</option>`).join("");
     }
+  }
+
+
+  /* Zonas de entrega e as entregas registradas na rua.
+   *
+   * A zona é cadastro; a entrega é fato registrado por outra pessoa, em outro
+   * aparelho, com a moto ligada. Por isso a correção mora aqui, junto das
+   * outras ações que consertam o que já aconteceu — e não na tela de rua, onde
+   * um campo a mais é um toque a mais no meio do trânsito. */
+
+  function openZone(zone) {
+    const form = document.getElementById("zone-form");
+    form.reset();
+    form.elements.zone_id.value = zone ? zone.id : "";
+    document.getElementById("zone-delete").hidden = !zone;
+    if (zone) {
+      form.elements.name.value = zone.name;
+      form.elements.default_fee.value = zone.default_fee ?? 0;
+      form.elements.target_minutes.value = zone.target_minutes ?? "";
+      form.elements.note.value = zone.note || "";
+      setText("#zone-modal-title", `Editar ${zone.name}`);
+    } else {
+      setText("#zone-modal-title", "Nova zona");
+    }
+    openDialog("zone-modal");
+  }
+
+  function editZone(zoneId) {
+    const zone = (state.dispatch?.zones || []).find((row) => row.id === zoneId);
+    if (zone) openZone(zone);
+  }
+
+  async function submitZone(event) {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    const zoneId = form.get("zone_id");
+    const minutos = String(form.get("target_minutes") || "").trim();
+    const payload = {
+      name: form.get("name"),
+      default_fee: Number(form.get("default_fee") || 0),
+      // Vazio é "sem promessa de tempo", e não zero: a zona sem alvo nunca
+      // aparece como atrasada, que é diferente de estar sempre atrasada.
+      target_minutes: minutos ? Number(minutos) : null,
+      note: form.get("note") || null,
+    };
+    if (zoneId) {
+      await submitData(`/api/delivery/zones/${zoneId}`, payload, "Zona atualizada.", "PATCH");
+      return;
+    }
+    await submitData("/api/delivery/zones", payload, "Zona cadastrada.");
+  }
+
+  async function deleteZone(zoneId) {
+    const zone = (state.dispatch?.zones || []).find((row) => row.id === zoneId);
+    if (!zone) return;
+    if (!confirm(`Remover a zona "${zone.name}"?\n\nSe já tem entregas registradas, ela é apenas desativada — o histórico precisa continuar apontando para algum lugar.`)) return;
+    await send(`/api/delivery/zones/${zoneId}`, "DELETE", null, "Zona removida.");
+  }
+
+  function editRun(runId) {
+    const run = (state.dispatch?.runs || []).find((row) => row.id === runId);
+    if (!run) return;
+    const form = document.getElementById("run-fix-form");
+    form.reset();
+    form.elements.run_id.value = run.id;
+    form.elements.zone_id.innerHTML = (state.dispatch?.zones || [])
+      .map((zona) => `<option value="${zona.id}">${escapeHtml(zona.name)}</option>`).join("");
+    form.elements.zone_id.value = run.zone_id || "";
+    form.elements.freight.value = run.freight ?? 0;
+    form.elements.customer_name.value = run.customer_name || "";
+    form.elements.reference.value = run.reference || "";
+    form.elements.note.value = run.note || "";
+    setText("#run-fix-summary", `${(run.items || []).map((item) => `${item.quantity}× ${item.name}`).join(", ") || `${run.units} item(ns)`} · saída ${formatDateTime(run.departed_at)}`);
+    openDialog("run-fix-modal");
+  }
+
+  async function submitRunFix(event) {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    await submitData(`/api/delivery/runs/${form.get("run_id")}`, {
+      zone_id: form.get("zone_id"),
+      freight: Number(form.get("freight") || 0),
+      customer_name: form.get("customer_name") || null,
+      reference: form.get("reference") || null,
+      note: form.get("note") || null,
+    }, "Entrega corrigida.", "PATCH");
+  }
+
+  async function deleteRun(runId) {
+    const run = (state.dispatch?.runs || []).find((row) => row.id === runId);
+    if (!run) return;
+    if (!confirm(`Excluir a entrega para ${run.zone_name}?\n\nEla sai do território e do acerto do turno. Se foi só a zona que ficou errada, corrija em vez de excluir.`)) return;
+    await send(`/api/delivery/runs/${runId}`, "DELETE", null, "Entrega removida.");
+  }
+
+  /* A conferência da venda que veio da rua.
+   *
+   * É o único ponto do sistema em que o registro de um entregador vira
+   * faturamento, e por isso ele é um ato explícito de alguém da loja — com o
+   * valor de tabela do lado, para a diferença não passar despercebida. */
+
+  function openPending(pendingId) {
+    const venda = (state.dispatch?.pending || []).find((linha) => linha.id === pendingId);
+    if (!venda) return;
+    const form = document.getElementById("pending-form");
+    form.reset();
+    form.elements.pending_id.value = venda.id;
+    // O que a rua declarou é o que vai para o caixa. Vazio cai no preço de
+    // tabela, que é a única outra referência disponível.
+    form.elements.total.value = venda.declared_total ?? venda.suggested_total;
+    if (venda.payment_method) setSelectValue(form.elements.payment_method, venda.payment_method);
+    const itens = (venda.items || []).map((item) => `${item.quantity}× ${item.name}`).join(", ");
+    setText("#pending-summary", `${venda.courier_name} · ${formatDateTime(venda.occurred_at)} · ${escapeHtml(venda.zone_name || "sem zona")} · ${itens}${venda.customer_name ? ` · ${venda.customer_name}` : ""}`);
+    setText("#pending-catalog-hint", `Pelo cardápio daria ${currency.format(venda.suggested_total)}, com o frete de ${currency.format(venda.freight)}.`);
+    setText("#pending-modal-title", "Conferir venda da rua");
+    openDialog("pending-modal");
+  }
+
+  async function submitPending(event) {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    await submitData(`/api/delivery/pending/${form.get("pending_id")}/confirm`, {
+      total: Number(form.get("total")),
+      payment_method: form.get("payment_method"),
+      note: form.get("note") || null,
+    }, "Venda lançada: estoque baixado e faturamento atualizado.");
+  }
+
+  async function rejectPending(pendingId) {
+    const venda = (state.dispatch?.pending || []).find((linha) => linha.id === pendingId);
+    if (!venda) return;
+    // Recusar sem motivo transformaria a conferência num botão de apagar, e a
+    // diferença entre "não aconteceu" e "já estava lançada" é o que alguém vai
+    // querer saber daqui a um mês.
+    const motivo = prompt(`Recusar a venda de ${venda.courier_name}?
+
+A entrega continua contando no acerto dele — só o faturamento não entra.
+
+Por quê?`, "Já estava lançada no balcão");
+    if (!motivo || motivo.trim().length < 2) return;
+    await submitData(`/api/delivery/pending/${pendingId}/reject`, { reason: motivo.trim() }, "Venda recusada.");
   }
 
   window.sdmManage = { afterRender };

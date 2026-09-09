@@ -49,6 +49,8 @@
       const { getAuth, onAuthStateChanged, signInWithEmailAndPassword, signOut } = authSdk;
       const auth = getAuth(initializeApp(config));
       let deniedMessage = "";
+      // Quando a recusa tem uma saida, ela vira link em vez de so texto.
+      let deniedLink = "";
       sair = async () => {
         await signOut(auth);
         // Recarrega para limpar da tela os dados de quem saiu. Em celular de
@@ -77,13 +79,28 @@
           // Sem isso, sair da conta deixava o app numa tela morta: sessao
           // encerrada e nenhuma forma de entrar de novo.
           gate.hidden = false;
-          setStatus(status, deniedMessage || "Entre com a conta autorizada da loja.");
+          setStatus(status, deniedMessage || "Entre com a conta autorizada da loja.", deniedLink);
           return;
         }
         try {
           const token = await user.getIdTokenResult(true);
-          if (token.claims.erp_admin !== true) {
-            deniedMessage = "Esta conta ainda nao recebeu acesso a loja.";
+          // Cada pagina declara o papel que precisa. A da loja nao declara
+          // nada e continua exigindo erp_admin; a de rua pede "courier". O
+          // gestor entra nas duas de proposito: entregador que ficou sem
+          // celular no meio do turno precisa que o balcao feche por ele.
+          const exigido = window.erpAuthClaim || "erp_admin";
+          if (token.claims[exigido] !== true && token.claims.erp_admin !== true) {
+            // Conta de entregador na porta da loja e o engano mais provavel: o
+            // link do painel e o que circula, e o da rua e outro. Dizer "sua
+            // conta nao tem acesso" aqui faz o entregador achar que o cadastro
+            // dele quebrou e ligar para a loja — quando basta trocar de
+            // endereco. Entao a mensagem leva ele para a porta certa.
+            deniedMessage = token.claims.courier === true && exigido === "erp_admin"
+              ? "Esta e uma conta de entregador, e este endereco e o do painel da loja."
+              : exigido === "erp_admin"
+                ? "Esta conta ainda nao recebeu acesso a loja."
+                : "Esta conta ainda nao foi liberada como entregador.";
+            deniedLink = token.claims.courier === true && exigido === "erp_admin" ? "/entregador" : "";
             await signOut(auth);
             return;
           }
@@ -100,7 +117,15 @@
     }
   }
 
-  function setStatus(element, message) {
+  function setStatus(element, message, link) {
     element.textContent = message;
+    if (!link) return;
+    // O endereco completo, e nao so o caminho: a tela e lida num celular que
+    // pode estar com o link antigo salvo na area de trabalho.
+    const atalho = document.createElement("a");
+    atalho.href = link;
+    atalho.textContent = `Abrir a tela de entregas: ${window.location.origin}${link}`;
+    atalho.className = "auth-link";
+    element.append(document.createElement("br"), atalho);
   }
 })();

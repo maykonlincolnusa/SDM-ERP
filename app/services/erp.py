@@ -608,6 +608,8 @@ class ERPService:
                 "is_delivery": payload.is_delivery or payload.delivery_fee > 0,
                 "delivery_fee": payload.delivery_fee,
                 "courier_id": payload.courier_id,
+                "delivery_zone_id": payload.delivery_zone_id,
+                "delivery_address": self._optional_text(payload.delivery_address),
                 "total": net,
                 "cost": round(total_cost, 2),
                 "channel_fee": self._channel_fee(channel, net),

@@ -429,3 +429,48 @@ def test_escada_de_preco_apertada_vira_achado_e_nao_oferta(loja):
     # valendo, e é por isso que a checagem é do par, não do nome do produto.
     for oferta in upgrades:
         assert "300 ml para 500 ml" not in oferta["mechanic"]
+
+
+# ----------------------------------------------------------------------
+# A escada de tamanho, com o cardapio real da loja
+# ----------------------------------------------------------------------
+
+
+def test_dois_sabores_do_mesmo_tamanho_nao_derrubam_a_rota(loja):
+    """O cardápio real tem "Açaí Banana 330 ml" e "Açaí Morango 330 ml".
+
+    A escada agrupava só pela categoria e ordenava a lista de tuplas inteira.
+    Com dois produtos do mesmo tamanho na mesma categoria, o desempate caía no
+    segundo item e tentava comparar dois dicionários — `TypeError`, 500 na rota.
+
+    E o estrago não parava nela: o painel pedia os relatórios todos juntos, então
+    esse erro apagava previsão, planejamento, financeiro e crescimento de uma
+    vez, telas que não têm nada a ver com promoção.
+    """
+
+    erp, promocoes = loja
+    for identificador, nome, preco in [
+        ("banana-330", "Açaí Banana 330 ml", 12.0), ("morango-330", "Açaí Morango 330 ml", 13.0),
+        ("banana-500", "Açaí Banana 500 ml", 18.0), ("morango-500", "Açaí Morango 500 ml", 19.0),
+    ]:
+        erp.store.put("products", identificador, {
+            "id": identificador, "name": nome, "price": preco, "category": "Acai",
+            "active": True, "line": "Classico", "recipe": [{"inventory_id": "acai", "quantity": 0.2}],
+        })
+
+    resultado = promocoes.month(days=90, weeks=4)
+
+    assert resultado["weeks"]
+
+
+def test_a_escada_sobe_dentro_do_mesmo_sabor(loja):
+    """Quem pediu banana não quer morango maior: o upgrade é do próprio sabor."""
+
+    _, servico = loja
+
+    familia_banana = servico._familia({"name": "Açaí Banana 500 ml", "category": "Acai"}, "500 ml")
+    familia_banana_maior = servico._familia({"name": "Açaí Banana 770 ml", "category": "Acai"}, "770 ml")
+    familia_morango = servico._familia({"name": "Açaí Morango 500 ml", "category": "Acai"}, "500 ml")
+
+    assert familia_banana == familia_banana_maior
+    assert familia_banana != familia_morango

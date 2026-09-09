@@ -1017,19 +1017,39 @@ tbody tr:hover .row-action.danger { color: var(--muted); }
 .growth-premise.warning span { color: var(--orange-ink); }
 .growth-premise.warning i { color: var(--orange); }
 
-/* A linha da fabricacao precisa de mais espaco no campo de quantidade: ela
-   mostra a conversao para barra logo abaixo. */
 .bulk-count-scroll { max-height: 46vh; }
 .bulk-count-input { width: 100px; height: 34px; padding: 0 10px; border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--canvas); color: var(--ink); text-align: right; font-weight: 600; }
 .bulk-count-input:focus { background: var(--paper); box-shadow: 0 0 0 3px var(--accent-soft), inset 0 0 0 1px var(--accent); }
 .bulk-count-remove { width: 18px; height: 18px; accent-color: var(--red); }
 
+/* A linha da fabricacao precisa de mais espaco no campo de quantidade: ela
+   mostra a conversao para barra logo abaixo. */
 .production-line { grid-template-columns: minmax(0, 1fr) 130px 34px; }
+
+/* A retirada e o lancamento mais frequente da loja, e o que a equipe tem na
+   cabeca e "tres barras", nao "8,4 kg". Por isso a linha ganhou a coluna do
+   tamanho, e uma faixa de dica embaixo onde a conversao e o saldo que sobra
+   aparecem sem tirar o operador do formulario. */
+.withdrawal-line { grid-template-columns: minmax(0, 1fr) 92px 104px 34px; }
+.withdrawal-hint { grid-column: 1 / -1; margin-top: -4px; color: var(--faint); font-size: 11px; font-weight: 600; line-height: 1.35; }
+.withdrawal-hint.negative { color: var(--orange-ink); }
+/* Com a dica embaixo, duas linhas seguidas viram um bloco so de texto e o
+   operador perde de vista onde uma acaba. O fio separa sem pesar. */
+.withdrawal-line + .withdrawal-line { padding-top: 10px; border-top: 1px solid var(--line); }
+/* A conferencia de saldo e por insumo; a correcao e numa linha. Sem esta marca
+   o operador tem de reler as cinco linhas para achar qual estourou. */
+.recipe-line input.over-balance { border-color: var(--red); box-shadow: inset 0 0 0 1px var(--red); }
+.recipe-line input.over-balance:focus { box-shadow: 0 0 0 3px var(--red-soft), inset 0 0 0 1px var(--red); }
+/* Dica ainda sem texto nao deve abrir espaco em branco no meio do formulario. */
+.field-hint:empty, .withdrawal-hint:empty { display: none; }
 
 @media (max-width: 480px) {
   .recipe-line { grid-template-columns: minmax(0, 1fr) 34px; }
   .recipe-line > label:first-child { grid-column: 1 / -1; }
   .recipe-line input, .recipe-line select { font-size: 16px; }
+  /* No celular o insumo fica sozinho na primeira linha, e quantidade e tamanho
+     dividem a segunda: os dois campos andam juntos e sao lidos juntos. */
+  .withdrawal-line { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 34px; }
 }
 
 /* Integracao com o iFood: a ativacao e uma conversa de tres passos com um
@@ -1122,3 +1142,158 @@ td.negative { color: var(--red); }
 .catalog-move .row-action i { width: 13px; height: 13px; }
 .catalog-move .row-action[disabled] { opacity: 0.28; cursor: default; }
 .catalog-move .row-action[disabled]:hover { border-color: transparent; background: transparent; color: var(--muted); }
+
+/* Operacao de rua vista do balcao.
+   "Na rua agora" e a unica parte do painel que muda enquanto alguem olha, e
+   por isso ela fica no topo e em cartao: tabela com linha entrando e saindo
+   sozinha e onde o olho se perde. */
+.now-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px; padding: 13px 22px 20px; }
+.now-card { display: grid; gap: 8px; padding: 14px 16px; border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--canvas); }
+.now-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.now-head strong { font-size: 14.5px; }
+.now-head small { display: block; font-size: 11px; }
+.now-line { margin: 0; color: var(--ink-soft); font-size: 12.5px; }
+.now-route { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; padding: 8px 10px; border-radius: var(--r-sm); background: var(--paper); font-size: 12.5px; }
+.now-route b { color: var(--muted); }
+/* Passou do tempo combinado para a zona: a unica linha do painel que pede
+   uma acao agora, e por isso a unica que muda de cor. */
+.now-route.late { background: var(--red-soft); }
+.now-route.late b { color: var(--red); }
+
+/* Uma zona por cartao, com a previsao dos sete dias aberta. O gestor precisa
+   discordar de um dos tres numeros que a produzem, e para discordar ele
+   precisa ver qual. */
+.zone-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; padding: 13px 22px 20px; }
+.zone-card { display: grid; gap: 8px; padding: 16px; border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--canvas); }
+.zone-card.thin { border-style: dashed; }
+.zone-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.zone-head strong { font-size: 15px; }
+.zone-line { margin: 0; color: var(--ink-soft); font-size: 12.5px; line-height: 1.45; }
+.zone-days { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 4px; }
+.zone-day { display: grid; gap: 2px; padding: 7px 2px; border-radius: var(--r-sm); background: var(--paper); text-align: center; }
+.zone-day small { color: var(--muted); font-size: 9.5px; font-weight: 700; text-transform: uppercase; }
+.zone-day b { color: var(--ink); font-size: 13px; }
+
+/* Vazio que explica o que fazer, em vez de um espaco em branco que parece
+   defeito. */
+.empty-note { margin: 0; padding: 4px 22px 20px; color: var(--muted); font-size: 13px; line-height: 1.5; }
+.empty-note code { padding: 2px 6px; border-radius: var(--r-sm); background: var(--accent-soft); color: var(--accent); font-size: 12px; }
+
+/* =========================================================================
+   Aplicativo de rua
+   Uma mao, luva de moto, sol na tela. Alvo grande, contraste alto e nenhuma
+   informacao que nao decide o proximo toque. O que a loja precisa saber esta
+   no painel dela; aqui so cabe o que o entregador faz agora.
+   ========================================================================= */
+
+.field { display: grid; gap: 16px; max-width: 560px; margin: 0 auto; padding: 18px 16px calc(28px + env(safe-area-inset-bottom)); }
+.field-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.field-header h1 { margin: 2px 0 0; font-size: 24px; letter-spacing: -0.4px; }
+
+.field-card { display: grid; gap: 12px; padding: 22px; border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--paper); }
+.field-lead { margin: 0; color: var(--ink); font-size: 17px; font-weight: 700; }
+.field-note { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.45; }
+
+/* Botao de acao: 56px de altura porque o dedo mira com a moto ligada. */
+.field-action { display: flex; align-items: center; justify-content: center; gap: 10px; width: 100%; min-height: 56px; padding: 0 18px; border: 1px solid transparent; border-radius: var(--r-md); font-size: 16px; font-weight: 700; }
+.field-action i { width: 19px; height: 19px; }
+.field-action:disabled { opacity: 0.55; }
+.field-action.primary { background: var(--accent); color: var(--on-accent); }
+.field-action.ghost { border-color: var(--line-strong); background: var(--paper); color: var(--ink); }
+.field-action.danger { border-color: var(--red); background: var(--red-soft); color: var(--red); }
+
+/* Os quatro numeros do turno. Ficam no topo porque sao a resposta para "como
+   esta indo" — a pergunta que o entregador faz no sinal fechado. */
+.field-strip { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; padding: 14px 10px; border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--paper); text-align: center; }
+.field-strip div { display: grid; gap: 2px; min-width: 0; }
+.field-strip span { color: var(--ink); font-size: 17px; font-weight: 700; overflow-wrap: anywhere; }
+.field-strip small { color: var(--muted); font-size: 10.5px; font-weight: 600; }
+
+.field-block { display: grid; gap: 10px; }
+.field-block h2 { margin: 0; color: var(--ink-soft); font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.6px; }
+.field-block-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+
+/* Entrega em rota: o cartao inteiro existe para o botao "Cheguei". */
+.field-run { display: grid; gap: 10px; padding: 16px; border: 1px solid var(--accent); border-radius: var(--r-lg); background: var(--accent-soft); }
+.field-run-top { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+.field-run-top strong { font-size: 16px; }
+.field-run-note { margin: 0; color: var(--ink-soft); font-size: 13px; line-height: 1.4; }
+.field-run-actions { display: grid; gap: 8px; }
+.field-minutes { color: var(--muted); font-size: 13px; font-weight: 700; }
+.field-minutes.late { color: var(--red); }
+
+/* Pedido da fila: um toque pega a entrega inteira, com produto e frete ja
+   preenchidos pelo pedido que a loja lancou. */
+.field-order { display: grid; gap: 4px; width: 100%; padding: 14px 16px; border: 1px solid var(--line-strong); border-radius: var(--r-lg); background: var(--paper); text-align: left; }
+.field-order + .field-order { margin-top: 8px; }
+.field-order p { margin: 0; color: var(--ink-soft); font-size: 13.5px; line-height: 1.4; }
+.field-order-top { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+.field-order-top strong { color: var(--ink); font-size: 15px; }
+.field-empty { margin: 0; padding: 18px 16px; border: 1px dashed var(--line-strong); border-radius: var(--r-lg); color: var(--muted); font-size: 13px; line-height: 1.45; }
+
+.field-done { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; padding: 10px 2px; border-bottom: 1px solid var(--line); font-size: 13.5px; }
+.field-done small { color: var(--muted); font-weight: 600; }
+.field-done.failed span { color: var(--muted); text-decoration: line-through; }
+.field-done.failed small { color: var(--orange-ink); }
+
+.field-status { margin: 0; color: var(--muted); font-size: 13px; text-align: center; }
+.field-label { display: grid; gap: 6px; margin-bottom: 12px; color: var(--muted); font-size: 11px; font-weight: 700; }
+.field-label input, .field-label select { width: 100%; min-height: 48px; padding: 0 12px; border: 1px solid var(--line-strong); border-radius: var(--r-md); background: var(--canvas); color: var(--ink); font-size: 16px; font-weight: 500; }
+.field-label input:focus, .field-label select:focus { background: var(--paper); box-shadow: 0 0 0 3px var(--accent-soft), inset 0 0 0 1px var(--accent); }
+.run-item { grid-template-columns: minmax(0, 1fr) 82px; }
+
+/* Historico do proprio entregador: turno com hora de entrada e saida. */
+.field-shift { display: grid; gap: 5px; padding: 12px 14px; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--paper); }
+.field-shift + .field-shift { margin-top: 8px; }
+.field-shift.loose { border-style: dashed; }
+.field-shift-top { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+.field-shift-top strong { font-size: 14px; text-transform: capitalize; }
+.field-shift-top span { color: var(--muted); font-size: 12.5px; font-weight: 700; }
+.field-run-note.alerta { color: var(--orange-ink); }
+
+/* O mapa do entregador e o aplicativo que ele ja tem: um link, alvo grande,
+   porque quem toca nele esta de capacete e com o motor ligado. */
+.field-map { display: flex; align-items: center; justify-content: center; gap: 8px; min-height: 42px; margin-top: 8px; border: 1px solid var(--accent); border-radius: var(--r-md); color: var(--accent); font-size: 14px; font-weight: 700; text-decoration: none; }
+.field-map:active { background: var(--accent-soft); }
+.field-map i { width: 17px; height: 17px; }
+.field-run-note.destino { color: var(--ink); font-weight: 600; }
+
+/* Sete botoes no topo do estoque faziam o gestor ler a linha inteira antes de
+   cada lancamento. Ficam quatro — entrou, saiu, conferir, cadastrar —, que
+   cobrem o dia a dia; o resto vai para "Mais", que e onde se procura o que nao
+   se faz todo dia. `details` abre e fecha sozinho e responde ao teclado. */
+.more-actions { position: relative; }
+.more-actions > summary { list-style: none; cursor: pointer; }
+.more-actions > summary::-webkit-details-marker { display: none; }
+.more-actions[open] > summary { border-color: var(--accent); color: var(--accent); }
+.more-actions-panel { position: absolute; right: 0; z-index: 30; display: grid; gap: 2px; min-width: 250px; margin-top: 6px; padding: 6px; border: 1px solid var(--line-strong); border-radius: var(--r-md); background: var(--paper); box-shadow: 0 18px 40px rgba(28, 20, 32, 0.16); }
+.more-actions-panel button { display: grid; grid-template-columns: 18px minmax(0, 1fr); gap: 2px 10px; padding: 9px 10px; border: 0; border-radius: var(--r-sm); background: none; color: var(--ink); text-align: left; }
+.more-actions-panel button:hover { background: var(--canvas); }
+.more-actions-panel button i { grid-row: span 2; align-self: center; width: 17px; height: 17px; color: var(--accent); }
+.more-actions-panel button span { font-size: 13px; font-weight: 600; }
+.more-actions-panel button small { color: var(--muted); font-size: 11px; }
+
+@media (max-width: 640px) {
+  .more-actions-panel { right: auto; left: 0; }
+}
+
+/* Periodo sem venda precisa se anunciar: zero e ausencia de dado se parecem na
+   tela, e o gestor concluiu — com razao — que o sistema estava quebrado. */
+.period-gap { display: flex; align-items: flex-start; gap: 10px; margin: 0 0 16px; padding: 12px 14px; border: 1px solid var(--orange); border-radius: var(--r-md); background: var(--orange-soft); color: var(--orange-ink); font-size: 13px; font-weight: 600; line-height: 1.45; }
+.period-gap i { flex: none; width: 17px; height: 17px; margin-top: 1px; }
+
+/* Recarga em andamento: acao de linha nao aceita clique que se perderia quando
+   a tabela for reescrita. Meio segundo de espera vale mais que um clique mudo. */
+body.is-refreshing .row-actions { pointer-events: none; opacity: 0.45; }
+
+/* Lista de valores: o nome de um lado, o numero do outro. Contêiner proprio
+   porque `.ladder` e uma fileira de chips e daria outro formato a estas linhas. */
+.value-rows { display: grid; margin-top: 6px; }
+.ladder-row { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; padding: 5px 0; border-bottom: 1px solid var(--line); font-size: 12.5px; }
+.ladder-row:last-child { border-bottom: 0; }
+.ladder-row span { color: var(--ink-soft); }
+.ladder-row b { flex: none; color: var(--ink); font-weight: 700; }
+
+/* Recusa que tem saida: o link para a porta certa, dentro do proprio aviso. */
+.auth-link { display: inline-block; margin-top: 8px; color: var(--accent); font-weight: 700; overflow-wrap: anywhere; }
+

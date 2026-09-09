@@ -21,6 +21,11 @@ from datetime import date, datetime, timedelta
 from statistics import fmean
 from typing import Any
 
+# Acima de quantas vezes o preco o custo da ficha deixa de ser "produto caro" e
+# passa a ser "cadastro errado". Tres e folgado de proposito: produto vendido no
+# custo, ou com prejuizo deliberado numa promocao, nao pode cair aqui.
+SUSPEITA_DE_CUSTO = 3.0
+
 from app.repositories.store import Store
 from app.schemas import ProductSimulation
 from app.services.erp import (
@@ -77,6 +82,107 @@ class CostingService:
         self.erp = ERPService(store)
 
     # ------------------------------------------------------------------
+
+    # ------------------------------------------------------------------
+    # Sanidade da ficha tecnica
+    #
+    # Esta trava nasceu de um numero encontrado nos dados reais da loja: a ficha
+    # do copo de 330 ml somava R$ 1.828 de custo para um produto vendido a
+    # R$ 7,87. A causa nao era calculo — era unidade. As quantidades foram
+    # cadastradas na medida em que a cozinha pensa (16 g de amendoim, 30 ml de
+    # calda, 99 g de banana) enquanto o insumo esta cadastrado em quilo e litro.
+    # Mil vezes acima, em quinze linhas de quinze fichas.
+    #
+    # Um erro desse tamanho nao se descobre olhando: ele aparece como um custo
+    # plausivelmente alto numa tela e some no meio de outros numeros. E, uma vez
+    # dentro do sistema, contamina margem, preco sugerido, promocao e o custo
+    # dos produtos vendidos — tudo derivado da mesma ficha.
+    #
+    # A regra aqui e a mesma que o resto do sistema aplica ao custo desconhecido:
+    # e melhor recusar um numero do que apresentar um numero errado com cara de
+    # certo. O que a auditoria faz e transformar "os relatorios estao estranhos"
+    # numa lista de linhas para corrigir, com a correcao provavel ao lado.
+    # ------------------------------------------------------------------
+
+    def recipe_audit(self) -> dict[str, Any]:
+        """Aponta fichas cujo custo nao pode estar certo, e por que.
+
+        A suspeita nao e "o produto da prejuizo" — isso acontece e e uma decisao
+        de preco. A suspeita e o custo ser multiplo do preco: nenhuma loja vende
+        por R$ 8 o que lhe custa R$ 1.800, entao a ficha esta errada, nao o
+        negocio.
+        """
+
+        insumos = {item["id"]: item for item in self.store.list("inventory")}
+        suspeitos: list[dict[str, Any]] = []
+        for produto in self.store.list("products"):
+            if produto.get("active") is False:
+                continue
+            preco = produto.get("price") or 0
+            linhas = []
+            custo = 0.0
+            for linha in produto.get("recipe") or []:
+                insumo = insumos.get(linha["inventory_id"])
+                if not insumo:
+                    continue
+                valor = (insumo.get("unit_cost") or 0) * linha["quantity"]
+                custo += valor
+                linhas.append({
+                    "inventory_id": insumo["id"],
+                    "name": insumo["name"],
+                    "unit": insumo.get("unit"),
+                    "quantity": linha["quantity"],
+                    "unit_cost": insumo.get("unit_cost") or 0,
+                    "cost": round(valor, 2),
+                })
+            if not linhas or preco <= 0:
+                continue
+            if custo <= preco * SUSPEITA_DE_CUSTO:
+                continue
+
+            # A linha que mais pesa e quase sempre a que tem o erro de unidade,
+            # e ordenar por peso poe a correcao mais util em primeiro lugar.
+            linhas.sort(key=lambda item: -item["cost"])
+            suspeitos.append({
+                "product_id": produto["id"],
+                "name": produto["name"],
+                "price": round(preco, 2),
+                "recipe_cost": round(custo, 2),
+                "ratio": round(custo / preco, 1),
+                "lines": [{**linha, "diagnosis": self._diagnostico_da_linha(linha, preco)} for linha in linhas[:6]],
+            })
+
+        suspeitos.sort(key=lambda linha: -linha["ratio"])
+        return {
+            "suspects": suspeitos,
+            "checked": len([p for p in self.store.list("products") if p.get("active") is not False]),
+            "threshold": SUSPEITA_DE_CUSTO,
+        }
+
+    @classmethod
+    def _diagnostico_da_linha(cls, linha: dict[str, Any], preco: float) -> str | None:
+        """A correcao provavel, quando ela e obvia o bastante para ser sugerida.
+
+        Dividir por mil nao e chute: e o unico erro que produz esta assinatura —
+        quantidade inteira grande num insumo medido em quilo ou litro, custo da
+        linha sozinho maior que o preco do produto, e tudo voltando ao lugar
+        quando a quantidade e lida como grama ou mililitro.
+        """
+
+        unidade = str(linha.get("unit") or "").strip().lower()
+        de_massa_ou_volume = any(unidade.startswith(inicio) for inicio in ("kg", "quilo", "l", "litro"))
+        if de_massa_ou_volume and linha["cost"] > preco and linha["quantity"] >= 1:
+            convertida = linha["quantity"] / 1000
+            if (linha["unit_cost"] * convertida) <= preco:
+                medida = "gramas" if unidade.startswith(("kg", "quilo")) else "mililitros"
+                return (
+                    f"Parece {medida}: {linha['quantity']:g} em vez de {convertida:g} "
+                    f"{linha['unit']}. Assim a linha sairia de {cls._money(linha['cost'])} para "
+                    f"{cls._money(linha['unit_cost'] * convertida)}."
+                )
+        if linha["cost"] > preco:
+            return f"Esta linha sozinha custa mais que o preço do produto ({cls._money(preco)})."
+        return None
 
     def dossier(self, product_id: str, days: int = 30, target_margin: float = 0.0) -> dict[str, Any]:
         product = self.store.get("products", product_id)

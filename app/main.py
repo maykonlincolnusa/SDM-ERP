@@ -23,8 +23,15 @@ from app.schemas import (
     ChannelUpdate,
     CourierCreate,
     CourierUpdate,
+    CourierCheckIn,
+    CourierCheckOut,
     DeliveryEntryCreate,
     DeliveryEntryUpdate,
+    DeliveryRunCreate,
+    DeliveryRunFinish,
+    DeliveryRunUpdate,
+    DeliveryZoneCreate,
+    DeliveryZoneUpdate,
     ExpenseCreate,
     ExpenseSeriesUpdate,
     ExpenseUpdate,
@@ -42,6 +49,8 @@ from app.schemas import (
     MarketPriceUpdate,
     MediaUpdate,
     MovementUpdate,
+    PendingOrderConfirm,
+    PendingOrderReject,
     OrderCancel,
     OrderCreate,
     OrderUpdate,
@@ -54,10 +63,12 @@ from app.schemas import (
     SportAnchorCreate,
     SportAnchorUpdate,
 )
+from app.services.dispatch import SemEntregadorEscolhido
 from app.services import (
     CatalogService,
     CostingService,
     DeliveryService,
+    DispatchService,
     ERPService,
     ForecastService,
     GrowthService,
@@ -89,6 +100,7 @@ async def lifespan(app: FastAPI):
     app.state.growth = GrowthService(app.state.store)
     app.state.planning = PlanningService(app.state.store)
     app.state.delivery = DeliveryService(app.state.store)
+    app.state.dispatch = DispatchService(app.state.store)
     app.state.catalog = CatalogService(app.state.store)
     app.state.secrets = build_secret_vault(settings, app.state.store.mode)
     app.state.ifood = IFoodService(app.state.store, app.state.erp, app.state.secrets)
@@ -131,6 +143,10 @@ def delivery_service(request: Request) -> DeliveryService:
     return request.app.state.delivery
 
 
+def dispatch_service(request: Request) -> DispatchService:
+    return request.app.state.dispatch
+
+
 def catalog_service(request: Request) -> CatalogService:
     return request.app.state.catalog
 
@@ -147,33 +163,75 @@ def media(request: Request) -> MediaService:
     return request.app.state.media
 
 
-def current_user(request: Request) -> dict:
-    """Optional production guard using Firebase Authentication ID tokens."""
+def current_identity(request: Request) -> dict:
+    """Sessão válida, sem exigir papel nenhum.
+
+    Quem decide o papel é a rota. Separar as duas coisas é o que permite o
+    entregador ter conta própria: ele autentica como qualquer um, mas só
+    alcança as rotas de rua — as da loja continuam exigindo `erp_admin`, e é
+    essa exigência que mantém DRE, custo e precificação fora do celular dele.
+    """
+
     settings: Settings = request.app.state.settings
     if not settings.auth_required:
-        return {"uid": "demo-user"}
+        return {"uid": "demo-user", "erp_admin": True, "courier": True}
     header = request.headers.get("authorization", "")
     if not header.startswith("Bearer "):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Autenticação necessária.")
     try:  # pragma: no cover - only exercised with a Firebase project
         from firebase_admin import auth
 
-        user = auth.verify_id_token(header.removeprefix("Bearer "))
-        if user.get("erp_admin") is not True:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Sua conta ainda nao tem permissao para acessar a loja.",
-            )
-        return user
-    except HTTPException:
-        raise
+        return auth.verify_id_token(header.removeprefix("Bearer "))
     except Exception as error:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Sessão inválida.") from error
+
+
+def current_user(request: Request) -> dict:
+    """Optional production guard using Firebase Authentication ID tokens."""
+    user = current_identity(request)
+    if request.app.state.settings.auth_required and user.get("erp_admin") is not True:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Sua conta ainda nao tem permissao para acessar a loja.",
+        )
+    return user
+
+
+def current_field_user(request: Request) -> dict:
+    """Guarda do aplicativo de rua: entregador ou alguém da loja.
+
+    O gestor entra junto de propósito. Entregador que perdeu o celular no meio
+    do turno precisa que alguém no balcão feche a entrega por ele, e a
+    alternativa — turno preso aberto até o dia seguinte — estraga o acerto e o
+    painel ao mesmo tempo.
+    """
+
+    user = current_identity(request)
+    if not request.app.state.settings.auth_required:
+        return user
+    if user.get("courier") is not True and user.get("erp_admin") is not True:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Esta conta ainda não foi liberada como entregador. Peça para a loja cadastrar você.",
+        )
+    return user
 
 
 @app.get("/", include_in_schema=False)
 def index() -> FileResponse:
     return FileResponse(STATIC_DIR / "index.html")
+
+
+@app.get("/entregador", include_in_schema=False)
+def courier_app() -> FileResponse:
+    """A tela que o entregador abre no celular dele.
+
+    Página separada do ERP porque a conta dele não tem `erp_admin`: servir o
+    mesmo pacote levaria para o aparelho um código que só sabe pedir dados que
+    aquela sessão nunca vai receber.
+    """
+
+    return FileResponse(STATIC_DIR / "courier.html")
 
 
 @app.get("/service-worker.js", include_in_schema=False)
@@ -300,6 +358,18 @@ def simulate_product(
 ) -> dict:
     """Conta do produto novo antes de ele existir. Não grava nada."""
     return _run(lambda: service.simulate(payload))
+
+
+@app.get("/api/products/recipe-audit")
+def recipe_audit(service: CostingService = Depends(costing_service), _: dict = Depends(current_user)) -> dict:
+    """Fichas cujo custo não pode estar certo, com a correção provável ao lado.
+
+    Custo de ficha alimenta margem, preço sugerido, promoção e o custo dos
+    produtos vendidos. Um erro de unidade ali sai por toda parte, com cara de
+    número calculado — e é por isso que ele precisa ser apontado, e não apenas
+    exibido no meio de outros valores.
+    """
+    return service.recipe_audit()
 
 
 @app.get("/api/products/lines")
@@ -989,6 +1059,260 @@ def update_delivery(
 @app.delete("/api/deliveries/{entry_id}")
 def delete_delivery(entry_id: str, service: DeliveryService = Depends(delivery_service), _: dict = Depends(current_user)) -> dict:
     return _run(lambda: service.delete_entry(entry_id))
+
+
+# ----------------------------------------------------------------------
+# Zonas de entrega, acompanhamento e território
+#
+# Tudo aqui é da loja: exige `erp_admin` como o resto do ERP. O que o
+# entregador alcança está no bloco seguinte, e só lá.
+# ----------------------------------------------------------------------
+
+
+@app.get("/api/delivery/zones")
+def delivery_zones(service: DispatchService = Depends(dispatch_service), _: dict = Depends(current_user)) -> list[dict]:
+    return service.zones()
+
+
+@app.post("/api/delivery/zones", status_code=status.HTTP_201_CREATED)
+def create_delivery_zone(
+    payload: DeliveryZoneCreate,
+    service: DispatchService = Depends(dispatch_service),
+    _: dict = Depends(current_user),
+) -> dict:
+    return _run(lambda: service.create_zone(payload))
+
+
+@app.patch("/api/delivery/zones/{zone_id}")
+def update_delivery_zone(
+    zone_id: str,
+    payload: DeliveryZoneUpdate,
+    service: DispatchService = Depends(dispatch_service),
+    _: dict = Depends(current_user),
+) -> dict:
+    return _run(lambda: service.update_zone(zone_id, payload))
+
+
+@app.delete("/api/delivery/zones/{zone_id}")
+def delete_delivery_zone(
+    zone_id: str,
+    service: DispatchService = Depends(dispatch_service),
+    _: dict = Depends(current_user),
+) -> dict:
+    return _run(lambda: service.delete_zone(zone_id))
+
+
+@app.get("/api/delivery/board")
+def delivery_board(
+    days: int = Query(default=30, ge=1, le=365),
+    service: DispatchService = Depends(dispatch_service),
+    _: dict = Depends(current_user),
+) -> dict:
+    """Quem está na rua agora e o que o período mostra por zona e por entregador."""
+    return service.board(days)
+
+
+@app.get("/api/delivery/territory")
+def delivery_territory(
+    days: int = Query(default=90, ge=7, le=365),
+    horizon: int = Query(default=7, ge=1, le=30),
+    service: DispatchService = Depends(dispatch_service),
+    _: dict = Depends(current_user),
+) -> dict:
+    """Demanda por zona e o que cada lugar pede mais que a média da loja."""
+    return service.territory(days, horizon)
+
+
+@app.get("/api/delivery/runs")
+def delivery_runs(
+    days: int = Query(default=30, ge=1, le=365),
+    courier_id: str | None = None,
+    zone_id: str | None = None,
+    service: DispatchService = Depends(dispatch_service),
+    _: dict = Depends(current_user),
+) -> list[dict]:
+    return service.runs(days, courier_id, zone_id)
+
+
+@app.patch("/api/delivery/runs/{run_id}")
+def update_delivery_run(
+    run_id: str,
+    payload: DeliveryRunUpdate,
+    service: DispatchService = Depends(dispatch_service),
+    _: dict = Depends(current_user),
+) -> dict:
+    """Corrige a entrega registrada na rua — zona trocada na pressa, quase sempre."""
+    return _run(lambda: service.update_run(run_id, payload))
+
+
+@app.delete("/api/delivery/runs/{run_id}")
+def delete_delivery_run(
+    run_id: str,
+    service: DispatchService = Depends(dispatch_service),
+    _: dict = Depends(current_user),
+) -> dict:
+    return _run(lambda: service.delete_run(run_id))
+
+
+@app.get("/api/delivery/shifts")
+def delivery_shifts(
+    days: int = Query(default=30, ge=1, le=365),
+    courier_id: str | None = None,
+    service: DispatchService = Depends(dispatch_service),
+    _: dict = Depends(current_user),
+) -> list[dict]:
+    """O ponto de todo mundo: quem entrou, a que horas e por quanto tempo."""
+    return service.shifts(days, courier_id)
+
+
+@app.get("/api/delivery/pending")
+def pending_orders(
+    days: int = Query(default=30, ge=1, le=365),
+    include_done: bool = False,
+    service: DispatchService = Depends(dispatch_service),
+    _: dict = Depends(current_user),
+) -> list[dict]:
+    """Vendas que o entregador trouxe da rua e ainda não viraram faturamento."""
+    return service.pending_orders(days, include_done)
+
+
+@app.post("/api/delivery/pending/{pending_id}/confirm")
+def confirm_pending_order(
+    pending_id: str,
+    payload: PendingOrderConfirm,
+    service: DispatchService = Depends(dispatch_service),
+    _: dict = Depends(current_user),
+) -> dict:
+    """Promove a venda da rua a pedido: baixa a ficha técnica e vira faturamento."""
+    return _run(lambda: service.confirm_pending(pending_id, payload))
+
+
+@app.post("/api/delivery/pending/{pending_id}/reject")
+def reject_pending_order(
+    pending_id: str,
+    payload: PendingOrderReject,
+    service: DispatchService = Depends(dispatch_service),
+    _: dict = Depends(current_user),
+) -> dict:
+    return _run(lambda: service.reject_pending(pending_id, payload))
+
+
+# ----------------------------------------------------------------------
+# Aplicativo de rua
+#
+# Estas são as únicas rotas que uma conta de entregador alcança. Ele não tem
+# `erp_admin`, então todo o resto do ERP responde 403 para ele — e isso não
+# depende de nenhuma lista de bloqueio mantida à mão: é a exigência que já
+# estava em cada rota da loja.
+#
+# `courier_id` aparece nas assinaturas apenas para o modo demonstrativo, onde
+# não há autenticação e portanto ninguém para identificar. Com autenticação
+# ligada quem fala é a conta, e o parâmetro é ignorado: aceitá-lo deixaria um
+# entregador abrir turno e lançar entrega no nome de outro.
+# ----------------------------------------------------------------------
+
+
+def _courier_of(request: Request, service: DispatchService, fallback: str | None) -> dict:
+    """O entregador dono da chamada.
+
+    O identificador vindo da tela só é aceito de quem tem direito de escolher:
+    a loja, que abre o aplicativo de rua para fechar o turno de quem ficou sem
+    bateria, e o modo demonstrativo, que não tem e-mail para casar. Aceitá-lo
+    de uma conta de entregador deixaria um deles lançar no nome do outro.
+    """
+
+    identidade = current_field_user(request)
+    pode_escolher = not request.app.state.settings.auth_required or identidade.get("erp_admin") is True
+    return service.courier_for(identidade, fallback if pode_escolher else None, pode_escolher)
+
+
+@app.get("/api/field/state")
+def field_state(
+    request: Request,
+    courier_id: str | None = None,
+    service: DispatchService = Depends(dispatch_service),
+) -> dict:
+    """Turno, entregas em rota e fila do dia — tudo numa chamada.
+
+    O celular do entregador está na calçada com sinal ruim. As trinta e quatro
+    requisições que o painel da loja dispara seriam uma tela branca, e tela
+    branca na calçada é registro que não acontece.
+    """
+    # A loja abrindo a tela de rua sem dizer por quem: a resposta é a lista de
+    # entregadores para escolher, e não uma recusa — foi o beco sem saída que o
+    # gestor encontrou ao abrir o próprio link. A resolução fica fora do `_run`
+    # de propósito: ele traduz ValueError em 422, e `SemEntregadorEscolhido` é
+    # um ValueError, então lá dentro a pergunta viraria recusa antes de alguém
+    # poder respondê-la.
+    try:
+        entregador = _courier_of(request, service, courier_id)
+    except SemEntregadorEscolhido as escolha:
+        return {
+            "needs_courier": True,
+            "detail": str(escolha),
+            "couriers": [
+                {"id": linha["id"], "name": linha["name"], "vehicle": linha.get("vehicle")}
+                for linha in service.couriers_for_picker()
+            ],
+        }
+    return _run(lambda: service.field_state(entregador))
+
+
+@app.get("/api/field/history")
+def field_history(
+    request: Request,
+    days: int = Query(default=30, ge=1, le=365),
+    courier_id: str | None = None,
+    service: DispatchService = Depends(dispatch_service),
+) -> dict:
+    """Os turnos e as entregas do próprio entregador, com hora de entrada e saída.
+
+    A tela de rua mostrava só o turno aberto. Sem isto o entregador não tem
+    como conferir o próprio acerto — e conferir o próprio acerto é a razão de
+    o registro ser feito.
+    """
+    return _run(lambda: service.field_history(_courier_of(request, service, courier_id), days))
+
+
+@app.post("/api/field/check-in", status_code=status.HTTP_201_CREATED)
+def field_check_in(
+    request: Request,
+    payload: CourierCheckIn,
+    service: DispatchService = Depends(dispatch_service),
+) -> dict:
+    return _run(lambda: service.check_in(_courier_of(request, service, payload.courier_id), payload))
+
+
+@app.post("/api/field/check-out")
+def field_check_out(
+    request: Request,
+    payload: CourierCheckOut,
+    courier_id: str | None = None,
+    service: DispatchService = Depends(dispatch_service),
+) -> dict:
+    """Fecha o turno e monta o acerto a partir do que foi registrado na rua."""
+    return _run(lambda: service.check_out(_courier_of(request, service, courier_id), payload))
+
+
+@app.post("/api/field/runs", status_code=status.HTTP_201_CREATED)
+def field_register_run(
+    request: Request,
+    payload: DeliveryRunCreate,
+    courier_id: str | None = None,
+    service: DispatchService = Depends(dispatch_service),
+) -> dict:
+    return _run(lambda: service.register_run(_courier_of(request, service, courier_id), payload))
+
+
+@app.post("/api/field/runs/{run_id}/finish")
+def field_finish_run(
+    request: Request,
+    run_id: str,
+    payload: DeliveryRunFinish,
+    courier_id: str | None = None,
+    service: DispatchService = Depends(dispatch_service),
+) -> dict:
+    return _run(lambda: service.finish_run(_courier_of(request, service, courier_id), run_id, payload))
 
 
 # ----------------------------------------------------------------------

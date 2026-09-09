@@ -49,6 +49,9 @@ const state = {
   couriers: [],
   deliveries: [],
   deliveryPerformance: null,
+  // Zonas, quem está na rua e o que o território ensina. Carregado ao abrir a
+  // tela de Entregas, não no loadAll.
+  dispatch: null,
   deliveryPeriod: 30,
   catalogs: [],
   history: [],
@@ -194,87 +197,131 @@ function setMobileNavigation(open) {
   backdrop.hidden = !open;
 }
 
+// A carga do painel, em duas ondas.
+//
+// Antes as 34 consultas saíam juntas e a tela só aparecia quando a mais lenta
+// voltava. Medido em produção: `/api/promotions/month` com 16,5 s de mediana e
+// 27,8 s no pior caso — e como o Cloud Run atende com uma CPU, as 34 em
+// paralelo ainda disputavam entre si e atrasavam umas às outras. O gestor
+// esperava meio minuto por uma tela cujo conteúdo inicial estava pronto no
+// primeiro segundo.
+//
+// A primeira onda traz o que a tela inicial mostra e o que os formulários
+// precisam para abrir; a segunda traz os relatórios pesados e redesenha quando
+// chegam. `renderAll` já tolera estado ausente — todo renderizador desiste
+// quando o seu pedaço ainda é nulo —, então a tela intermediária é a tela
+// final com menos coisa preenchida, e não uma tela quebrada.
+
+const CARGA_ESSENCIAL = {
+  dashboard: () => `/api/dashboard?days=${state.period}`,
+  consumption: () => `/api/inventory/consumption?days=${state.period}`,
+  inventory: () => "/api/inventory",
+  products: () => "/api/products",
+  addons: () => "/api/addons",
+  orders: () => "/api/orders",
+  channels: () => "/api/channels",
+  catalogs: () => "/api/catalogs",
+  couriers: () => "/api/couriers",
+};
+
+const CARGA_RELATORIOS = {
+  crossing: () => `/api/inventory/crossing?days=${state.operatingPeriod}`,
+  forecast: () => "/api/forecast?horizon=7",
+  expenses: () => "/api/expenses",
+  expenseSeries: () => "/api/expenses/recurring",
+  operating: () => `/api/finance/operating?days=${state.operatingPeriod}`,
+  mediaSummary: () => "/api/media/summary",
+  media: () => "/api/media",
+  channelPerformance: () => "/api/channels/performance?days=30",
+  lines: () => "/api/products/lines?days=30",
+  salesDay: () => `/api/sales/daily${state.closingDate ? `?day=${state.closingDate}` : ""}`,
+  growth: () => `/api/growth?days=${state.growthPeriod}`,
+  promotions: () => `/api/promotions/week?days=${state.promotionsPeriod}&horizon=7`,
+  promotionMonth: () => `/api/promotions/month?days=${state.promotionsPeriod}&weeks=4`,
+  pricing: () => `/api/pricing?days=${state.pricingPeriod}`,
+  marketPrices: () => "/api/market-prices",
+  recipeAudit: () => "/api/products/recipe-audit",
+  productionRecipes: () => "/api/production/recipes",
+  productionYield: () => "/api/production/yield?days=90",
+  productionEconomics: () => "/api/production/economics?days=30",
+  productionAdvice: () => "/api/production/input-advice?days=30",
+  packagingAudit: () => "/api/packaging/audit?days=30",
+  planning: () => `/api/planning?days=90&horizon=7&service_level=${state.planningService}`,
+  deliveries: () => `/api/deliveries?days=${state.deliveryPeriod}`,
+  deliveryPerformance: () => `/api/couriers/performance?days=${state.deliveryPeriod}`,
+  history: () => `/api/audit?limit=${state.historyLimit}`,
+};
+
+async function carregarGrupo(grupo) {
+  const chaves = Object.keys(grupo);
+  const respostas = await Promise.all(chaves.map((chave) => api(grupo[chave]())));
+  return Object.fromEntries(chaves.map((chave, indice) => [chave, respostas[indice]]));
+}
+
+// O mesmo, mas cada relatório responde por si.
+//
+// Aconteceu de verdade: um erro na análise de promoção — uma ordenação que
+// tentava comparar dois produtos do mesmo tamanho — derrubava aquela rota com
+// 500, e como o painel pedia os relatórios todos juntos, o erro apagava
+// previsão, planejamento, financeiro e crescimento de uma vez. Telas que não
+// têm nada a ver com promoção ficavam em branco, e não havia como o gestor
+// saber por quê. Um relatório quebrado agora perde só a si mesmo, e diz o nome.
+async function carregarGrupoTolerante(grupo) {
+  const chaves = Object.keys(grupo);
+  const respostas = await Promise.allSettled(chaves.map((chave) => api(grupo[chave]())));
+  const dados = {};
+  const falharam = [];
+  respostas.forEach((resposta, indice) => {
+    if (resposta.status === "fulfilled") dados[chaves[indice]] = resposta.value;
+    else falharam.push(chaves[indice]);
+  });
+  return { dados, falharam };
+}
+
 async function loadAll() {
   setRefreshing(true);
   try {
-    const [config, dashboard, consumption, crossing, forecast, products, addons, inventory, orders, expenses, expenseSeries, operating, mediaSummary, media, channels, channelPerformance, lines, salesDay, growth, promotions, promotionMonth, pricing, marketPrices, productionRecipes, productionYield, productionEconomics, productionAdvice, packagingAudit, planning, couriers, deliveries, deliveryPerformance, catalogs, history] = await Promise.all([
-      api("/api/config"),
-      api(`/api/dashboard?days=${state.period}`),
-      api(`/api/inventory/consumption?days=${state.period}`),
-      api(`/api/inventory/crossing?days=${state.operatingPeriod}`),
-      api("/api/forecast?horizon=7"),
-      api("/api/products"),
-      api("/api/addons"),
-      api("/api/inventory"),
-      api("/api/orders"),
-      api("/api/expenses"),
-      api("/api/expenses/recurring"),
-      api(`/api/finance/operating?days=${state.operatingPeriod}`),
-      api("/api/media/summary"),
-      api("/api/media"),
-      api("/api/channels"),
-      api("/api/channels/performance?days=30"),
-      api("/api/products/lines?days=30"),
-      api(`/api/sales/daily${state.closingDate ? `?day=${state.closingDate}` : ""}`),
-      api(`/api/growth?days=${state.growthPeriod}`),
-      api(`/api/promotions/week?days=${state.promotionsPeriod}&horizon=7`),
-      api(`/api/promotions/month?days=${state.promotionsPeriod}&weeks=4`),
-      api(`/api/pricing?days=${state.pricingPeriod}`),
-      api("/api/market-prices"),
-      api("/api/production/recipes"),
-      api("/api/production/yield?days=90"),
-      api("/api/production/economics?days=30"),
-      api("/api/production/input-advice?days=30"),
-      api("/api/packaging/audit?days=30"),
-      api(`/api/planning?days=90&horizon=7&service_level=${state.planningService}`),
-      api("/api/couriers"),
-      api(`/api/deliveries?days=${state.deliveryPeriod}`),
-      api(`/api/couriers/performance?days=${state.deliveryPeriod}`),
-      api("/api/catalogs"),
-      api(`/api/audit?limit=${state.historyLimit}`),
-    ]);
-    state.dashboard = dashboard;
-    state.consumption = consumption;
-    state.crossing = crossing;
-    state.forecast = forecast;
-    state.products = products;
-    state.addons = addons;
-    state.inventory = inventory;
-    state.orders = orders;
-    state.expenses = expenses;
-    state.expenseSeries = expenseSeries;
-    state.operating = operating;
-    state.mediaSummary = mediaSummary;
-    state.media = media;
-    state.channels = channels;
-    state.channelPerformance = channelPerformance;
-    state.lines = lines;
-    state.salesDay = salesDay;
-    state.growth = growth;
-    state.promotions = promotions;
-    state.promotionMonth = promotionMonth;
-    state.pricing = pricing;
-    state.marketPrices = marketPrices;
-    state.productionRecipes = productionRecipes;
-    state.productionYield = productionYield;
-    state.productionEconomics = productionEconomics;
-    state.productionAdvice = productionAdvice;
-    state.packagingAudit = packagingAudit;
-    state.planning = planning;
-    state.couriers = couriers;
-    state.deliveries = deliveries;
-    state.deliveryPerformance = deliveryPerformance;
-    state.catalogs = catalogs;
-    state.history = history;
+    const [config, essencial] = await Promise.all([api("/api/config"), carregarGrupo(CARGA_ESSENCIAL)]);
+    Object.assign(state, essencial);
     document.getElementById("storage-mode").textContent = config.storage === "firebase" ? "Firebase conectado" : "Modo demonstrativo";
     renderAll();
-    return true;
   } catch (error) {
     toast(error.message || "Não foi possível carregar os dados.", "error");
+    setRefreshing(false);
     return false;
+  }
+
+  // Os relatórios chegam depois e redesenham. A falha aqui não derruba o que
+  // já está na tela: perder o painel inteiro porque a análise de promoção não
+  // respondeu seria trocar um problema grande por um maior.
+  try {
+    const { dados, falharam } = await carregarGrupoTolerante(CARGA_RELATORIOS);
+    Object.assign(state, dados);
+    renderAll();
+    if (falharam.length) {
+      toast(`${falharam.length} relatório(s) não carregaram: ${falharam.map(nomeDoRelatorio).join(", ")}. O resto da tela está atualizado.`, "error");
+      return false;
+    }
+    return true;
   } finally {
     setRefreshing(false);
   }
+}
+
+// O nome da chave é do código; o gestor precisa do nome da tela.
+const NOME_DO_RELATORIO = {
+  crossing: "cruzamento de estoque", forecast: "previsão", expenses: "despesas",
+  expenseSeries: "despesas fixas", operating: "resultado", mediaSummary: "acervo",
+  media: "arquivos", channelPerformance: "canais", lines: "linhas", salesDay: "fechamento",
+  growth: "crescimento", promotions: "promoções da semana", promotionMonth: "promoções do mês",
+  pricing: "preços", marketPrices: "preços de mercado", productionRecipes: "fichas de fabricação",
+  productionYield: "rendimento", productionEconomics: "custo da batida", productionAdvice: "insumos da batida",
+  packagingAudit: "embalagens", planning: "planejamento", deliveries: "entregas",
+  deliveryPerformance: "desempenho dos entregadores", history: "histórico",
+};
+
+function nomeDoRelatorio(chave) {
+  return NOME_DO_RELATORIO[chave] || chave;
 }
 
 async function loadDashboard() {
@@ -322,9 +369,15 @@ function renderAll() {
   renderForecast();
   renderFinance();
   renderProducts();
+  renderRecipeAudit();
   renderAddons();
   renderChannelsView();
   renderDelivery();
+  // A operação de rua é carregada sob demanda, então ela não vem no `loadAll`
+  // e o `state` dela continua o de antes da gravação. Sem esta releitura, a
+  // zona recém-criada e a entrega recém-corrigida só apareciam ao trocar de
+  // tela e voltar — o botão parecia não ter feito nada.
+  if (state.dispatch) loadDispatch();
   renderBrand();
   renderGrowth();
   renderPromotions();
@@ -367,6 +420,7 @@ function renderDashboard() {
   change.className = metrics.revenue_change >= 0 ? "positive" : "negative";
   setText("#chart-total", currency.format(metrics.revenue));
   renderChart(dashboard.sales_series);
+  renderPeriodGap(metrics);
   renderInsights(dashboard.insights);
   renderChannels(dashboard.channels);
   renderRecentOrders(dashboard.recent_orders);
@@ -411,11 +465,36 @@ function renderChart(series) {
   }).join("");
 }
 
-function renderInsights(insights) {
+// A leitura tem a mesma forma em toda tela que a mostra, e o tipo escolhe o
+// ícone. Repetir a marcação em cada render é como uma delas ficava com o ícone
+// de outra categoria depois de qualquer ajuste.
+function insightCard(item) {
   const icons = { attention: "triangle-alert", opportunity: "badge-dollar-sign", info: "lightbulb" };
-  document.getElementById("insight-list").innerHTML = insights.map((item) => `
-    <article class="insight ${item.type}"><span class="insight-icon"><i data-lucide="${icons[item.type] || "lightbulb"}"></i></span><div><strong>${escapeHtml(item.title)}</strong><p>${escapeHtml(item.description)}</p></div></article>
-  `).join("");
+  return `<article class="insight ${item.type}"><span class="insight-icon"><i data-lucide="${item.icon || icons[item.type] || "lightbulb"}"></i></span><div><strong>${escapeHtml(item.title)}</strong><p>${escapeHtml(item.description)}</p></div></article>`;
+}
+
+// Período sem venda não é resultado zero — é ausência de dado, e as duas coisas
+// se parecem na tela. "Faturamento R$ 0,00 +0%" com 928 pedidos na base fez o
+// gestor concluir que o sistema estava quebrado, e ele tinha razão em duvidar:
+// nada ali dizia que a última venda foi há três semanas. Sem esta linha, todo
+// relatório que depende do período parece sem nexo ao mesmo tempo.
+function renderPeriodGap(metrics) {
+  const aviso = document.getElementById("period-gap");
+  if (!aviso) return;
+  const vendidos = state.orders.filter((pedido) => pedido.status !== "Cancelado");
+  if (metrics.orders > 0 || !vendidos.length) {
+    aviso.hidden = true;
+    return;
+  }
+  const ultima = vendidos.reduce((maior, pedido) => (pedido.created_at > maior ? pedido.created_at : maior), "");
+  const dias = Math.max(0, Math.round((Date.now() - new Date(ultima).getTime()) / 86400000));
+  aviso.hidden = false;
+  aviso.innerHTML = `<i data-lucide="calendar-off"></i><span>Nenhuma venda nos últimos ${state.period} dias — é por isso que os números abaixo estão zerados. A última venda registrada foi em <strong>${escapeHtml(formatDate(ultima))}</strong>, ${dias} dia(s) atrás.${dias > state.period ? " Aumente o período acima para ver o movimento." : ""}</span>`;
+  refreshIcons();
+}
+
+function renderInsights(insights) {
+  document.getElementById("insight-list").innerHTML = insights.map(insightCard).join("");
 }
 
 function renderChannels(channels) {
@@ -674,10 +753,12 @@ function renderFinance() {
   rows.push([report.complete ? "Lucro operacional" : "Teto antes do custo pendente", report.complete ? "Resultado fechado" : "Ainda falta custo de pedidos importados", report.complete ? result : totals.profit_upper_bound, report.complete ? (result >= 0 ? "positive" : "negative") : "pending"]);
   document.getElementById("finance-operating-body").innerHTML = rows.map(([name, note, value, css]) => `
     <tr><td><strong>${escapeHtml(name)}</strong></td><td class="muted-value">${escapeHtml(note)}</td><td class="align-right ${css}"><strong>${value >= 0 && name === "Faturamento" ? "+" : ""}${currency.format(value)}</strong></td></tr>`).join("");
-  const note = report.blockers.length
-    ? report.blockers.join(" ")
-    : `Período de ${formatDate(report.from)} a ${formatDate(report.to)}. Compras de estoque ficam fora desta equação para não duplicar o custo dos insumos.`;
-  setText("#finance-operating-note", note);
+  setText("#finance-operating-note", `Período de ${formatDate(report.from)} a ${formatDate(report.to)}. Compras de estoque ficam fora desta equação para não duplicar o custo dos insumos.`);
+  // É dinheiro da empresa: o que falta para o número fechar tem de estar
+  // visível, item a item, e não espremido numa frase corrida embaixo da conta.
+  document.getElementById("finance-blockers-panel").hidden = !report.blockers.length;
+  document.getElementById("finance-blockers").innerHTML = report.blockers.map((linha) => `
+    <article class="insight attention"><span class="insight-icon"><i data-lucide="triangle-alert"></i></span><div><p>${escapeHtml(linha)}</p></div></article>`).join("");
   document.getElementById("finance-product-body").innerHTML = report.products.length ? report.products.map((product) => `
     <tr><td><strong>${escapeHtml(product.name)}</strong></td><td class="align-right">${number.format(product.units)}</td><td class="align-right">${currency.format(product.revenue)}</td><td class="align-right muted-value">${currency.format(product.cost)}</td><td class="align-right ${product.contribution >= 0 ? "positive" : "negative"}"><strong>${currency.format(product.contribution)}</strong></td><td class="align-right"><strong>${number.format(product.margin)}%</strong></td></tr>`).join("") : emptyRow(6, "Nenhum produto com itens detalhados no período.");
 
@@ -687,15 +768,63 @@ function renderFinance() {
     const date = new Date(`${expense.due_date}T12:00:00`);
     return `<article class="due-item"><span class="due-date">${String(date.getDate()).padStart(2, "0")}<br>${date.toLocaleDateString("pt-BR", { month: "short" }).replace(".", "")}</span><div><strong>${escapeHtml(expense.description)}</strong><span>${escapeHtml(expense.category)}</span></div><b>${currency.format(expense.amount)}</b></article>`;
   }).join("") : '<p class="empty-state">Nenhuma despesa pendente.</p>';
-  document.getElementById("expenses-body").innerHTML = state.expenses.length ? state.expenses.map(expense => `
+  renderExpenseTable();
+  renderExpenseSeries();
+  refreshIcons();
+}
+
+// A lista de despesas é o extrato da empresa. Ela precisa responder três
+// perguntas sem sair da tela: o que vence, quanto já saiu e quanto falta — por
+// situação, categoria e mês. Sem filtro e sem soma, a resposta era contar linha
+// a linha, e ninguém confere dinheiro assim.
+function renderExpenseTable() {
+  const filtros = lerFiltrosDeDespesa();
+  const todas = [...state.expenses].sort((a, b) => b.due_date.localeCompare(a.due_date));
+  const visiveis = todas.filter((expense) =>
+    (filtros.status === "all" || expense.status === filtros.status)
+    && (filtros.category === "all" || expense.category === filtros.category)
+    && (filtros.month === "all" || String(expense.due_date).slice(0, 7) === filtros.month));
+
+  const soma = (linhas) => linhas.reduce((total, linha) => total + linha.amount, 0);
+  const pagas = visiveis.filter((linha) => linha.status === "Paga");
+  const pendentes = visiveis.filter((linha) => linha.status === "Pendente");
+  setText("#expenses-summary", visiveis.length
+    ? `${visiveis.length} lançamento(s) · ${currency.format(soma(visiveis))} no total · ${currency.format(soma(pagas))} pago em ${pagas.length} · ${currency.format(soma(pendentes))} pendente em ${pendentes.length}.`
+    : "Nenhuma despesa com esses filtros.");
+
+  document.getElementById("expenses-body").innerHTML = visiveis.length ? visiveis.map(expense => `
     <tr><td><strong>${escapeHtml(expense.description)}</strong>${expense.recurring ? '<span class="row-note">fixa</span>' : ""}</td><td>${escapeHtml(expense.category)}</td><td>${escapeHtml(formatDate(expense.due_date))}</td><td><span class="status-pill ${expense.status === "Paga" ? "success" : "pending"}">${escapeHtml(expense.status)}</span></td><td class="align-right"><strong>${currency.format(expense.amount)}</strong></td><td class="align-right"><div class="row-actions">
       ${expense.status === "Pendente" ? `<button class="row-action" type="button" data-pay-expense="${expense.id}" title="Marcar como paga"><i data-lucide="circle-check"></i></button>` : ""}
       <button class="row-action" type="button" data-edit-expense="${expense.id}" title="Editar despesa"><i data-lucide="pencil"></i></button>
       <button class="row-action danger" type="button" data-delete-expense="${expense.id}" title="Excluir despesa"><i data-lucide="trash-2"></i></button>
     </div></td></tr>
-  `).join("") : emptyRow(6, "Nenhuma despesa cadastrada.");
-  renderExpenseSeries();
+  `).join("") : emptyRow(6, state.expenses.length ? "Nenhuma despesa com esses filtros." : "Nenhuma despesa cadastrada.");
   refreshIcons();
+}
+
+function lerFiltrosDeDespesa() {
+  const valor = (id) => document.getElementById(id)?.value || "all";
+  // As listas nascem do que existe: categoria e mês inventados no HTML
+  // envelheceriam no primeiro lançamento fora do padrão.
+  preencherFiltro("expense-filter-category", [...new Set(state.expenses.map((linha) => linha.category))].sort());
+  preencherFiltro("expense-filter-month", [...new Set(state.expenses.map((linha) => String(linha.due_date).slice(0, 7)))].sort().reverse(), mesLegivel);
+  return { status: valor("expense-filter-status"), category: valor("expense-filter-category"), month: valor("expense-filter-month") };
+}
+
+function preencherFiltro(id, valores, rotulo = (valor) => valor) {
+  const select = document.getElementById(id);
+  if (!select) return;
+  const atual = select.value;
+  const primeira = select.querySelector('option[value="all"]');
+  const opcoes = `<option value="all">${primeira ? escapeHtml(primeira.textContent) : "Todas"}</option>`
+    + valores.map((valor) => `<option value="${escapeHtml(valor)}">${escapeHtml(rotulo(valor))}</option>`).join("");
+  if (select.innerHTML !== opcoes) select.innerHTML = opcoes;
+  if (atual && valores.includes(atual)) select.value = atual;
+}
+
+function mesLegivel(chave) {
+  const [ano, mes] = String(chave).split("-");
+  return new Intl.DateTimeFormat("pt-BR", { month: "long", year: "numeric" }).format(new Date(Number(ano), Number(mes) - 1, 1));
 }
 
 // As regras que se repetem. É o que separa "quanto gastei" de "quanto vou
@@ -724,6 +853,28 @@ function renderExpenseSeries() {
 
 function monthLabel(month) {
   return `${month.slice(5)}/${month.slice(0, 4)}`;
+}
+
+// A ficha técnica é a peça de cadastro que mais se espalha: dela saem margem,
+// preço sugerido, promoção e o custo do que foi vendido. Um erro de unidade ali
+// — grama cadastrada onde o estoque está em quilo — vira um custo mil vezes
+// maior que percorre todos esses relatórios parecendo um número calculado.
+// Encontrar isso olhando é impossível; por isso a tela aponta, com a linha
+// culpada e a correção provável ao lado.
+function renderRecipeAudit() {
+  const auditoria = state.recipeAudit;
+  const painel = document.getElementById("recipe-audit-panel");
+  if (!painel) return;
+  const suspeitos = auditoria?.suspects || [];
+  painel.hidden = !suspeitos.length;
+  if (!suspeitos.length) return;
+  document.getElementById("recipe-audit-list").innerHTML = suspeitos.map((produto) => `
+    <article class="insight attention"><span class="insight-icon"><i data-lucide="triangle-alert"></i></span><div>
+      <strong>${escapeHtml(produto.name)} — a ficha soma ${currency.format(produto.recipe_cost)} e o produto é vendido a ${currency.format(produto.price)}</strong>
+      <p>${number.format(produto.ratio)}× o preço de venda. As linhas que mais pesam:</p>
+      <div class="value-rows">${produto.lines.map((linha) => `
+        <div class="ladder-row"><span>${number.format(linha.quantity)} ${escapeHtml(linha.unit || "")} de ${escapeHtml(linha.name)}${linha.diagnosis ? `<small class="muted-value"> ${escapeHtml(linha.diagnosis)}</small>` : ""}</span><b>${currency.format(linha.cost)}</b></div>`).join("")}</div>
+    </div></article>`).join("");
 }
 
 function renderProducts() {
@@ -902,6 +1053,7 @@ function activateView(target, updateHash = true) {
   // O estado da integração é buscado ao abrir a tela, e não no carregamento
   // geral: o iFood fora do ar não pode derrubar o painel inteiro.
   if (target === "settings") loadIFood();
+  if (target === "delivery") loadDispatch();
   document.querySelectorAll(".nav-item").forEach(item => item.classList.toggle("active", item.dataset.viewTarget === target));
   setMobileNavigation(false);
   if (updateHash) history.replaceState(null, "", `#${target}`);
@@ -911,17 +1063,26 @@ function activateView(target, updateHash = true) {
 function bindModals() {
   document.addEventListener("click", (event) => {
     const open = event.target.closest("[data-modal]");
-    if (open) openModal(open.dataset.modal);
+    // O menu "Mais" precisa fechar junto com o clique que abre o modal, senão
+    // ele fica aberto por cima e o gestor volta para uma lista suspensa que já
+    // cumpriu o papel.
+    if (open) { open.closest("details.more-actions")?.removeAttribute("open"); openModal(open.dataset.modal); }
     if (event.target.closest("[data-close-modal]")) closeModal();
   });
   document.getElementById("modal-backdrop").addEventListener("click", closeModal);
+  // Clique fora fecha o menu aberto, como todo menu suspenso faz.
+  document.addEventListener("click", (event) => {
+    document.querySelectorAll("details.more-actions[open]").forEach((menu) => {
+      if (!menu.contains(event.target)) menu.removeAttribute("open");
+    });
+  });
   document.querySelectorAll("dialog").forEach(dialog => dialog.addEventListener("cancel", () => closeModal()));
 }
 
 function openModal(name) {
   const dialog = document.getElementById(`${name}-modal`);
   if (!dialog) return;
-  if (name === "sale") { clearCart(); renderSaleProducts(); renderCart(); }
+  if (name === "sale") { clearCart(); renderSaleProducts(); renderCart(); populateSaleZones(); toggleSaleDelivery(); }
   if (name === "addon") { document.getElementById("addon-form").reset(); populateAddonInventory(); }
   if (name === "adjust") populateAdjustSelect();
   if (name === "purchase") { openPurchase(); return; }
@@ -977,6 +1138,8 @@ function bindForms() {
     renderCart();
   });
   document.getElementById("sale-form").addEventListener("submit", submitSale);
+  document.getElementById("sale-is-delivery").addEventListener("change", toggleSaleDelivery);
+  document.getElementById("sale-zone").addEventListener("change", applySaleZoneFee);
   document.getElementById("addon-form").addEventListener("submit", submitAddon);
   document.getElementById("addon-inventory").addEventListener("change", refreshAddonPreview);
   document.querySelector('#addon-form [name="quantity"]').addEventListener("input", refreshAddonPreview);
@@ -986,8 +1149,13 @@ function bindForms() {
   document.getElementById("expense-recurring").addEventListener("change", toggleExpenseRepeat);
   document.getElementById("fixed-cost-form").addEventListener("submit", submitFixedCost);
   document.getElementById("fixed-cost-list").addEventListener("input", refreshFixedCostSum);
+  ["expense-filter-status", "expense-filter-category", "expense-filter-month"].forEach((id) => {
+    document.getElementById(id).addEventListener("change", renderExpenseTable);
+  });
   document.getElementById("import-anota-report").addEventListener("click", () => document.getElementById("anota-report-file").click());
   document.getElementById("anota-report-file").addEventListener("change", importAnotaReport);
+  document.getElementById("import-anota-items").addEventListener("click", () => document.getElementById("anota-items-file").click());
+  document.getElementById("anota-items-file").addEventListener("change", importAnotaItems);
   document.getElementById("adjust-form").addEventListener("submit", submitAdjustment);
   document.getElementById("bulk-count-form").addEventListener("submit", submitBulkCount);
   document.getElementById("bulk-count-body").addEventListener("input", refreshBulkCountPreview);
@@ -1023,6 +1191,14 @@ function bindForms() {
     refreshWithdrawalPreview();
   });
   document.getElementById("withdrawal-lines").addEventListener("input", refreshWithdrawalPreview);
+  // Trocar o tamanho é uma escolha, não um palpite: a partir daqui a linha para
+  // de abrir na unidade de manuseio por conta própria e respeita o que o
+  // operador escolheu, mesmo depois de ele trocar o insumo.
+  document.getElementById("withdrawal-lines").addEventListener("change", (event) => {
+    const unidade = event.target.closest("[data-withdrawal-unit]");
+    if (unidade) unidade.dataset.chosen = "1";
+    refreshWithdrawalPreview();
+  });
   document.getElementById("withdrawal-override").addEventListener("change", refreshWithdrawalPreview);
   document.getElementById("purchase-form").addEventListener("submit", submitPurchase);
   document.getElementById("purchase-inventory").addEventListener("change", (event) => {
@@ -1141,6 +1317,8 @@ async function submitSale(event) {
   payload.is_delivery = form.get("is_delivery") === "on";
   payload.delivery_fee = payload.is_delivery ? Number(form.get("delivery_fee") || 0) : 0;
   payload.courier_id = payload.is_delivery ? (form.get("courier_id") || null) : null;
+  payload.delivery_zone_id = payload.is_delivery ? (form.get("delivery_zone_id") || null) : null;
+  payload.delivery_address = payload.is_delivery ? (form.get("delivery_address") || null) : null;
   const orderId = form.get("order_id");
   if (orderId) {
     await submitData(`/api/orders/${orderId}`, payload, "Pedido corrigido e estoque ajustado.", "PATCH");
@@ -1248,6 +1426,69 @@ async function importAnotaReport(event) {
   } finally {
     event.target.value = "";
   }
+}
+
+// O segundo relatório da Anota AI: o que foi vendido em cada pedido.
+//
+// O relatório de pedidos traz o faturamento e não traz os itens, e é essa falta
+// que deixa custo, margem por produto, planejamento e previsão sem base. O
+// servidor já sabia fechar essa lacuna desde sempre — faltava o botão. Sem ele,
+// a única forma de usar a rota era pela linha de comando, e nenhuma loja faz
+// isso.
+async function importAnotaItems(event) {
+  const file = event.target.files?.[0];
+  if (!file) return;
+  const body = new FormData();
+  body.append("report", file);
+  const botao = document.getElementById("import-anota-items");
+  botao.disabled = true;
+  try {
+    const resultado = await api("/api/imports/anota-ai/items", { method: "POST", body });
+    mostrarResultadoDosItens(resultado);
+    await loadAll();
+  } catch (error) {
+    toast(error.message || "Não foi possível importar o relatório de itens.", "error");
+  } finally {
+    botao.disabled = false;
+    event.target.value = "";
+  }
+}
+
+// O resultado é uma lista de tarefas, não um aviso que some em quatro segundos:
+// cada nome que não casou é um produto para cadastrar, e é ele que ainda está
+// segurando o custo daqueles pedidos.
+function mostrarResultadoDosItens(resultado) {
+  const detalhados = resultado.pedidos_detalhados || 0;
+  const resumo = document.getElementById("import-items-summary");
+  resumo.textContent = detalhados
+    ? `${number.format(detalhados)} pedido(s) ganharam os itens vendidos, de ${number.format(resultado.itens_lidos || 0)} linha(s) lidas. O custo e a margem desses pedidos passam a ser calculados pela ficha técnica.`
+    : `Nenhum pedido foi atualizado, de ${number.format(resultado.itens_lidos || 0)} linha(s) lidas. Confira se este é o relatório de itens e se os pedidos correspondentes já foram importados.`;
+  resumo.className = `modal-result full ${detalhados ? "positive" : "negative"}`;
+
+  const semCadastro = resultado.produtos_sem_cadastro || [];
+  const blocos = [];
+  if (semCadastro.length) {
+    blocos.push(`<article class="insight attention"><span class="insight-icon"><i data-lucide="triangle-alert"></i></span><div>
+      <strong>${semCadastro.length} produto(s) da Anota AI não existem no seu cardápio</strong>
+      <p>Enquanto eles não forem cadastrados com este nome, os pedidos que os contêm continuam sem custo. O número ao lado é quanto cada um vendeu.</p>
+      <div class="value-rows">${semCadastro.map(([nome, unidades]) => `<div class="ladder-row"><span>${escapeHtml(nome)}</span><b>${number.format(unidades)} un</b></div>`).join("")}</div>
+    </div></article>`);
+  }
+  const pendencias = [
+    [resultado.pedidos_nao_encontrados, "pedido(s) do relatório de itens não existem aqui. Importe primeiro o relatório de pedidos do mesmo período."],
+    [resultado.pedidos_ambiguos, "número(s) de pedido aparecem mais de uma vez e não dá para saber a qual pertence cada item."],
+  ];
+  pendencias.forEach(([lista, frase]) => {
+    if (lista?.length) {
+      blocos.push(`<article class="insight attention"><span class="insight-icon"><i data-lucide="help-circle"></i></span><div><strong>${lista.length} ${escapeHtml(frase)}</strong><p class="muted-value">${escapeHtml(lista.slice(0, 12).join(", "))}</p></div></article>`);
+    }
+  });
+  if (resultado.pedidos_incompletos) {
+    blocos.push(`<article class="insight"><span class="insight-icon"><i data-lucide="info"></i></span><div><strong>${resultado.pedidos_incompletos} pedido(s) ficaram com itens parciais</strong><p>Parte dos produtos casou e parte não. Eles continuam marcados como sem custo, porque meio custo apresentado como custo inteiro é pior que custo nenhum.</p></div></article>`);
+  }
+  document.getElementById("import-items-detail").innerHTML = blocos.join("") || "";
+  openDialog("import-items-modal");
+  refreshIcons();
 }
 
 async function submitAdjustment(event) {
@@ -1397,12 +1638,26 @@ function refreshInventoryPack(origem = "") {
 }
 
 function addProductionLine(container, inventoryId = "", quantity = "") {
-  const item = state.inventory.find((row) => row.id === inventoryId);
-  const dica = item && item.pack_unit
-    ? `<small class="field-hint">1 ${escapeHtml(item.pack_unit)} = ${number.format(item.pack_size)} ${escapeHtml(item.unit)}</small>`
-    : "";
-  document.getElementById(container).insertAdjacentHTML("beforeend", `<div class="recipe-line production-line"><label>Insumo<select required>${inventoryOptions(inventoryId)}</select></label><label>Quantidade<input type="number" min="0.001" step="0.001" required placeholder="0,000" value="${quantity}" />${dica}</label><button type="button" data-remove-production title="Remover insumo"><i data-lucide="trash-2"></i></button></div>`);
+  document.getElementById(container).insertAdjacentHTML("beforeend", `<div class="recipe-line production-line"><label>Insumo<select required data-production-item>${inventoryOptions(inventoryId)}</select></label><label>Quantidade<input type="number" min="0.001" step="0.001" required placeholder="0,000" value="${quantity}" /><small class="field-hint" data-production-hint></small></label><button type="button" data-remove-production title="Remover insumo"><i data-lucide="trash-2"></i></button></div>`);
+  const linha = document.getElementById(container).lastElementChild;
+  linha.querySelector("[data-production-item]").addEventListener("change", () => describeProductionLine(linha));
+  describeProductionLine(linha);
   refreshIcons();
+}
+
+// A conversão era escrita uma única vez, na montagem da linha, e continuava lá
+// depois de o insumo mudar: a linha anunciava "1 barra = 2,8 kg" com a granola
+// selecionada, e quem confiasse nela lançava a batida errada. Agora ela é
+// reescrita a cada troca, e diz também em que unidade digitar quando o insumo
+// não tem unidade de manuseio nenhuma.
+function describeProductionLine(linha) {
+  const hint = linha.querySelector("[data-production-hint]");
+  if (!hint) return;
+  const item = state.inventory.find((row) => row.id === linha.querySelector("[data-production-item]").value);
+  const pack = packOf(item);
+  hint.textContent = pack
+    ? `1 ${pack.unit} = ${number.format(pack.size)} ${item.unit} · digite em ${item.unit}`
+    : item ? `Em ${item.unit}` : "";
 }
 
 function readProductionLines(container) {
@@ -1494,7 +1749,7 @@ function refreshProductionPreview() {
   const faltando = [];
   let custo = 0;
   const pedido = new Map();
-  linhas.forEach((linha) => pedido.set(linha.inventory_id, Math.round(((pedido.get(linha.inventory_id) || 0) + linha.quantity) * 1000) / 1000));
+  linhas.forEach((linha) => pedido.set(linha.inventory_id, roundQuantity((pedido.get(linha.inventory_id) || 0) + linha.quantity)));
   pedido.forEach((quantity, inventoryId) => {
     const item = state.inventory.find((row) => row.id === inventoryId);
     if (!item) return;
@@ -1661,8 +1916,64 @@ function renderProductionRecipes() {
 // da manhã, a degustação, a reposição do balcão. Sem esse lançamento o saldo
 // do sistema fica maior que o da prateleira, e a diferença só aparece na
 // contagem, virando "perda" sem que ninguém saiba o que foi.
+//
+// Registrar só acontece se for mais rápido do que não registrar. Por isso a
+// linha pergunta as três coisas que a equipe já tem na cabeça — qual insumo,
+// quanto e em que tamanho — e converte para a unidade de estoque sozinha.
+// Enquanto ela só aceitava quilo, tirar três barras exigia dividir de cabeça
+// ou ir até a balança, e o lançamento ficava para depois.
+
+// A unidade de manuseio do insumo, quando o cadastro tem uma: "barra" de
+// 2,8 kg. O servidor só aceita o par nome/tamanho completo ou vazio, então
+// aqui basta conferir que os dois vieram e que o tamanho é utilizável.
+function packOf(item) {
+  return item && item.pack_unit && item.pack_size > 0 ? { unit: item.pack_unit, size: item.pack_size } : null;
+}
+
+// "3 barra" trai a tela: quem le desconfia do resto do numero. Barra, pote e
+// fardo pluralizam com "s", que e o que o cadastro aceita como unidade.
+function packAmount(pack, quantity) {
+  return `${number.format(quantity)} ${pack.unit}${quantity === 1 ? "" : "s"}`;
+}
+
+// O teclado do celular em pt-BR entrega vírgula, e `type="number"` devolve
+// campo vazio quando recebe uma: o operador digitava "0,5", via o campo sumir
+// e desistia do lançamento. Por isso o campo é de texto e a vírgula chega até
+// aqui, em vez de ser descartada antes de alguém poder tratá-la.
+function parseQuantity(value) {
+  const texto = String(value ?? "").trim().replace(/\s+/g, "").replace(",", ".");
+  // O separador solto no fim é o estado normal de quem está digitando "0,5";
+  // recusá-lo faria a dica piscar "inválido" no meio de um número correto.
+  if (!/^\d*(\.\d*)?$/.test(texto) || !/\d/.test(texto)) return NaN;
+  const numero = Number(texto);
+  return Number.isFinite(numero) ? numero : NaN;
+}
+
+// O estoque guarda três casas. Somar sem cortar aqui faz 0,1 + 0,2 virar
+// 0,30000000000000004 e acusar falta de saldo contra um saldo de 0,3.
+function roundQuantity(value) {
+  return Math.round(value * 1000) / 1000;
+}
+
+// O saldo vai na própria opção: quem retira decide olhando o que existe, e
+// obrigar a conferir na tela de estoque antes faria o lançamento ser adiado.
+// Quando o insumo tem unidade de manuseio, ela vem primeiro — é em barra que
+// a equipe enxerga o freezer, não em quilo.
+function inventoryOptionLabel(item) {
+  const pack = packOf(item);
+  const saldo = `${number.format(item.quantity)} ${item.unit}`;
+  return pack
+    ? `${item.name} — ${packAmount(pack, roundQuantity(item.quantity / pack.size))} (${saldo})`
+    : `${item.name} — ${saldo} em estoque`;
+}
 
 function openWithdrawal() {
+  // Sem insumo cadastrado o formulário só pode ser recusado. Dizer o que falta
+  // é melhor do que abrir uma lista vazia que não explica nada.
+  if (!state.inventory.length) {
+    toast("Cadastre um insumo antes de registrar uma retirada.", "error");
+    return;
+  }
   const form = document.getElementById("withdrawal-form");
   form.reset();
   document.getElementById("withdrawal-lines").innerHTML = "";
@@ -1674,67 +1985,184 @@ function openWithdrawal() {
 }
 
 function addWithdrawalLine() {
-  // O saldo vai na própria opção: quem retira decide olhando o que existe, e
-  // obrigar a conferir na tela de estoque antes faria o lançamento ser adiado.
   const options = state.inventory
-    .map((item) => `<option value="${item.id}">${escapeHtml(item.name)} — ${number.format(item.quantity)} ${escapeHtml(item.unit)} em estoque</option>`)
+    .map((item) => `<option value="${item.id}">${escapeHtml(inventoryOptionLabel(item))}</option>`)
     .join("");
-  document.getElementById("withdrawal-lines").insertAdjacentHTML("beforeend", `<div class="recipe-line withdrawal-line"><label>Insumo<select required>${options}</select></label><label>Quantidade<input type="number" min="0.001" step="0.001" required placeholder="0,000" /></label><button type="button" data-remove-withdrawal title="Remover insumo"><i data-lucide="trash-2"></i></button></div>`);
+  document.getElementById("withdrawal-lines").insertAdjacentHTML("beforeend", `<div class="recipe-line withdrawal-line"><label>Insumo<select required data-withdrawal-item>${options}</select></label><label>Quantidade<input type="text" inputmode="decimal" autocomplete="off" placeholder="0,000" aria-label="Quantidade retirada" data-withdrawal-quantity /></label><label>Tamanho<select data-withdrawal-unit aria-label="Unidade da quantidade"></select></label><button type="button" data-remove-withdrawal title="Remover insumo"><i data-lucide="trash-2"></i></button><small class="withdrawal-hint" data-withdrawal-hint></small></div>`);
   refreshIcons();
   refreshWithdrawalPreview();
 }
 
+// A lista de tamanhos depende do insumo escolhido, então é remontada quando o
+// insumo muda — e só quando ele muda: refazer o `select` a cada tecla fecharia
+// a lista aberta e devolveria o foco no meio da digitação.
+//
+// Enquanto ninguém escolheu, o campo abre na unidade de manuseio, que é a que
+// a equipe usa na prateleira. Depois de uma escolha explícita, ela manda —
+// exceto quando o insumo novo não tem manuseio e só resta o estoque.
+function syncWithdrawalUnit(line) {
+  const item = state.inventory.find((row) => row.id === line.querySelector("[data-withdrawal-item]").value);
+  const select = line.querySelector("[data-withdrawal-unit]");
+  const pack = packOf(item);
+  const assinatura = `${item ? item.id : ""}|${item ? item.unit : ""}|${pack ? `${pack.unit}:${pack.size}` : ""}`;
+  if (select.dataset.builtFor !== assinatura) {
+    const escolhido = select.dataset.chosen === "1" ? select.value : "";
+    select.innerHTML = `<option value="stock">${escapeHtml(item ? item.unit : "unidade")}</option>${pack ? `<option value="pack">${escapeHtml(pack.unit)}</option>` : ""}`;
+    select.value = escolhido === "pack" && !pack ? "stock" : escolhido || (pack ? "pack" : "stock");
+    select.dataset.builtFor = assinatura;
+  }
+  return { item, pack, usingPack: select.value === "pack" && Boolean(pack) };
+}
+
+// Lê uma linha inteira: o insumo, o que foi digitado e quanto isso vale na
+// unidade de estoque, que é a única que o servidor entende.
+function readWithdrawalLine(line) {
+  const { item, pack, usingPack } = syncWithdrawalUnit(line);
+  const input = line.querySelector("[data-withdrawal-quantity]");
+  const typed = parseQuantity(input.value);
+  return {
+    line,
+    item,
+    pack,
+    usingPack,
+    typed,
+    blank: input.value.trim() === "",
+    quantity: Number.isNaN(typed) ? NaN : roundQuantity(usingPack ? typed * pack.size : typed),
+  };
+}
+
+function withdrawalLines() {
+  return [...document.querySelectorAll("#withdrawal-lines .withdrawal-line")].map(readWithdrawalLine);
+}
+
 function readWithdrawalLines() {
-  return [...document.querySelectorAll("#withdrawal-lines .withdrawal-line")]
-    .map((line) => ({ inventory_id: line.querySelector("select").value, quantity: Number(line.querySelector("input").value) }))
-    .filter((line) => line.inventory_id && line.quantity > 0);
+  return withdrawalLines()
+    .filter((linha) => linha.item && linha.quantity > 0)
+    .map((linha) => ({ inventory_id: linha.item.id, quantity: linha.quantity }));
+}
+
+// A conferência de saldo é por insumo, mas o erro está numa linha. Sem marcar
+// a linha, uma retirada de cinco itens obriga a reler todas para achar qual
+// estourou — e a dica embaixo dela é onde a conversão fica visível sem tirar
+// o operador do formulário.
+function describeWithdrawalLine(linha, pedido, semSaldo, repetidos) {
+  const input = linha.line.querySelector("[data-withdrawal-quantity]");
+  const hint = linha.line.querySelector("[data-withdrawal-hint]");
+  const invalida = !linha.blank && Number.isNaN(linha.typed);
+  const estourou = Boolean(linha.item && semSaldo.has(linha.item.id));
+  input.classList.toggle("over-balance", invalida || estourou);
+  if (!hint) return;
+  hint.className = "withdrawal-hint";
+  if (!linha.item) {
+    hint.textContent = "";
+    return;
+  }
+  const item = linha.item;
+  const conversao = linha.pack ? `1 ${linha.pack.unit} = ${number.format(linha.pack.size)} ${item.unit}` : `Em ${item.unit}`;
+  if (invalida) {
+    hint.textContent = "Quantidade inválida. Use apenas números, com vírgula para o decimal.";
+    hint.className = "withdrawal-hint negative";
+    return;
+  }
+  if (!(linha.quantity > 0)) {
+    hint.textContent = `${conversao} · há ${number.format(item.quantity)} ${item.unit}`;
+    return;
+  }
+  const total = pedido.get(item.id) ?? linha.quantity;
+  const sobra = roundQuantity(item.quantity - total);
+  const leitura = linha.usingPack
+    ? `${packAmount(linha.pack, linha.typed)} = ${number.format(linha.quantity)} ${item.unit}`
+    : `${number.format(linha.quantity)} ${item.unit}`;
+  // Duas linhas do mesmo insumo somam no servidor. Dizer isso aqui evita o
+  // "por que recusou, se cada linha cabia no saldo?".
+  const repetido = repetidos.has(item.id) ? ` · o insumo está em mais de uma linha, e juntas pedem ${number.format(total)} ${item.unit}` : "";
+  hint.textContent = sobra < 0
+    ? `${leitura} · há ${number.format(item.quantity)} ${item.unit}, faltam ${number.format(Math.abs(sobra))} ${item.unit}${repetido}`
+    : `${leitura} · sobram ${number.format(sobra)} ${item.unit}${repetido}`;
+  if (sobra < 0) hint.className = "withdrawal-hint negative";
 }
 
 function refreshWithdrawalPreview() {
   const preview = document.getElementById("withdrawal-preview");
   if (!preview) return;
-  const lines = readWithdrawalLines();
-  if (!lines.length) {
-    document.getElementById("withdrawal-override").checked = false;
-    document.getElementById("withdrawal-override-field").hidden = true;
-    preview.textContent = "Escolha o insumo e quanto saiu do estoque.";
-    preview.className = "modal-result full neutral";
-    return;
-  }
+  const linhas = withdrawalLines();
+  const override = document.getElementById("withdrawal-override");
+  const overrideField = document.getElementById("withdrawal-override-field");
+
   // O mesmo insumo em duas linhas soma antes da conferência, como o servidor
   // faz: mostrar cada linha isolada aprovaria aqui uma retirada que lá seria
   // recusada por saldo.
-  const requested = new Map();
-  lines.forEach((line) => requested.set(line.inventory_id, Math.round(((requested.get(line.inventory_id) || 0) + line.quantity) * 1000) / 1000));
+  const pedido = new Map();
+  const vistos = new Set();
+  const repetidos = new Set();
+  linhas.forEach((linha) => {
+    if (!linha.item) return;
+    if (vistos.has(linha.item.id)) repetidos.add(linha.item.id); else vistos.add(linha.item.id);
+    if (!(linha.quantity > 0)) return;
+    pedido.set(linha.item.id, roundQuantity((pedido.get(linha.item.id) || 0) + linha.quantity));
+  });
+
   let cost = 0;
-  const missing = [];
-  requested.forEach((quantity, inventoryId) => {
+  const semSaldo = new Map();
+  pedido.forEach((quantity, inventoryId) => {
     const item = state.inventory.find((row) => row.id === inventoryId);
     if (!item) return;
     cost += quantity * item.unit_cost;
-    if (item.quantity < quantity) missing.push(`${item.name} (há ${number.format(item.quantity)} ${item.unit}, a retirada pede ${number.format(quantity)})`);
+    if (item.quantity < quantity) semSaldo.set(inventoryId, quantity);
   });
+
+  linhas.forEach((linha) => describeWithdrawalLine(linha, pedido, semSaldo, repetidos));
+
+  const pendentes = linhas.filter((linha) => linha.item && !(linha.quantity > 0)).length;
+  if (!pedido.size) {
+    override.checked = false;
+    overrideField.hidden = true;
+    const invalidas = linhas.some((linha) => linha.item && !linha.blank && Number.isNaN(linha.typed));
+    preview.textContent = invalidas
+      ? "Quantidade inválida. Use apenas números, com vírgula para o decimal."
+      : "Escolha o insumo, o tamanho e quanto saiu do estoque.";
+    preview.className = `modal-result full ${invalidas ? "negative" : "neutral"}`;
+    return;
+  }
   // Faltar saldo nao encerra o assunto: o insumo pode ter saido de verdade e o
   // cadastro estar atrasado. A recusa continua sendo o padrao, e a confirmacao
   // ao lado e o que separa o erro de digitacao do estoque desatualizado.
-  const override = document.getElementById("withdrawal-override");
-  const overrideField = document.getElementById("withdrawal-override-field");
-  overrideField.hidden = !missing.length;
-  if (!missing.length) override.checked = false;
-  if (missing.length) {
+  overrideField.hidden = !semSaldo.size;
+  if (!semSaldo.size) override.checked = false;
+  if (semSaldo.size) {
+    const faltas = [...semSaldo].map(([inventoryId, quantity]) => {
+      const item = state.inventory.find((row) => row.id === inventoryId);
+      return `${item.name} (há ${number.format(item.quantity)} ${item.unit}, a retirada pede ${number.format(quantity)} ${item.unit})`;
+    });
     preview.textContent = override.checked
-      ? `Sem saldo para ${missing.join(" · ")}. Vai ser registrada assim mesmo, e esse saldo fica negativo.`
-      : `Sem saldo para ${missing.join(" · ")}. Confira a quantidade, ou confirme abaixo para registrar assim mesmo.`;
+      ? `Sem saldo para ${faltas.join(" · ")}. Vai ser registrada assim mesmo, e esse saldo fica negativo.`
+      : `Sem saldo para ${faltas.join(" · ")}. Confira a quantidade, ou confirme abaixo para registrar assim mesmo.`;
     preview.className = `modal-result full ${override.checked ? "neutral" : "negative"}`;
     return;
   }
-  preview.textContent = `${requested.size} ${requested.size === 1 ? "insumo" : "insumos"} · ${currency.format(cost)} saindo do estoque.`;
-  preview.className = "modal-result full positive";
+  const resumo = `${pedido.size} ${pedido.size === 1 ? "insumo" : "insumos"} · ${currency.format(cost)} saindo do estoque.`;
+  preview.textContent = pendentes
+    ? `${resumo} Falta a quantidade de ${pendentes} ${pendentes === 1 ? "linha" : "linhas"}.`
+    : resumo;
+  preview.className = `modal-result full ${pendentes ? "negative" : "positive"}`;
 }
 
 async function submitWithdrawal(event) {
   event.preventDefault();
   const form = new FormData(event.currentTarget);
+  const linhas = withdrawalLines();
+  // Linha começada e não preenchida costuma ser insumo que saiu de verdade.
+  // Descartá-la em silêncio devolveria ao sistema um saldo maior que o da
+  // prateleira — exatamente o que este registro existe para evitar. O campo de
+  // texto não tem o `required` do navegador para barrar isso, então a checagem
+  // é aqui, e ela aponta a linha em vez de só recusar o formulário.
+  const pendentes = linhas.filter((linha) => linha.item && !(linha.quantity > 0));
+  if (pendentes.length) {
+    refreshWithdrawalPreview();
+    pendentes[0].line.querySelector("[data-withdrawal-quantity]").focus();
+    toast("Informe a quantidade de cada insumo, ou remova a linha que sobrou.", "error");
+    return;
+  }
   const items = readWithdrawalLines();
   if (!items.length) return toast("Inclua ao menos um insumo na retirada.", "error");
   const payload = {
@@ -2023,6 +2451,34 @@ function populateChannelSelect() {
   if (current && active.some((channel) => channel.name === current)) select.value = current;
 }
 
+// Frete, zona, endereço e entregador só existem quando a venda é entrega.
+// Mostrá-los na venda de balcão enchia o formulário de campo que não se aplica
+// — e era por isso que a caixa de seleção não parecia fazer nada.
+function toggleSaleDelivery() {
+  const entrega = document.getElementById("sale-is-delivery").checked;
+  document.querySelectorAll("#sale-form .sale-delivery-field").forEach((campo) => { campo.hidden = !entrega; });
+}
+
+// As zonas são carregadas sob demanda com o resto da operação de rua, então a
+// lista pode ainda não existir quando a venda abre. Ela é buscada aqui, uma vez.
+async function populateSaleZones() {
+  const select = document.getElementById("sale-zone");
+  if (!state.dispatch?.zones) {
+    try { state.dispatch = { ...(state.dispatch || {}), zones: await api("/api/delivery/zones") }; } catch (_) { /* segue sem zona */ }
+  }
+  const zonas = (state.dispatch?.zones || []).filter((zona) => zona.active !== false);
+  select.innerHTML = `<option value="">Sem zona definida</option>${zonas.map((zona) => `<option value="${zona.id}" data-fee="${zona.default_fee || 0}">${escapeHtml(zona.name)}</option>`).join("")}`;
+}
+
+// A zona já sabe quanto custa chegar lá. Digitar o frete de novo é a chance de
+// digitá-lo diferente, e a divergência só apareceria no acerto do mês.
+function applySaleZoneFee(event) {
+  const escolhida = event.target.selectedOptions[0];
+  const frete = Number(escolhida?.dataset.fee || 0);
+  const campo = document.querySelector('#sale-form [name="delivery_fee"]');
+  if (frete > 0 && Number(campo.value || 0) === 0) campo.value = frete.toFixed(2);
+}
+
 function populateAdjustSelect() {
   document.getElementById("adjust-inventory").innerHTML = state.inventory.map(item => `<option value="${item.id}">${escapeHtml(item.name)} (${number.format(item.quantity)} ${escapeHtml(item.unit)})</option>`).join("");
 }
@@ -2251,7 +2707,16 @@ function emptyRow(columns, message) { return `<tr><td colspan="${columns}" class
 function setText(selector, value) { const element = document.querySelector(selector); if (element) element.textContent = value; }
 function escapeHtml(value) { return String(value ?? "").replace(/[&<>'"]/g, char => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" }[char])); }
 function refreshIcons() { window.lucide?.createIcons(); }
-function setRefreshing(value) { const button = document.getElementById("refresh-data"); button.disabled = value; button.classList.toggle("is-loading", value); }
+// Enquanto a tela recarrega, as tabelas são reescritas por baixo do dedo do
+// gestor: ele clica em "excluir" e o botão deixa de existir no meio do clique,
+// então nada acontece e nada explica. Marcar o corpo desliga as ações de linha
+// durante a recarga — o clique espera meio segundo em vez de se perder.
+function setRefreshing(value) {
+  const button = document.getElementById("refresh-data");
+  button.disabled = value;
+  button.classList.toggle("is-loading", value);
+  document.body.classList.toggle("is-refreshing", value);
+}
 function toast(message, type) { const element = document.getElementById("toast"); element.textContent = message; element.className = `toast ${type}`; element.hidden = false; clearTimeout(toast.timer); toast.timer = setTimeout(() => { element.hidden = true; }, 4200); }
 
 
@@ -2794,6 +3259,15 @@ function renderPlanning() {
   const pedir = plan.purchase.filter((row) => row.reorder_now);
   setText("#pl-purchase", currency.format(plan.purchase_total));
   setText("#pl-purchase-count", pedir.length ? `${pedir.length} item(ns) no ponto de pedido` : "nada no ponto de pedido");
+  // Três tabelas vazias em sequência, e a explicação só no rodapé: o gestor
+  // concluía "sem nexo" antes de chegar nela — e estava certo, porque nada no
+  // topo dizia que o plano não tem base. O motivo agora vem primeiro.
+  const semPlano = !plan.production.length && !plan.purchase.length;
+  const aviso = document.getElementById("planning-gap");
+  aviso.hidden = !semPlano || !plan.blockers.length;
+  if (!aviso.hidden) {
+    aviso.innerHTML = `<i data-lucide="unplug"></i><span>O plano está vazio, e não é falha de cálculo: <strong>${escapeHtml(plan.blockers[0].title)}</strong>. ${escapeHtml(plan.blockers[0].description)} O detalhe está em "O que o plano ainda não enxerga", no fim desta tela.</span>`;
+  }
   setText("#pl-days", number.format(plan.open_days));
   setText("#pl-service", `${number.format(plan.service_level)}%`);
   setText("#pl-method", plan.method.summary);
@@ -2924,9 +3398,33 @@ function renderDelivery() {
   document.getElementById("dl-readings").innerHTML = data.readings.map((row) => `
     <article class="insight ${row.type}"><span class="insight-icon"><i data-lucide="${row.type === "attention" ? "triangle-alert" : row.type === "opportunity" ? "badge-dollar-sign" : "lightbulb"}"></i></span><div><strong>${escapeHtml(row.title)}</strong><p>${escapeHtml(row.description)}</p></div></article>`).join("");
 
-  document.getElementById("dl-courier-body").innerHTML = data.couriers.length
-    ? data.couriers.map((row) => `<tr class="${row.active ? "" : "cancelled-row"}">
-        <td><strong>${escapeHtml(row.name)}</strong>${row.vehicle ? `<span class="row-note">${escapeHtml(row.vehicle)}</span>` : ""}${row.overrides ? `<span class="row-note">${row.overrides} turno(s) com valor à mão</span>` : ""}</td>
+  // Quem manda na lista é o cadastro; a medição preenche as colunas. Antes ela
+  // vinha só do desempenho do período, e por isso o entregador recém-cadastrado
+  // não aparecia em lugar nenhum — justamente quem mais precisa ser aberto, para
+  // ligar a conta do aplicativo de rua ao cadastro dele.
+  const medido = new Map(data.couriers.map((row) => [row.courier_id, row]));
+  const zerado = {
+    deliveries: 0, shifts: 0, deliveries_per_shift: 0, freight: 0, payout: 0,
+    salary: 0, cost_per_delivery: null, result: 0, overrides: 0,
+  };
+  const linhasCourier = state.couriers.map((courier) => ({
+    ...zerado,
+    ...(medido.get(courier.id) || {}),
+    courier_id: courier.id,
+    name: courier.name,
+    vehicle: courier.vehicle,
+    active: courier.active !== false,
+    moved: medido.has(courier.id),
+  }));
+  // Entregador que saiu do cadastro mas tem turno no período continua aqui: o
+  // custo dele está no total, e sumir a linha faria a coluna não fechar.
+  data.couriers
+    .filter((row) => !state.couriers.some((courier) => courier.id === row.courier_id))
+    .forEach((row) => linhasCourier.push({ ...row, moved: true }));
+
+  document.getElementById("dl-courier-body").innerHTML = linhasCourier.length
+    ? linhasCourier.map((row) => `<tr class="${row.active ? "" : "cancelled-row"}">
+        <td><strong>${escapeHtml(row.name)}</strong>${row.vehicle ? `<span class="row-note">${escapeHtml(row.vehicle)}</span>` : ""}${row.moved ? "" : '<span class="row-note">sem movimento no período</span>'}${row.overrides ? `<span class="row-note">${row.overrides} turno(s) com valor à mão</span>` : ""}</td>
         <td class="align-right"><strong>${number.format(row.deliveries)}</strong></td>
         <td class="align-right muted-value">${number.format(row.shifts)}</td>
         <td class="align-right muted-value">${number.format(row.deliveries_per_shift)}</td>
@@ -2936,7 +3434,7 @@ function renderDelivery() {
         <td class="align-right ${row.result >= 0 ? "positive" : "negative"}"><strong>${currency.format(row.result)}</strong></td>
         <td class="align-right"><div class="row-actions"><button class="row-action" type="button" data-edit-courier="${row.courier_id}" title="Editar entregador"><i data-lucide="pencil"></i></button></div></td>
       </tr>`).join("")
-    : emptyRow(9, "Nenhum entregador com lançamento no período.");
+    : emptyRow(9, "Nenhum entregador cadastrado. Cadastre um para lançar turno e para liberar o aplicativo de rua.");
 
   setText("#dl-entry-count", `${state.deliveries.length} turno(s)`);
   document.getElementById("dl-entry-body").innerHTML = state.deliveries.length
@@ -3147,4 +3645,199 @@ function fieldLabel(field) {
     delivery_fee: "frete", is_delivery: "é entrega", valor: "valor",
     registros_migrados: "registros migrados", recurring: "fixa",
   }[field] || field;
+}
+
+// ------------------------------------------------------- operação de rua
+//
+// Zonas, quem está na rua agora e o que o território ensina. Carregado ao
+// abrir a tela de Entregas, e não no `loadAll`: aquele já espera trinta e
+// quatro consultas antes de mostrar qualquer coisa, e quatro a mais fariam o
+// painel inteiro demorar por causa de uma tela que nem sempre é aberta. O
+// precedente é o do iFood, que já carrega assim.
+
+async function loadDispatch() {
+  if (loadDispatch.pending) return;
+  loadDispatch.pending = true;
+  try {
+    const [board, territory, zones, runs, pending, shifts] = await Promise.all([
+      api(`/api/delivery/board?days=${state.deliveryPeriod}`),
+      api(`/api/delivery/territory?days=90&horizon=7`),
+      api("/api/delivery/zones"),
+      api(`/api/delivery/runs?days=${state.deliveryPeriod}`),
+      api(`/api/delivery/pending?days=${state.deliveryPeriod}`),
+      api(`/api/delivery/shifts?days=${state.deliveryPeriod}`),
+    ]);
+    state.dispatch = { board, territory, zones, runs, pending, shifts };
+    renderDispatch();
+  } catch (error) {
+    toast(error.message || "Não foi possível carregar a operação de rua.", "error");
+  } finally {
+    loadDispatch.pending = false;
+  }
+}
+
+function renderDispatch() {
+  const dados = state.dispatch;
+  if (!dados) return;
+  renderOnRoad(dados.board.now);
+  renderZones(dados.board.zones, dados.zones);
+  renderTerritory(dados.territory);
+  renderMenuByZone(dados.territory.menu || []);
+  renderRuns(dados.runs);
+  renderPendingSales(dados.pending);
+  renderShiftLog(dados.shifts);
+  // As leituras do painel de rua entram junto das do acerto: as duas
+  // respondem a mesma pergunta — o que precisa de decisão hoje.
+  const leituras = document.getElementById("dl-readings");
+  if (leituras && dados.board.readings?.length) {
+    leituras.insertAdjacentHTML("beforeend", dados.board.readings.map(insightCard).join(""));
+  }
+  refreshIcons();
+}
+
+function renderOnRoad(agora) {
+  setText("#dl-now-chip", agora.checked_in
+    ? `${agora.checked_in} em turno · ${agora.on_route} a caminho`
+    : "ninguém em turno");
+  document.getElementById("dl-now").innerHTML = agora.on_shift.length
+    ? agora.on_shift.map((pessoa) => `
+      <article class="now-card">
+        <div class="now-head">
+          <div><strong>${escapeHtml(pessoa.name)}</strong><small class="muted-value">${escapeHtml(pessoa.vehicle || "")}</small></div>
+          <span class="soft-chip">${duracaoCurta(pessoa.minutes_on_shift)} em turno</span>
+        </div>
+        <p class="now-line">${pessoa.deliveries} entrega(s) · ${currency.format(pessoa.freight)} de frete</p>
+        ${pessoa.on_route.length
+          ? pessoa.on_route.map((linha) => `
+            <div class="now-route ${linha.late ? "late" : ""}">
+              <span><strong>${escapeHtml(linha.zone_name || "Sem zona")}</strong>${linha.customer_name ? ` · ${escapeHtml(linha.customer_name)}` : ""}</span>
+              <b>${linha.minutes} min</b>
+            </div>`).join("")
+          : `<p class="now-line muted-value">Na loja, sem entrega a caminho.</p>`}
+      </article>`).join("")
+    : `<p class="empty-note">Ninguém fez check-in. O entregador abre <code>/entregador</code> no celular dele e toca em “Fazer check-in”.</p>`;
+}
+
+function renderZones(medidas, cadastro) {
+  const porZona = new Map(medidas.map((linha) => [linha.zone_id, linha]));
+  const linhas = cadastro.map((zona) => {
+    const medida = porZona.get(zona.id) || { deliveries: 0, share: 0, per_day: 0, customers: 0, ticket: null, freight: 0, minutes_median: null, thin: true, over_target: false };
+    const tempo = medida.minutes_median === null
+      ? '<span class="muted-value">—</span>'
+      : `<strong class="${medida.over_target ? "negative" : ""}">${medida.minutes_median} min</strong>${zona.target_minutes ? `<small class="muted-value">/${zona.target_minutes}</small>` : ""}`;
+    const marca = !zona.active
+      ? '<span class="soft-chip">inativa</span>'
+      : medida.thin && medida.deliveries ? '<span class="soft-chip">amostra fraca</span>' : "";
+    return `<tr><td><strong>${escapeHtml(zona.name)}</strong> ${marca}${zona.note ? `<small class="muted-value"> ${escapeHtml(zona.note)}</small>` : ""}</td><td class="align-right">${number.format(medida.deliveries)}</td><td class="align-right">${medida.deliveries ? `${number.format(medida.share)}%` : '<span class="muted-value">—</span>'}</td><td class="align-right muted-value">${number.format(medida.per_day)}</td><td class="align-right">${number.format(medida.customers)}</td><td class="align-right">${medida.ticket === null ? '<span class="muted-value">—</span>' : currency.format(medida.ticket)}</td><td class="align-right">${currency.format(medida.freight)}</td><td class="align-right">${tempo}</td><td class="align-right"><div class="row-actions"><button class="row-action" type="button" data-edit-zone="${zona.id}" title="Editar zona"><i data-lucide="pencil"></i></button></div></td></tr>`;
+  });
+  // Entrega sem zona é dado que não entra em leitura nenhuma; ela precisa
+  // aparecer aqui para alguém corrigir, e não sumir por não ter cadastro.
+  const orfas = porZona.get("sem-zona");
+  if (orfas) {
+    linhas.push(`<tr><td><strong class="negative">Sem zona</strong><small class="muted-value"> corrija cada entrega na lista abaixo</small></td><td class="align-right">${number.format(orfas.deliveries)}</td><td class="align-right">${number.format(orfas.share)}%</td><td class="align-right muted-value">${number.format(orfas.per_day)}</td><td class="align-right">${number.format(orfas.customers)}</td><td class="align-right muted-value">—</td><td class="align-right">${currency.format(orfas.freight)}</td><td class="align-right muted-value">—</td><td></td></tr>`);
+  }
+  document.getElementById("dl-zone-body").innerHTML = linhas.length
+    ? linhas.join("")
+    : emptyRow(9, "Nenhuma zona cadastrada. Sem ela o entregador não tem o que escolher, e a pergunta “onde mais pedem” continua sem resposta.");
+}
+
+function renderTerritory(territorio) {
+  const base = territorio.basis;
+  setText("#dl-territory-basis", territorio.status === "sem-dados"
+    ? "sem entregas"
+    : `${number.format(base.deliveries)} entregas · ${number.format(base.days_with_delivery)} dia(s) com movimento`);
+  const nota = document.getElementById("dl-territory-note");
+  if (territorio.note) nota.textContent = territorio.note;
+
+  document.getElementById("dl-territory").innerHTML = territorio.zones.length
+    ? territorio.zones.map((zona) => {
+      const dias = zona.forecast.slice(0, 7).map((dia) => `<div class="zone-day"><small>${escapeHtml(dia.weekday.slice(0, 3))}</small><b>${number.format(dia.deliveries)}</b></div>`).join("");
+      return `
+        <article class="zone-card ${zona.thin ? "thin" : ""}">
+          <div class="zone-head"><strong>${escapeHtml(zona.name)}</strong>${zona.thin ? '<span class="soft-chip">amostra fraca</span>' : ""}</div>
+          <p class="zone-line">${number.format(zona.daily_average)} entrega(s) por dia com movimento · tendência ${number.format(zona.trend)}× · ${zona.active_days} dia(s) medido(s)</p>
+          ${zona.best_weekday ? `<p class="zone-line muted-value">Dia mais forte: ${escapeHtml(zona.best_weekday.name)}, com ${zona.best_weekday.deliveries} entrega(s).</p>` : ""}
+          <div class="zone-days">${dias}</div>
+          <p class="zone-line"><strong>${number.format(zona.forecast_total)}</strong> entregas previstas nos próximos 7 dias.</p>
+          ${zona.top_products.length ? `<p class="zone-line muted-value">Mais pedido: ${zona.top_products.map((linha) => `${escapeHtml(linha.name)} (${linha.units})`).join(" · ")}</p>` : ""}
+        </article>`;
+    }).join("")
+    : `<p class="empty-note">${escapeHtml(territorio.note || "Sem entregas registradas no período.")}</p>`;
+}
+
+function renderMenuByZone(sugestoes) {
+  document.getElementById("dl-menu").innerHTML = sugestoes.length
+    ? sugestoes.map((linha) => `
+      <article class="insight opportunity"><span class="insight-icon"><i data-lucide="map-pinned"></i></span><div><strong>${escapeHtml(linha.title)}</strong><p>${escapeHtml(linha.description)}</p><p class="muted-value">${escapeHtml(linha.action)}</p></div></article>`).join("")
+    : `<p class="empty-note">Ainda não há entregas suficientes para separar preferência de bairro de coincidência. A tela se preenche sozinha conforme os check-outs acontecem.</p>`;
+}
+
+function renderRuns(entregas) {
+  setText("#dl-runs-count", `${number.format(entregas.length)} no período`);
+  document.getElementById("dl-runs-body").innerHTML = entregas.length
+    ? entregas.map((linha) => {
+      const tempo = linha.open
+        ? `<strong class="negative">em rota · ${linha.minutes} min</strong>`
+        : linha.failed ? '<span class="negative">não entregue</span>' : `${linha.minutes} min`;
+      const itens = (linha.items || []).map((item) => `${item.quantity}× ${item.name}`).join(", ");
+      return `<tr><td>${formatDateTime(linha.departed_at)}</td><td>${escapeHtml(courierName(linha.courier_id))}</td><td><strong>${escapeHtml(linha.zone_name || "Sem zona")}</strong>${linha.reference ? `<small class="muted-value"> ${escapeHtml(linha.reference)}</small>` : ""}</td><td class="muted-value">${escapeHtml(itens || `${linha.units} item(ns)`)}</td><td>${escapeHtml(linha.customer_name || "—")}</td><td class="align-right">${currency.format(linha.freight)}</td><td class="align-right">${tempo}</td><td class="align-right"><div class="row-actions"><button class="row-action" type="button" data-edit-run="${linha.id}" title="Corrigir entrega"><i data-lucide="pencil"></i></button><button class="row-action danger" type="button" data-delete-run="${linha.id}" title="Excluir entrega"><i data-lucide="trash-2"></i></button></div></td></tr>`;
+    }).join("")
+    : emptyRow(8, "Nenhuma entrega registrada. Elas aparecem aqui conforme os entregadores registram no aplicativo de rua.");
+}
+
+// A venda que veio da rua e ainda não é faturamento. O painel só existe quando
+// há algo a conferir: um quadro vazio todo dia ensina a ignorar o quadro.
+function renderPendingSales(pendentes) {
+  const painel = document.getElementById("dl-pending-panel");
+  painel.hidden = !pendentes.length;
+  setText("#dl-pending-chip", `${pendentes.length} aguardando`);
+  document.getElementById("dl-pending-body").innerHTML = pendentes.map((linha) => {
+    const itens = (linha.items || []).map((item) => `${item.quantity}× ${item.name}`).join(", ");
+    const recebeu = linha.declared_total === null || linha.declared_total === undefined
+      ? '<span class="muted-value">não informado</span>'
+      : `<strong>${currency.format(linha.declared_total)}</strong>`;
+    // Divergência entre o que a rua recebeu e o que o cardápio calcularia é a
+    // razão de a conferência existir; marcá-la evita ter de conferir de cabeça.
+    const difere = linha.declared_total !== null && linha.declared_total !== undefined
+      && Math.abs(linha.declared_total - linha.suggested_total) >= 0.01;
+    return `<tr>
+      <td class="muted-value">${escapeHtml(formatDateTime(linha.occurred_at))}</td>
+      <td>${escapeHtml(linha.courier_name)}</td>
+      <td>${escapeHtml(linha.zone_name || "—")}</td>
+      <td class="muted-value">${escapeHtml(itens || `${linha.units} item(ns)`)}</td>
+      <td>${escapeHtml(linha.customer_name || "—")}</td>
+      <td class="align-right">${recebeu}</td>
+      <td class="align-right ${difere ? "negative" : "muted-value"}">${currency.format(linha.suggested_total)}</td>
+      <td class="muted-value">${escapeHtml(linha.payment_method || "—")}</td>
+      <td class="align-right"><div class="row-actions"><button class="row-action" type="button" data-check-pending="${linha.id}" title="Conferir e lançar"><i data-lucide="check"></i></button></div></td>
+    </tr>`;
+  }).join("");
+}
+
+function renderShiftLog(turnos) {
+  setText("#dl-shifts-chip", `${turnos.length} turno(s)`);
+  document.getElementById("dl-shifts-body").innerHTML = turnos.length
+    ? turnos.map((linha) => `<tr>
+        <td class="muted-value">${escapeHtml(formatDate(linha.date))}</td>
+        <td><strong>${escapeHtml(linha.courier_name)}</strong></td>
+        <td>${escapeHtml(hourOf(linha.checkin_at))}</td>
+        <td>${linha.open ? '<strong class="positive">em turno</strong>' : escapeHtml(hourOf(linha.checkout_at))}</td>
+        <td class="align-right ${linha.auto_closed ? "muted-value" : ""}">${duracaoCurta(linha.minutes)}</td>
+        <td class="align-right">${number.format(linha.deliveries)}</td>
+        <td class="align-right">${currency.format(linha.freight)}</td>
+        <td>${linha.auto_closed ? `<span class="row-note">fechado pelo sistema: ${escapeHtml(linha.auto_closed)}${linha.left_on_route ? ` · ${linha.left_on_route} ficou(ram) em rota` : ""}</span>` : ""}</td>
+      </tr>`).join("")
+    : emptyRow(8, "Nenhum check-in no período.");
+}
+
+function hourOf(value) {
+  return value ? new Intl.DateTimeFormat("pt-BR", { hour: "2-digit", minute: "2-digit" }).format(new Date(value)) : "--:--";
+}
+
+function courierName(courierId) {
+  return (state.couriers.find((linha) => linha.id === courierId) || {}).name || "Entregador removido";
+}
+
+function duracaoCurta(minutos) {
+  return minutos < 60 ? `${minutos} min` : `${Math.floor(minutos / 60)}h${String(minutos % 60).padStart(2, "0")}`;
 }

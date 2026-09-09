@@ -3,12 +3,14 @@
  * deliberately excluded: a device must never display stale sales or finance data.
  */
 const CACHE_PREFIX = "acai-gestao-shell-";
-const CACHE_NAME = `${CACHE_PREFIX}v30`;
+const CACHE_NAME = `${CACHE_PREFIX}v38`;
 const APP_SHELL = [
   "/",
   "/static/index.html",
   "/static/styles.css",
   "/static/app.js",
+  "/static/courier.html",
+  "/static/courier.js",
   "/static/manage.js",
   "/static/pwa-register.js",
   "/static/firebase-auth.js",
