@@ -3725,8 +3725,12 @@ function renderZones(medidas, cadastro) {
     const tempo = medida.minutes_median === null
       ? '<span class="muted-value">—</span>'
       : `<strong class="${medida.over_target ? "negative" : ""}">${medida.minutes_median} min</strong>${zona.target_minutes ? `<small class="muted-value">/${zona.target_minutes}</small>` : ""}`;
+    // Zona criada na rua chega com frete zero e sem tempo alvo: ela vale, mas
+    // precisa de decisão da loja antes de virar base de acerto. A marca é o
+    // que impede que ela fique para sempre valendo frete nenhum.
     const marca = !zona.active
       ? '<span class="soft-chip">inativa</span>'
+      : zona.proposed ? '<span class="soft-chip attention">criada na rua · confirme o frete</span>'
       : medida.thin && medida.deliveries ? '<span class="soft-chip">amostra fraca</span>' : "";
     return `<tr><td><strong>${escapeHtml(zona.name)}</strong> ${marca}${zona.note ? `<small class="muted-value"> ${escapeHtml(zona.note)}</small>` : ""}</td><td class="align-right">${number.format(medida.deliveries)}</td><td class="align-right">${medida.deliveries ? `${number.format(medida.share)}%` : '<span class="muted-value">—</span>'}</td><td class="align-right muted-value">${number.format(medida.per_day)}</td><td class="align-right">${number.format(medida.customers)}</td><td class="align-right">${medida.ticket === null ? '<span class="muted-value">—</span>' : currency.format(medida.ticket)}</td><td class="align-right">${currency.format(medida.freight)}</td><td class="align-right">${tempo}</td><td class="align-right"><div class="row-actions"><button class="row-action" type="button" data-edit-zone="${zona.id}" title="Editar zona"><i data-lucide="pencil"></i></button></div></td></tr>`;
   });

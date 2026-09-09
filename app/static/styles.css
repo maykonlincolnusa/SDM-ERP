@@ -1297,3 +1297,5 @@ body.is-refreshing .row-actions { pointer-events: none; opacity: 0.45; }
 /* Recusa que tem saida: o link para a porta certa, dentro do proprio aviso. */
 .auth-link { display: inline-block; margin-top: 8px; color: var(--accent); font-weight: 700; overflow-wrap: anywhere; }
 
+/* Zona que nasceu na rua e ainda espera o frete da loja. */
+.soft-chip.attention { border-color: var(--orange); background: var(--orange-soft); color: var(--orange-ink); }

@@ -849,6 +849,12 @@ class DeliveryZoneCreate(BaseModel):
     target_minutes: int | None = Field(default=None, ge=1, le=240)
     note: str | None = Field(default=None, max_length=160)
     active: bool = True
+    # Zona que nasceu na rua, no meio de uma entrega, porque nenhuma servia.
+    # Ela vale desde o primeiro segundo — o entregador nao pode ficar parado na
+    # calcada esperando o balcao cadastrar —, mas fica marcada ate alguem da
+    # loja confirmar, renomear ou fundir com outra. E o que separa "a lista
+    # nasce da rua" de "a lista vira Centro, centro e Ctr".
+    proposed: bool = False
 
 
 class DeliveryZoneUpdate(BaseModel):
@@ -857,6 +863,7 @@ class DeliveryZoneUpdate(BaseModel):
     target_minutes: int | None = Field(default=None, ge=1, le=240)
     note: str | None = Field(default=None, max_length=160)
     active: bool | None = None
+    proposed: bool | None = None
 
 
 class CourierCheckIn(BaseModel):
@@ -881,6 +888,17 @@ class CourierCheckOut(BaseModel):
     """
 
     note: str | None = Field(default=None, max_length=160)
+
+
+class FieldZoneCreate(BaseModel):
+    """Zona proposta pelo entregador, no meio de uma entrega.
+
+    So o nome: frete e tempo alvo sao decisao de negocio e nao se tomam na
+    calcada com o motor ligado. Ela entra com frete zero e marcada como
+    proposta, e a loja completa depois.
+    """
+
+    name: str = Field(min_length=2, max_length=60)
 
 
 class DeliveryRunItem(BaseModel):

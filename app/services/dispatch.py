@@ -144,6 +144,36 @@ class DispatchService:
         self.erp._audit(self.store, "zone", zone["id"], "criada", f"Zona de entrega {zone['name']} cadastrada")
         return zone
 
+    def propose_zone(self, courier: dict[str, Any], payload: FieldZoneCreate) -> dict[str, Any]:
+        """Zona criada da rua, quando nenhuma das cadastradas serve.
+
+        O entregador nao pode ficar parado na calcada esperando o balcao
+        cadastrar um bairro. Ela vale desde o primeiro segundo, com frete zero,
+        e fica marcada como proposta ate a loja confirmar, renomear ou fundir —
+        que e o que separa "a lista nasce da rua" de "a lista vira Centro,
+        centro e Ctr".
+
+        Nome que ja existe nao vira zona nova: devolve a que existe. Na rua, o
+        que o entregador quer e seguir, e recusar por duplicidade seria o mesmo
+        beco de antes com outra mensagem.
+        """
+
+        nome = payload.name.strip()
+        existente = next(
+            (linha for linha in self.store.list(ZONES) if self._fold(linha.get("name", "")) == self._fold(nome)),
+            None,
+        )
+        if existente:
+            return existente
+
+        zone = self.create_zone(DeliveryZoneCreate(name=nome, proposed=True))
+        self.erp._audit(
+            self.store, "zone", zone["id"], "proposta na rua",
+            f"{courier['name']} criou a zona {zone['name']} durante uma entrega",
+            {"frete": "a definir pela loja"},
+        )
+        return zone
+
     def update_zone(self, zone_id: str, payload: DeliveryZoneUpdate) -> dict[str, Any]:
         zone = self.store.get(ZONES, zone_id)
         if not zone:

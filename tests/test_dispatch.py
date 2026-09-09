@@ -38,7 +38,7 @@ from app.schemas import (
     OrderLine,
 )
 from app.services import DeliveryService, DispatchService, ERPService
-from app.services.dispatch import FUSO_LOJA, RUNS, SHIFTS
+from app.services.dispatch import FUSO_LOJA, RUNS, SHIFTS, ZONES
 
 
 @pytest.fixture
@@ -1050,3 +1050,50 @@ def test_o_territorio_responde_mesmo_sem_nenhuma_entrega(client):
 
     assert territorio["status"] == "sem-dados"
     assert territorio["basis"]["deliveries"] == 0
+
+
+# ----------------------------------------------------------------------
+# Zona criada na rua
+#
+# A trava era dura: sem zona cadastrada o entregador ficava parado na calcada
+# esperando o balcao. A saida nao pode ser texto livre — "Centro", "centro" e
+# "Ctr" matam o relatorio que a zona existe para alimentar —, entao ela nasce
+# valendo e marcada, e a loja confirma depois.
+# ----------------------------------------------------------------------
+
+
+def test_o_entregador_cria_zona_e_ela_vale_na_mesma_entrega(dispatch, store, courier):
+    from app.schemas import FieldZoneCreate
+
+    zona = dispatch.propose_zone(courier, FieldZoneCreate(name="Jardim América"))
+
+    assert zona["proposed"] is True
+    # Frete zero de proposito: na calcada nao se decide preco.
+    assert zona["default_fee"] == 0
+    _turno(dispatch, courier)
+    run = dispatch.register_run(courier, DeliveryRunCreate(
+        zone_id=zona["id"], items=[DeliveryRunItem(product_id="acai-500", quantity=1)],
+    ))
+    assert run["zone_name"] == "Jardim América"
+
+
+def test_zona_que_ja_existe_devolve_a_existente_em_vez_de_recusar(dispatch, store, courier, centro):
+    """Recusar por duplicidade seria o mesmo beco de antes com outra mensagem."""
+
+    from app.schemas import FieldZoneCreate
+
+    zona = dispatch.propose_zone(courier, FieldZoneCreate(name="  centro  "))
+
+    assert zona["id"] == centro["id"]
+    assert len([linha for linha in store.list(ZONES) if linha["name"].lower() == "centro"]) == 1
+
+
+def test_a_loja_confirma_a_zona_da_rua_ao_definir_o_frete(dispatch, courier):
+    from app.schemas import DeliveryZoneUpdate, FieldZoneCreate
+
+    zona = dispatch.propose_zone(courier, FieldZoneCreate(name="Vila Nova"))
+
+    confirmada = dispatch.update_zone(zona["id"], DeliveryZoneUpdate(default_fee=8.0, proposed=False))
+
+    assert confirmada["proposed"] is False
+    assert confirmada["default_fee"] == 8.0

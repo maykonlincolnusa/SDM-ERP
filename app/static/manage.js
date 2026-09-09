@@ -1367,6 +1367,9 @@
       note: form.get("note") || null,
     };
     if (zoneId) {
+      // Salvar uma zona que veio da rua é o ato de confirmá-la: a loja acabou
+      // de olhar o nome e definir o frete, que é exatamente o que faltava.
+      payload.proposed = false;
       await submitData(`/api/delivery/zones/${zoneId}`, payload, "Zona atualizada.", "PATCH");
       return;
     }

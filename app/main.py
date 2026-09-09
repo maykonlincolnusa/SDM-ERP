@@ -35,6 +35,7 @@ from app.schemas import (
     ExpenseCreate,
     ExpenseSeriesUpdate,
     ExpenseUpdate,
+    FieldZoneCreate,
     FixedCostSetup,
     IFoodActivationConfirm,
     IFoodActivationStart,
@@ -1272,6 +1273,21 @@ def field_history(
     o registro ser feito.
     """
     return _run(lambda: service.field_history(_courier_of(request, service, courier_id), days))
+
+
+@app.post("/api/field/zones", status_code=status.HTTP_201_CREATED)
+def propose_field_zone(
+    request: Request,
+    payload: FieldZoneCreate,
+    courier_id: str | None = None,
+    service: DispatchService = Depends(dispatch_service),
+) -> dict:
+    """Cria uma zona a partir da rua, quando nenhuma cadastrada serve.
+
+    Ela entra marcada como proposta e com frete zero: quem está na calçada não
+    decide preço de frete, mas também não pode ficar parado esperando o balcão.
+    """
+    return _run(lambda: service.propose_zone(_courier_of(request, service, courier_id), payload))
 
 
 @app.post("/api/field/check-in", status_code=status.HTTP_201_CREATED)

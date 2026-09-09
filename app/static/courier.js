@@ -38,6 +38,11 @@ function ligar() {
     document.getElementById(id).addEventListener("click", () => abrirEntrega(null, { atrasada: true }));
   });
   document.getElementById("field-history-toggle").addEventListener("click", alternarHistorico);
+  document.getElementById("run-zone").addEventListener("change", (evento) => {
+    const nova = evento.target.value === "__nova__";
+    document.getElementById("run-new-zone-field").hidden = !nova;
+    if (nova) document.getElementById("run-new-zone").focus();
+  });
   document.getElementById("field-pick-list").addEventListener("click", (evento) => {
     const escolhido = evento.target.closest("[data-pick]");
     if (!escolhido) return;
@@ -165,18 +170,18 @@ function renderEntregues(entregues) {
 function abrirEntrega(orderId, opcoes = {}) {
   const dados = estado.data;
   const zonas = dados.queue.zones || [];
-  if (!zonas.length) {
-    mostrar("A loja ainda não cadastrou nenhuma zona de entrega.");
-    return;
-  }
   const pedido = orderId ? (dados.queue.orders || []).find((linha) => linha.order_id === orderId) : null;
   estado.escolhido = pedido || null;
 
   const form = document.getElementById("run-form");
   form.reset();
+  // Lista vazia deixava o entregador parado na calçada esperando o balcão
+  // cadastrar um bairro. A saída fica sempre na própria lista, no fim.
   document.getElementById("run-zone").innerHTML = zonas
-    .map((zona) => `<option value="${zona.id}">${escapar(zona.name)}</option>`)
-    .join("");
+    .map((zona) => `<option value="${zona.id}">${escapar(zona.name)}${zona.proposed ? " (a confirmar)" : ""}</option>`)
+    .join("") + '<option value="__nova__">+ Criar zona nova…</option>';
+  document.getElementById("run-new-zone-field").hidden = true;
+  document.getElementById("run-new-zone").value = "";
   // A zona que este cliente usou da última vez já vem marcada: ela é o único
   // dado que o pedido não traz, e adivinhá-la é o toque que sobra para cortar.
   if (pedido?.suggested_zone_id) document.getElementById("run-zone").value = pedido.suggested_zone_id;
@@ -226,8 +231,24 @@ function adicionarItem() {
 async function enviarEntrega(evento) {
   evento.preventDefault();
   const pedido = estado.escolhido;
+
+  // Zona nova nasce antes da entrega, para a entrega já sair com ela. Se a
+  // criação falhar, nada é lançado — melhor recusar do que gravar a entrega
+  // numa zona que não existe.
+  let zonaId = document.getElementById("run-zone").value;
+  if (zonaId === "__nova__") {
+    const nome = document.getElementById("run-new-zone").value.trim();
+    if (nome.length < 2) return mostrar("Escreva o nome da zona nova.");
+    try {
+      const criada = await api(`/api/field/zones${chave()}`, { method: "POST", body: JSON.stringify({ name: nome }) });
+      zonaId = criada.id;
+    } catch (erro) {
+      return mostrar(erro.message || "Não foi possível criar a zona.");
+    }
+  }
+
   const payload = {
-    zone_id: document.getElementById("run-zone").value,
+    zone_id: zonaId,
     reference: document.getElementById("run-reference").value.trim() || null,
   };
   if (pedido) {
