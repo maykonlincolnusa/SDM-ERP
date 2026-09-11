@@ -63,6 +63,7 @@ from app.schemas.models import (
     ProductUpdate,
     RecipeLine,
     SportAnchorCreate,
+    StoreLocation,
     SportAnchorUpdate,
 )
 
@@ -131,5 +132,6 @@ __all__ = [
     "ProductUpdate",
     "RecipeLine",
     "SportAnchorCreate",
+    "StoreLocation",
     "SportAnchorUpdate",
 ]

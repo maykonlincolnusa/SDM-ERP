@@ -28,7 +28,11 @@ function ligar() {
   // O check-in identifica o entregador pelo corpo, e nao pela URL: ele e a
   // unica chamada que acontece antes de existir turno, entao e nela que o
   // modo demonstrativo precisa dizer de quem e o turno que esta nascendo.
-  document.getElementById("field-checkin").addEventListener("click", () => acao("/api/field/check-in", { courier_id: escolhidoNaUrl() }, "Check-in feito. Bom turno."));
+  document.getElementById("field-checkin").addEventListener("click", async () => {
+    // A posição é pedida aqui, no toque, e não no carregamento da tela.
+    const onde = await posicaoAtual();
+    await acao("/api/field/check-in", { courier_id: escolhidoNaUrl(), ...(onde || {}) }, "Check-in feito. Bom turno.");
+  });
   document.getElementById("field-checkout").addEventListener("click", encerrar);
   document.getElementById("field-refresh").addEventListener("click", () => carregar());
   document.getElementById("field-manual").addEventListener("click", () => abrirEntrega(null));
@@ -287,7 +291,42 @@ async function encerrar() {
   const totais = estado.data?.totals;
   const resumo = totais ? `${totais.deliveries} entrega(s) · ${moeda.format(totais.freight)} de frete` : "";
   if (!confirm(`Encerrar o turno?\n\n${resumo}\n\nO acerto do dia é montado com esses números.`)) return;
-  await acao(`/api/field/check-out${chave()}`, {}, "Turno encerrado. O acerto já está na loja.");
+  const onde = await posicaoAtual();
+  await acao(`/api/field/check-out${chave()}`, onde || {}, "Turno encerrado. O acerto já está na loja.");
+}
+
+// ------------------------------------------------------------ localização
+//
+// O ponto é batido de onde se trabalha. A posição é pedida só no momento do
+// check-in e do check-out — nunca de forma contínua: o aparelho é da pessoa, e
+// saber onde ela está o dia inteiro não é necessário para saber se ela chegou.
+//
+// A margem de erro vai junto de propósito. Sinal ruim na porta da loja dá
+// posições a centenas de metros, e sem a margem o servidor acusaria de longe
+// quem acabou de chegar.
+
+async function posicaoAtual() {
+  if (!navigator.geolocation) return null;
+  try {
+    const posicao = await new Promise((resolve, reject) => {
+      navigator.geolocation.getCurrentPosition(resolve, reject, {
+        enableHighAccuracy: true, timeout: 12000, maximumAge: 30000,
+      });
+    });
+    return {
+      latitude: posicao.coords.latitude,
+      longitude: posicao.coords.longitude,
+      accuracy: posicao.coords.accuracy,
+    };
+  } catch (_) {
+    // Permissão negada, sinal ausente, aparelho sem GPS: o servidor decide o
+    // que fazer com a falta, porque só ele sabe se a loja exige.
+    return null;
+  }
+}
+
+function exigeLocal() {
+  return Boolean(estado.data?.location_check?.required);
 }
 
 // -------------------------------------------------------------- histórico

@@ -65,6 +65,7 @@ from app.schemas import (
     ProductUpdate,
     SportAnchorCreate,
     SportAnchorUpdate,
+    StoreLocation,
 )
 from app.services.dispatch import SemEntregadorEscolhido
 from app.services import (
@@ -1235,6 +1236,27 @@ def delete_delivery_run(
     _: dict = Depends(current_user),
 ) -> dict:
     return _run(lambda: service.delete_run(run_id))
+
+
+@app.get("/api/delivery/store-location")
+def store_location(service: DispatchService = Depends(dispatch_service), _: dict = Depends(current_user)) -> dict:
+    """Onde fica a loja e até que distância o ponto é aceito."""
+    return service.store_location()
+
+
+@app.put("/api/delivery/store-location")
+def set_store_location(
+    payload: StoreLocation,
+    service: DispatchService = Depends(dispatch_service),
+    _: dict = Depends(current_user),
+) -> dict:
+    """Grava a posição da loja, capturada de dentro dela.
+
+    Capturar no lugar é melhor do que converter o endereço em coordenada: o
+    conversor devolve o meio da rua, e duzentos metros de erro já recusariam
+    quem chegou na porta.
+    """
+    return _run(lambda: service.set_store_location(payload))
 
 
 @app.get("/api/delivery/shifts")

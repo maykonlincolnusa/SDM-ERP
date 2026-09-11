@@ -343,6 +343,18 @@
             <div class="now-grid" id="dl-now"></div>
           </section>
 
+          <section class="panel" id="dl-geofence-panel" aria-labelledby="dl-geofence-title">
+            <div class="panel-header"><div><p class="eyebrow">Ponto</p><h2 id="dl-geofence-title">Onde o ponto pode ser batido</h2></div><span class="soft-chip" id="dl-geofence-state">--</span></div>
+            <p class="panel-note">Ponto batido de casa não é ponto. Com a loja marcada aqui, o check-in e o check-out conferem onde o aparelho está. <strong>Capture a posição de dentro da loja</strong> — converter o endereço em coordenada devolve o meio da rua, e duzentos metros de erro já recusariam quem chegou na porta.</p>
+            <div class="form-grid two">
+              <label>Raio aceito<input id="dl-geofence-radius" type="number" min="50" max="2000" step="10" value="150" /><small class="field-hint">Metros. Abaixo de 50 o erro normal de GPS na cidade recusa quem está na porta.</small></label>
+              <label class="checkbox-field"><input type="checkbox" id="dl-geofence-required" /><span>Recusar o ponto fora do raio<small>Desmarcado, o sistema só registra a distância — bom para ver os números reais antes de barrar alguém.</small></span></label>
+            </div>
+            <p class="modal-result full neutral" id="dl-geofence-summary"></p>
+            <button class="primary-button" type="button" id="dl-geofence-capture"><i data-lucide="crosshair"></i><span>Estou na loja — usar esta posição</span></button>
+            <p class="panel-note"><i data-lucide="info"></i> Isto levanta a barreira, não a fecha: quem quiser burlar instala um simulador de GPS no próprio celular, e o navegador não tem como saber. O que muda é que deixa de ser possível bater o ponto da cama sem esforço nenhum — e toda leitura fica registrada.</p>
+          </section>
+
           <section class="panel table-panel" id="dl-pending-panel" aria-labelledby="dl-pending-title" hidden>
             <div class="panel-header"><div><p class="eyebrow">Veio da rua</p><h2 id="dl-pending-title">Vendas a conferir</h2></div><span class="soft-chip" id="dl-pending-chip">--</span></div>
             <p class="panel-note">Encomenda que o entregador atendeu e a loja não lançou. Ela já conta no acerto dele e na leitura de território, mas <strong>ainda não é faturamento</strong>: confirmar aqui é o que baixa a ficha técnica e põe o valor no caixa. Quem recebe o dinheiro não fecha a própria receita sozinho.</p>

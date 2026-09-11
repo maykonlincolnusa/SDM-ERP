@@ -887,6 +887,24 @@ class DeliveryZoneUpdate(BaseModel):
     proposed: bool | None = None
 
 
+class StoreLocation(BaseModel):
+    """Onde fica a loja, para o ponto ser batido de dentro dela.
+
+    Capturada de dentro da loja, nao convertida do endereco: o conversor
+    devolve o meio da rua, e duzentos metros de erro ja recusariam quem chegou.
+    """
+
+    latitude: float = Field(ge=-90, le=90)
+    longitude: float = Field(ge=-180, le=180)
+    # Raio em que o ponto e aceito. Abaixo de 50 m o erro normal de GPS urbano
+    # recusaria quem esta na porta; acima de 2 km a cerca deixa de cercar.
+    radius_m: int = Field(default=150, ge=50, le=2000)
+    address: str | None = Field(default=None, max_length=160)
+    # Recusar de fato, ou apenas registrar. Comecar registrando deixa a loja ver
+    # as distancias reais antes de barrar alguem por um erro de GPS.
+    required: bool = False
+
+
 class CourierCheckIn(BaseModel):
     """Chegada do entregador. Abre o turno e passa a contar o tempo.
 
@@ -898,6 +916,12 @@ class CourierCheckIn(BaseModel):
 
     courier_id: str | None = Field(default=None, min_length=1, max_length=80)
     note: str | None = Field(default=None, max_length=160)
+    # A posicao do aparelho no momento do ponto. `accuracy` e a margem de erro
+    # que o proprio GPS informa, e ela conta na decisao: sem ela, alguem com
+    # sinal ruim na porta da loja seria acusado de estar longe.
+    latitude: float | None = Field(default=None, ge=-90, le=90)
+    longitude: float | None = Field(default=None, ge=-180, le=180)
+    accuracy: float | None = Field(default=None, ge=0, le=100000)
 
 
 class CourierCheckOut(BaseModel):
@@ -909,6 +933,12 @@ class CourierCheckOut(BaseModel):
     """
 
     note: str | None = Field(default=None, max_length=160)
+    # A posicao do aparelho no momento do ponto. `accuracy` e a margem de erro
+    # que o proprio GPS informa, e ela conta na decisao: sem ela, alguem com
+    # sinal ruim na porta da loja seria acusado de estar longe.
+    latitude: float | None = Field(default=None, ge=-90, le=90)
+    longitude: float | None = Field(default=None, ge=-180, le=180)
+    accuracy: float | None = Field(default=None, ge=0, le=100000)
 
 
 class FieldZoneCreate(BaseModel):

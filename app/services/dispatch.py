@@ -34,6 +34,7 @@ mesmo fato — e a segunda digitacao e sempre a que diverge.
 
 from __future__ import annotations
 
+import math
 import re
 import unicodedata
 from collections import Counter, defaultdict
@@ -60,6 +61,7 @@ ZONES = "delivery_zones"
 SHIFTS = "courier_shifts"
 RUNS = "delivery_runs"
 PENDING = "pending_orders"
+LOCAL_DA_LOJA = "store_location"
 
 # Canal das vendas que nascem na rua. Separado do balcao de proposito: elas tem
 # origem, taxa e comportamento proprios, e misturá-las com o balcao apagaria a
@@ -104,6 +106,21 @@ def _num(value: float, casas: int = 1) -> str:
 
     texto = f"{value:,.{casas}f}".replace(",", "X").replace(".", ",").replace("X", ".")
     return texto.rstrip("0").rstrip(",") if "," in texto else texto
+
+
+def _distancia_em_metros(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Distancia em linha reta entre dois pontos, pela formula de haversine.
+
+    Linha reta subestima o caminho a pe, e e proposital: a cerca existe para
+    dizer "esta pessoa esta na loja", nao para medir trajeto.
+    """
+
+    raio = 6371000.0
+    p1, p2 = math.radians(lat1), math.radians(lat2)
+    dp = math.radians(lat2 - lat1)
+    dl = math.radians(lon2 - lon1)
+    a = math.sin(dp / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
+    return 2 * raio * math.asin(math.sqrt(a))
 
 
 class SemEntregadorEscolhido(ValueError):
@@ -306,6 +323,111 @@ class DispatchService:
             return None
         return atual
 
+    # ------------------------------------------------------------------
+    # A cerca do ponto: bater o ponto de onde se trabalha
+    #
+    # Ponto batido de casa nao e ponto. A verificacao pega o local no momento do
+    # check-in e do check-out e recusa quando o aparelho **prova** que a pessoa
+    # esta longe da loja.
+    #
+    # "Prova" e a palavra que decide o desenho. O GPS devolve uma posicao e uma
+    # margem de erro, e as duas contam: alguem a 200 m com margem de 300 m pode
+    # perfeitamente estar na porta da loja, e recusar ai seria acusar quem
+    # chegou. Entao a recusa exige que a distancia **menos** a margem ja passe
+    # do raio — so ai o aparelho esta dizendo que a pessoa nao pode estar ali.
+    # O contrario e registrado: posicao imprecisa entra marcada, e a loja ve.
+    #
+    # E preciso dizer o que isto nao e. Nao e prova contra fraude: quem quiser
+    # burlar instala um simulador de GPS no proprio celular e o navegador nao
+    # tem como saber. Isto levanta a barreira do "bati o ponto da cama" para
+    # "tive de instalar e configurar um app para mentir" — que ja e outra
+    # conversa, e deixa rastro. Vender isso como inviolavel seria mentir para a
+    # loja sobre o proprio controle dela.
+    # ------------------------------------------------------------------
+
+    RAIO_PADRAO_M = 150
+
+    def store_location(self) -> dict[str, Any]:
+        """Onde fica a loja, e ate que distancia o ponto e aceito."""
+
+        gravado = self.store.get("system", LOCAL_DA_LOJA) or {}
+        return {
+            "latitude": gravado.get("latitude"),
+            "longitude": gravado.get("longitude"),
+            "radius_m": gravado.get("radius_m") or self.RAIO_PADRAO_M,
+            "address": gravado.get("address"),
+            "required": bool(gravado.get("required")),
+            "updated_at": gravado.get("updated_at"),
+        }
+
+    def set_store_location(self, payload: StoreLocation) -> dict[str, Any]:
+        """Grava a posicao da loja, capturada de dentro dela.
+
+        Capturar no lugar e melhor do que converter o endereco em coordenada:
+        o conversor devolve o meio da rua, que a duzentos metros da porta ja
+        recusaria quem chegou. Quem esta na loja tem a coordenada exata no
+        proprio bolso.
+        """
+
+        atual = self.store.get("system", LOCAL_DA_LOJA) or {}
+        dados = {
+            "id": LOCAL_DA_LOJA,
+            "latitude": payload.latitude,
+            "longitude": payload.longitude,
+            "radius_m": payload.radius_m,
+            "address": self.erp._optional_text(payload.address) or atual.get("address"),
+            "required": payload.required,
+            "updated_at": self._agora().isoformat(),
+        }
+        self.store.put("system", LOCAL_DA_LOJA, dados)
+        self.erp._audit(
+            self.store, "store-location", LOCAL_DA_LOJA, "definido",
+            f"Ponto conferido num raio de {payload.radius_m} m"
+            + (" — obrigatório" if payload.required else " — apenas registrado"),
+        )
+        return self.store_location()
+
+    def _conferir_local(self, payload: Any, momento: str) -> dict[str, Any]:
+        """Decide se o ponto pode ser batido daqui, e devolve o que registrar."""
+
+        local = self.store_location()
+        if local["latitude"] is None or local["longitude"] is None:
+            # A loja nao disse onde fica: nao ha contra o que conferir, e
+            # inventar um centro recusaria quem esta na porta.
+            return {}
+
+        latitude = getattr(payload, "latitude", None)
+        longitude = getattr(payload, "longitude", None)
+        if latitude is None or longitude is None:
+            if not local["required"]:
+                return {"location_missing": True}
+            raise ValueError(
+                f"Não deu para ler a localização do aparelho, e o {momento} da loja exige. "
+                "Autorize o acesso à localização no navegador, ou peça para a loja registrar por você."
+            )
+
+        margem = max(0.0, float(getattr(payload, "accuracy", None) or 0))
+        distancia = _distancia_em_metros(latitude, longitude, local["latitude"], local["longitude"])
+        registro = {
+            "latitude": round(latitude, 6),
+            "longitude": round(longitude, 6),
+            "accuracy_m": round(margem, 1),
+            "distance_m": round(distancia, 1),
+            # Margem maior que o raio nao confirma nem desmente: a leitura entra
+            # marcada, para a loja saber que aquele ponto nao foi conferido.
+            "location_uncertain": margem > local["radius_m"],
+        }
+
+        # So recusa quando o aparelho prova: mesmo no melhor caso da margem de
+        # erro, a pessoa ainda estaria fora do raio.
+        if local["required"] and (distancia - margem) > local["radius_m"]:
+            raise ValueError(
+                f"Você está a {distancia / 1000:.1f} km da loja, e o {momento} só é aceito "
+                f"em até {local['radius_m']} m. Se você está na loja, espere o sinal melhorar "
+                "e tente de novo — ou peça para o balcão registrar por você."
+            )
+        return registro
+
     def check_in(self, courier: dict[str, Any], payload: CourierCheckIn) -> dict[str, Any]:
         aberto = self.open_shift(courier["id"])
         if aberto:
@@ -315,6 +437,9 @@ class DispatchService:
         if courier.get("active") is False:
             raise ValueError("Este entregador está inativo no cadastro da loja.")
 
+        # Antes de abrir: o ponto e batido de onde se trabalha.
+        local = self._conferir_local(payload, "check-in")
+
         agora = self._agora()
         shift = {
             "id": str(uuid4()),
@@ -323,12 +448,14 @@ class DispatchService:
             "checkin_at": agora.isoformat(),
             "checkout_at": None,
             "note": self.erp._optional_text(payload.note),
+            "checkin_location": local or None,
             "created_at": agora.isoformat(),
         }
         self.store.put(SHIFTS, shift["id"], shift)
         self.erp._audit(
             self.store, "shift", shift["id"], "check-in",
-            f"{courier['name']} chegou às {self._hora(shift['checkin_at'])}",
+            f"{courier['name']} chegou às {self._hora(shift['checkin_at'])}"
+            + (f" · {local['distance_m']:.0f} m da loja" if local.get("distance_m") is not None else ""),
         )
         return self._decorar_turno(shift, courier)
 
@@ -344,6 +471,10 @@ class DispatchService:
         if not shift:
             raise ValueError("Não há turno aberto para fechar. Faça o check-in primeiro.")
 
+        # O ponto de saida vale tanto quanto o de entrada: fechar turno de casa
+        # faria a cerca do check-in servir para nada.
+        local = self._conferir_local(payload, "check-out")
+
         entregas = self._runs_do_turno(shift["id"])
         em_rota = [run for run in entregas if not run.get("finished_at")]
         if em_rota:
@@ -353,6 +484,7 @@ class DispatchService:
 
         agora = self._agora()
         shift["checkout_at"] = agora.isoformat()
+        shift["checkout_location"] = local or None
         shift["closing_note"] = self.erp._optional_text(payload.note)
         entregues = [run for run in entregas if not run.get("failed")]
         shift["deliveries"] = len(entregues)
@@ -689,6 +821,9 @@ class DispatchService:
             # exatamente nesse estado que se lanca a entrega esquecida de
             # ontem, e sem o cardapio o formulario abriria sem o que escolher.
             "queue": self.queue(courier["id"]) if shift else self.queue(courier["id"], somente_cadastros=True),
+            # O celular precisa saber se vai ter de pedir a localizacao antes de
+            # bater o ponto: pedir sempre gastaria bateria e assustaria a toa.
+            "location_check": {chave: self.store_location()[chave] for chave in ("required", "radius_m")},
         }
 
     # ------------------------------------------------------------------

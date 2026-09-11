@@ -1248,6 +1248,7 @@ function bindForms() {
   document.getElementById("media-entity-type").addEventListener("change", (event) => populateEntityTargets(event.target.value));
   document.getElementById("anotaai-import-confirm").addEventListener("click", importarCardapioAnotaAi);
   bindAnotaAi();
+  document.getElementById("dl-geofence-capture").addEventListener("click", capturarLocalDaLoja);
 }
 
 function renderSaleProducts() {
@@ -3821,15 +3822,16 @@ async function loadDispatch() {
   if (loadDispatch.pending) return;
   loadDispatch.pending = true;
   try {
-    const [board, territory, zones, runs, pending, shifts] = await Promise.all([
+    const [board, territory, zones, runs, pending, shifts, storeLocation] = await Promise.all([
       api(`/api/delivery/board?days=${state.deliveryPeriod}`),
       api(`/api/delivery/territory?days=90&horizon=7`),
       api("/api/delivery/zones"),
       api(`/api/delivery/runs?days=${state.deliveryPeriod}`),
       api(`/api/delivery/pending?days=${state.deliveryPeriod}`),
       api(`/api/delivery/shifts?days=${state.deliveryPeriod}`),
+      api("/api/delivery/store-location"),
     ]);
-    state.dispatch = { board, territory, zones, runs, pending, shifts };
+    state.dispatch = { board, territory, zones, runs, pending, shifts, storeLocation };
     renderDispatch();
   } catch (error) {
     toast(error.message || "Não foi possível carregar a operação de rua.", "error");
@@ -3846,6 +3848,7 @@ function renderDispatch() {
   renderTerritory(dados.territory);
   renderMenuByZone(dados.territory.menu || []);
   renderRuns(dados.runs);
+  renderGeofence(dados.storeLocation);
   renderPendingSales(dados.pending);
   renderShiftLog(dados.shifts);
   // As leituras do painel de rua entram junto das do acerto: as duas
@@ -3953,6 +3956,48 @@ function renderRuns(entregas) {
 
 // A venda que veio da rua e ainda não é faturamento. O painel só existe quando
 // há algo a conferir: um quadro vazio todo dia ensina a ignorar o quadro.
+// A cerca do ponto. Capturar de dentro da loja é o ponto inteiro: o conversor
+// de endereço devolve o meio da rua, e duzentos metros de erro recusariam quem
+// chegou na porta.
+function renderGeofence(local) {
+  if (!local) return;
+  const marcada = local.latitude !== null && local.longitude !== null;
+  setText("#dl-geofence-state", !marcada ? "Sem posição" : local.required ? "Conferindo" : "Só registrando");
+  document.getElementById("dl-geofence-radius").value = local.radius_m;
+  document.getElementById("dl-geofence-required").checked = Boolean(local.required);
+  setText("#dl-geofence-summary", marcada
+    ? `Loja marcada em ${local.latitude.toFixed(5)}, ${local.longitude.toFixed(5)}${local.address ? ` · ${local.address}` : ""}. Definida em ${formatDateTime(local.updated_at)}.`
+    : "A loja ainda não tem posição marcada, então nada é conferido no check-in.");
+  document.getElementById("dl-geofence-summary").className = `modal-result full ${marcada ? "positive" : "neutral"}`;
+}
+
+async function capturarLocalDaLoja() {
+  const botao = document.getElementById("dl-geofence-capture");
+  if (!navigator.geolocation) return toast("Este aparelho não informa localização.", "error");
+  botao.disabled = true;
+  try {
+    const posicao = await new Promise((ok, erro) => navigator.geolocation.getCurrentPosition(ok, erro, {
+      enableHighAccuracy: true, timeout: 15000, maximumAge: 0,
+    }));
+    // Margem pior que o raio marcaria a loja no lugar errado, e aí a cerca
+    // passa a recusar quem chega. Melhor não gravar do que gravar torto.
+    const raio = Number(document.getElementById("dl-geofence-radius").value || 150);
+    if (posicao.coords.accuracy > raio) {
+      return toast(`O aparelho está com ${Math.round(posicao.coords.accuracy)} m de margem de erro, mais que o raio de ${raio} m. Vá para perto de uma janela ou saia à porta e tente de novo.`, "error");
+    }
+    await submitData("/api/delivery/store-location", {
+      latitude: posicao.coords.latitude,
+      longitude: posicao.coords.longitude,
+      radius_m: raio,
+      required: document.getElementById("dl-geofence-required").checked,
+    }, "Posição da loja marcada.", "PUT");
+  } catch (_) {
+    toast("Não foi possível ler a localização. Autorize o acesso no navegador e tente de novo.", "error");
+  } finally {
+    botao.disabled = false;
+  }
+}
+
 function renderPendingSales(pendentes) {
   const painel = document.getElementById("dl-pending-panel");
   painel.hidden = !pendentes.length;

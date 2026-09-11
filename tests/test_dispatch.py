@@ -1097,3 +1097,105 @@ def test_a_loja_confirma_a_zona_da_rua_ao_definir_o_frete(dispatch, courier):
 
     assert confirmada["proposed"] is False
     assert confirmada["default_fee"] == 8.0
+
+
+# ----------------------------------------------------------------------
+# A cerca do ponto: bater o ponto de onde se trabalha
+#
+# "Prova" e a palavra que decide o desenho. O GPS devolve uma posicao e uma
+# margem de erro, e as duas contam: alguem a 200 m com margem de 300 m pode
+# estar na porta da loja, e recusar ai seria acusar quem chegou.
+# ----------------------------------------------------------------------
+
+LOJA = (-22.9632676, -43.406644)
+
+
+def _com_cerca(dispatch, raio=150, obrigatorio=True):
+    from app.schemas import StoreLocation
+
+    return dispatch.set_store_location(StoreLocation(
+        latitude=LOJA[0], longitude=LOJA[1], radius_m=raio,
+        address="Rua São Marcelo, 12 — Curicica", required=obrigatorio,
+    ))
+
+
+def test_o_ponto_batido_na_loja_e_aceito(dispatch, courier):
+    _com_cerca(dispatch)
+
+    turno = dispatch.check_in(courier, CourierCheckIn(latitude=LOJA[0], longitude=LOJA[1], accuracy=20))
+
+    assert turno["checkin_at"]
+
+
+def test_o_ponto_batido_longe_e_recusado(dispatch, courier):
+    """É o que a loja pediu: ponto batido de casa não é ponto."""
+
+    _com_cerca(dispatch)
+
+    # Cerca de 3 km ao norte da loja.
+    with pytest.raises(ValueError, match="da loja"):
+        dispatch.check_in(courier, CourierCheckIn(latitude=LOJA[0] + 0.027, longitude=LOJA[1], accuracy=15))
+
+
+def test_sinal_ruim_na_porta_da_loja_nao_acusa_ninguem(dispatch, courier):
+    """200 m de distância com 300 m de margem pode ser a porta da loja.
+
+    Recusar aqui seria acusar quem chegou. A recusa exige que a distância menos
+    a margem já passe do raio — só aí o aparelho está provando.
+    """
+
+    _com_cerca(dispatch, raio=150)
+
+    turno = dispatch.check_in(courier, CourierCheckIn(
+        latitude=LOJA[0] + 0.0018, longitude=LOJA[1], accuracy=300,
+    ))
+
+    assert turno["checkin_at"]
+    bruto = dispatch.store.get(SHIFTS, turno["id"])
+    # Mas a leitura entra marcada: a loja vê que aquele ponto não foi conferido.
+    assert bruto["checkin_location"]["location_uncertain"] is True
+
+
+def test_sem_localizacao_o_ponto_e_recusado_quando_a_loja_exige(dispatch, courier):
+    _com_cerca(dispatch, obrigatorio=True)
+
+    with pytest.raises(ValueError, match="Autorize o acesso"):
+        dispatch.check_in(courier, CourierCheckIn())
+
+
+def test_sem_localizacao_o_ponto_passa_quando_a_loja_so_registra(dispatch, courier):
+    """Começar registrando deixa a loja ver as distâncias antes de barrar."""
+
+    _com_cerca(dispatch, obrigatorio=False)
+
+    turno = dispatch.check_in(courier, CourierCheckIn())
+
+    assert dispatch.store.get(SHIFTS, turno["id"])["checkin_location"]["location_missing"] is True
+
+
+def test_sem_a_loja_dizer_onde_fica_nada_e_conferido(dispatch, courier):
+    """Inventar um centro recusaria justamente quem está na porta."""
+
+    turno = dispatch.check_in(courier, CourierCheckIn())
+
+    assert dispatch.store.get(SHIFTS, turno["id"])["checkin_location"] is None
+
+
+def test_a_distancia_do_ponto_fica_registrada(dispatch, courier):
+    _com_cerca(dispatch)
+
+    turno = dispatch.check_in(courier, CourierCheckIn(latitude=LOJA[0], longitude=LOJA[1], accuracy=12))
+
+    local = dispatch.store.get(SHIFTS, turno["id"])["checkin_location"]
+    assert local["distance_m"] == 0.0
+    assert local["accuracy_m"] == 12.0
+
+
+def test_o_check_out_tambem_e_conferido(dispatch, courier):
+    """Fechar turno de casa faria a cerca do check-in servir para nada."""
+
+    _com_cerca(dispatch)
+    dispatch.check_in(courier, CourierCheckIn(latitude=LOJA[0], longitude=LOJA[1], accuracy=10))
+
+    with pytest.raises(ValueError, match="da loja"):
+        dispatch.check_out(courier, CourierCheckOut(latitude=LOJA[0] + 0.027, longitude=LOJA[1], accuracy=10))
