@@ -749,6 +749,30 @@ def anotaai_disconnect(service: AnotaAiService = Depends(anotaai_service), _: di
     return _anota(service.disconnect)
 
 
+@app.post("/api/integrations/anota-ai/sync")
+def anotaai_sync(service: AnotaAiService = Depends(anotaai_service), _: dict = Depends(current_user)) -> dict:
+    """Traz os pedidos novos da Anota Aí e os põe na fila do entregador.
+
+    A fila deles é aviso de pedido novo, não histórico: resolve do momento da
+    ativação em diante. O passado continua vindo da planilha, e os dois caminhos
+    usam o mesmo identificador de pedido — então o que já entrou por aqui é
+    pulado quando a planilha da semana chegar.
+    """
+    return _anota(service.sync)
+
+
+@app.get("/api/integrations/anota-ai/probe")
+def anotaai_probe(service: AnotaAiService = Depends(anotaai_service), _: dict = Depends(current_user)) -> dict:
+    """Mostra a forma crua de um pedido da fila.
+
+    A resposta de `/ping/get` nunca pôde ser conferida por falta de chave
+    válida, então o tradutor procura o valor em vários caminhos plausíveis. Esta
+    rota existe para a primeira chamada de verdade mostrar a estrutura — e a
+    tradução deixar de ser hipótese.
+    """
+    return _anota(service.probe)
+
+
 @app.get("/api/integrations/anota-ai/catalog")
 def anotaai_catalog(service: AnotaAiService = Depends(anotaai_service), _: dict = Depends(current_user)) -> dict:
     """Compara o cardápio de lá com o daqui, sem gravar nada."""

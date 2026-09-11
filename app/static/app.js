@@ -2635,8 +2635,10 @@ function renderAnotaAi(estado) {
       <dl class="ifood-summary">
         <div><dt>Situação</dt><dd>Conectada</dd></div>
         <div><dt>Última importação de cardápio</dt><dd>${escapeHtml(ultima)}</dd></div>
+        <div><dt>Última busca de pedidos</dt><dd>${escapeHtml(estado.last_order_sync ? formatDateTime(estado.last_order_sync) : "nunca")}</dd></div>
       </dl>
-      <button class="primary-button" type="button" data-anotaai="catalog"><i data-lucide="book-open"></i><span>Conferir o cardápio</span></button>
+      <button class="primary-button" type="button" data-anotaai="sync"><i data-lucide="download"></i><span>Buscar pedidos novos</span></button>
+      <button class="secondary-button" type="button" data-anotaai="catalog"><i data-lucide="book-open"></i><span>Conferir o cardápio</span></button>
       <button class="secondary-button" type="button" data-anotaai="disconnect"><i data-lucide="unplug"></i><span>Desconectar</span></button>`;
   }
   refreshIcons();
@@ -2648,7 +2650,7 @@ function bindAnotaAi() {
   corpo.addEventListener("click", (event) => {
     const botao = event.target.closest("[data-anotaai]");
     if (!botao || botao.disabled) return;
-    ({ connect: conectarAnotaAi, catalog: abrirCardapioAnotaAi, disconnect: desconectarAnotaAi })[botao.dataset.anotaai]?.(botao);
+    ({ connect: conectarAnotaAi, catalog: abrirCardapioAnotaAi, disconnect: desconectarAnotaAi, sync: sincronizarAnotaAi })[botao.dataset.anotaai]?.(botao);
   });
 }
 
@@ -2665,6 +2667,28 @@ async function conectarAnotaAi(botao) {
     await loadAnotaAi();
   } catch (error) {
     toast(error.message || "Não foi possível conectar.", "error");
+  } finally {
+    botao.disabled = false;
+  }
+}
+
+// O pedido lançado na Anota Aí chega aqui e cai na fila do entregador.
+//
+// A fila deles é aviso de pedido novo, não histórico: resolve do momento da
+// ativação em diante. O que a planilha já trouxe não é duplicado — os dois
+// caminhos usam o mesmo identificador de pedido.
+async function sincronizarAnotaAi(botao) {
+  botao.disabled = true;
+  try {
+    const r = await api("/api/integrations/anota-ai/sync", { method: "POST" });
+    const partes = [`${number.format(r.created)} pedido(s) trazidos de ${number.format(r.queued)} na fila`];
+    if (r.without_items) partes.push(`${r.without_items} sem produto identificado, e por isso sem custo`);
+    if (r.unreadable?.length) partes.push(`${r.unreadable.length} não deram para ler`);
+    toast(`${partes.join(" · ")}.`, r.unreadable?.length ? "error" : "success");
+    await loadAll();
+    await loadAnotaAi();
+  } catch (error) {
+    toast(error.message || "Não foi possível buscar os pedidos.", "error");
   } finally {
     botao.disabled = false;
   }

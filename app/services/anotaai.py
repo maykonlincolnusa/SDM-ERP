@@ -48,6 +48,7 @@ from typing import Any, Protocol
 
 from app.repositories.secrets import SecretVault
 from app.repositories.store import Store
+from app.schemas import OrderCreate, OrderLine
 from app.services.erp import FUSO_LOJA, ERPService
 
 logger = logging.getLogger("uvicorn.error")
@@ -72,6 +73,67 @@ STATE_ID = "anotaai"
 # Canal de venda. Todo pedido da loja passa pela Anota Ai, entao a origem real
 # (balcao, iFood, WhatsApp) vem dentro do pedido e nao e este nome.
 INTEGRATION_ID = "anota-ai"
+
+
+ORDER_LINKS = "anotaai_order_links"
+
+# Todo pedido da loja passa pela Anota Ai, entao "Anota Ai" nao e canal: e o
+# encanamento. O canal e de onde o cliente veio, e ele vem dentro do pedido.
+CANAL_PADRAO = "Balcao"
+CANAIS_CONHECIDOS = (
+    ("iFood", ("ifood",)),
+    ("WhatsApp", ("whats", "wpp")),
+    ("Delivery", ("menu", "link", "site", "cardapio", "delivery")),
+    ("Balcao", ("pdv", "balcao", "caixa", "loja")),
+)
+
+# Onde procurar cada valor na resposta de `/ping/get`.
+#
+# A forma dessa resposta nunca pode ser conferida: a chave de integracao da loja
+# nao chegou a funcionar, e sem ela nao ha resposta real para ler. Entao o
+# tradutor procura em vez de assumir — e o que ele nao acha, ele declara. Assim
+# que a primeira chamada de verdade acontecer, `probe` mostra a estrutura e
+# estas listas viram um caminho so, escrito sobre o fato.
+CAMINHOS_TOTAL = ("total", "valorTotal", "valor_total", "orderTotal", "amount",
+                  "payment.total", "values.total", "price.total", "totals.total")
+CAMINHOS_FRETE = ("deliveryFee", "delivery_fee", "taxaEntrega", "frete", "delivery.fee",
+                  "delivery.price", "values.deliveryFee", "payment.deliveryFee")
+CAMINHOS_DESCONTO = ("discount", "desconto", "values.discount", "payment.discount")
+CAMINHOS_ITENS = ("itens", "items", "produtos", "products", "cart.items", "order.items")
+CAMINHOS_NUMERO = ("displayId", "display_id", "number", "numero", "orderNumber", "code", "shortId")
+CAMINHOS_DATA = ("createdAt", "created_at", "date", "data", "orderDate", "dataPedido")
+CAMINHOS_CLIENTE = ("customer.name", "client.name", "cliente.nome", "customerName", "nome")
+CAMINHOS_PAGAMENTO = ("payment.method", "paymentMethod", "formaPagamento", "payment.name", "pagamento")
+CAMINHOS_ENDERECO = ("delivery.address", "address", "endereco", "customer.address", "deliveryAddress")
+CAMINHOS_TIPO = ("type", "tipo", "orderType", "deliveryType", "isDelivery", "delivery.type", "retirada")
+CAMINHOS_CANAL = ("salesChannel", "origin", "origem", "channel", "canal", "from", "source")
+
+
+def _ler(dados: Any, *caminhos: str) -> Any:
+    """O primeiro caminho que existir, entre varios plausiveis.
+
+    Os caminhos aceitam ponto para descer um nivel. Procurar em vez de assumir
+    e o que permite escrever o tradutor antes de ver a resposta — e o que ele
+    nao acha volta como "nao entendi", nunca como zero.
+    """
+
+    for caminho in caminhos:
+        atual: Any = dados
+        for parte in caminho.split("."):
+            if not isinstance(atual, dict) or parte not in atual:
+                atual = None
+                break
+            atual = atual[parte]
+        if atual not in (None, "", [], {}):
+            return atual
+    return None
+
+
+def _inteiro(valor: Any) -> int:
+    try:
+        return max(0, int(float(valor or 0)))
+    except (TypeError, ValueError):
+        return 0
 
 
 class AnotaAiError(ValueError):
@@ -205,6 +267,8 @@ class AnotaAiService:
         conectado = bool((self.vault.read(SECRET_NAME) or {}).get("integration_key"))
         return {
             "connected": conectado,
+            "last_order_sync": estado.get("last_order_sync"),
+            "last_order_result": estado.get("last_order_result"),
             "last_catalog_sync": estado.get("last_catalog_sync"),
             "last_catalog_result": estado.get("last_catalog_result"),
             "last_error": estado.get("last_error"),
@@ -421,6 +485,279 @@ class AnotaAiService:
                 "preenchida, eles aparecem sem custo — que é a verdade, e não um número inventado."
             ),
         }
+
+    # ------------------------------------------------------------------
+    # O pedido: da fila da Anota Ai ate a mao do entregador
+    #
+    # A fila `/ping/list` e aviso de pedido novo, nao historico: ela resolve do
+    # momento da ativacao em diante, e o passado continua vindo da planilha.
+    # Os dois caminhos convivem de proposito, e o id e o que os concilia —
+    # `anota-ai-{numero}-{data}` e o mesmo esquema que o importador usa, entao
+    # o pedido que ja entrou pela API e pulado quando a planilha da semana
+    # chegar. Nada do que existia foi retirado.
+    #
+    # A forma da resposta de `/ping/get` nunca pode ser conferida: a chave de
+    # integracao da loja nao chegou a funcionar, e sem ela nao ha resposta real
+    # para ler. Entao o tradutor aqui **procura** o valor em varios caminhos
+    # plausiveis em vez de assumir um — e, quando nao acha, diz o que nao
+    # entendeu e guarda a resposta crua, em vez de inventar. E por isso que
+    # existe o `probe`: na primeira chamada de verdade ele mostra a estrutura,
+    # e a traducao passa a ser escrita sobre o fato.
+    # ------------------------------------------------------------------
+
+    def probe(self) -> dict[str, Any]:
+        """Mostra a forma crua de um aviso da fila e de um pedido.
+
+        Serve uma vez: o suficiente para a traducao deixar de ser hipotese.
+        """
+
+        chave = self._key()
+        fila = self.client.order_queue(chave)
+        avisos = ((fila.get("info") or {}).get("docs") or [])
+        if not avisos:
+            return {
+                "queue_shape": sorted((fila.get("info") or {}).keys()),
+                "orders_waiting": 0,
+                "detail": "A fila está vazia agora. Faça um pedido de teste na Anota Aí e chame de novo.",
+            }
+        primeiro = avisos[0]
+        pedido_id = str(primeiro.get("_id") or primeiro.get("id") or "")
+        detalhe = self.client.order(chave, pedido_id) if pedido_id else {}
+        return {
+            "orders_waiting": len(avisos),
+            "queue_item": primeiro,
+            "order_keys": sorted(detalhe.keys()),
+            # A resposta inteira, para a traducao ser escrita sobre ela. E dado
+            # de pedido da propria loja, nao credencial.
+            "order_sample": detalhe,
+        }
+
+    def sync(self, limit: int = 40) -> dict[str, Any]:
+        """Traz os pedidos novos da Anota Aí e os põe na fila do entregador."""
+
+        chave = self._key()
+        fila = self.client.order_queue(chave)
+        avisos = ((fila.get("info") or {}).get("docs") or [])
+        resumo: dict[str, Any] = {
+            "queued": len(avisos), "created": 0, "skipped": 0,
+            "without_items": 0, "unreadable": [],
+        }
+
+        for aviso in avisos[:limit]:
+            pedido_id = str(aviso.get("_id") or aviso.get("id") or "")
+            if not pedido_id or self.store.get(ORDER_LINKS, pedido_id):
+                resumo["skipped"] += 1
+                continue
+            try:
+                detalhe = self.client.order(chave, pedido_id)
+            except AnotaAiError as erro:
+                resumo["unreadable"].append({"id": pedido_id, "reason": str(erro)})
+                continue
+            self._registrar(pedido_id, detalhe, resumo)
+
+        self._remember(last_order_sync=self._agora().isoformat(), last_order_result=resumo)
+        return resumo
+
+    def _registrar(self, pedido_id: str, detalhe: dict[str, Any], resumo: dict[str, Any]) -> None:
+        total = _dinheiro(_ler(detalhe, *CAMINHOS_TOTAL))
+        if total <= 0:
+            # Sem o valor, o pedido nao pode virar venda: um pedido de R$ 0
+            # entraria no faturamento como desconto que nunca existiu.
+            resumo["unreadable"].append({
+                "id": pedido_id,
+                "reason": "Não encontrei o valor do pedido nesta resposta.",
+                "keys": sorted(detalhe.keys()),
+            })
+            return
+
+        momento = self._momento(_ler(detalhe, *CAMINHOS_DATA)) or self._agora()
+        numero = str(_ler(detalhe, *CAMINHOS_NUMERO) or pedido_id[:8])
+        identificador = f"{INTEGRATION_ID}-{numero}-{momento.date().isoformat()}"
+        if self.store.get("orders", identificador):
+            resumo["skipped"] += 1
+            self.store.put(ORDER_LINKS, pedido_id, {"id": pedido_id, "order_id": identificador})
+            return
+
+        frete = _dinheiro(_ler(detalhe, *CAMINHOS_FRETE))
+        linhas, faltando = self._traduzir_itens(detalhe)
+        entrega = self._e_entrega(detalhe)
+
+        pedido = {
+            "id": identificador,
+            "number": numero,
+            "created_at": momento.isoformat(),
+            "registered_at": self._agora().isoformat(),
+            # O mesmo `source` do importador de planilha: os dois caminhos
+            # descrevem o mesmo pedido, e separá-los dividiria o faturamento da
+            # Anota Aí em dois canais que ninguém pediu.
+            "source": INTEGRATION_ID,
+            "source_channel": str(_ler(detalhe, *CAMINHOS_CANAL) or "Anota Aí"),
+            "anota_order_id": pedido_id,
+            "channel": self._canal_do_pedido(detalhe),
+            "payment_method": str(_ler(detalhe, *CAMINHOS_PAGAMENTO) or "Anota Aí")[:30],
+            "customer_name": (str(_ler(detalhe, *CAMINHOS_CLIENTE) or "").strip() or None),
+            "discount": _dinheiro(_ler(detalhe, *CAMINHOS_DESCONTO)),
+            "is_delivery": entrega,
+            # Limitado ao total pela mesma razao do importador: subsidio de
+            # marketplace pode deixar o frete maior que o recebido, e isso
+            # geraria receita de produto negativa.
+            "delivery_fee": min(frete, total) if entrega else 0.0,
+            "courier_id": None,
+            # O destino, que e o que faz o mapa do entregador funcionar.
+            "delivery_address": self._endereco(detalhe),
+            "delivery_zone_id": None,
+            "total": total,
+            "cost": None,
+            "channel_fee": 0.0,
+            "status": "Concluido",
+            "items": linhas,
+            "unmapped_items": faltando,
+        }
+
+        if linhas and not faltando:
+            # Com todo item identificado, o pedido entra pela porta normal: a
+            # ficha tecnica baixa o insumo e o custo deixa de ser desconhecido.
+            try:
+                criado = self.erp.create_order(OrderCreate(
+                    items=[OrderLine(product_id=linha["product_id"], quantity=linha["quantity"]) for linha in linhas],
+                    channel=pedido["channel"],
+                    payment_method=pedido["payment_method"],
+                    customer_name=pedido["customer_name"],
+                    is_delivery=entrega,
+                    delivery_fee=pedido["delivery_fee"],
+                    delivery_address=pedido["delivery_address"],
+                    occurred_at=momento,
+                ))
+                catalogo = criado["total"]
+                criado.update({
+                    **{k: v for k, v in pedido.items() if k in (
+                        "source", "source_channel", "anota_order_id", "number", "unmapped_items")},
+                    "total": total,
+                    "catalog_total": catalogo,
+                    "revenue_conflict": abs(catalogo - total) >= 0.01,
+                })
+                self.store.delete("orders", criado["id"])
+                criado["id"] = identificador
+                self.store.put("orders", identificador, criado)
+            except ValueError as erro:
+                resumo["unreadable"].append({"id": pedido_id, "reason": str(erro)})
+                return
+        else:
+            # Sem produto identificado nao ha ficha tecnica, e um custo zero
+            # mentiria margem de 100%. O pedido entra com o faturamento certo e
+            # o custo declarado desconhecido, como o importador ja faz.
+            self.store.put("orders", identificador, pedido)
+            resumo["without_items"] += 1
+
+        self.store.put(ORDER_LINKS, pedido_id, {
+            "id": pedido_id, "order_id": identificador, "linked_at": self._agora().isoformat(),
+        })
+        resumo["created"] += 1
+
+    # ------------------------------------------------------------------
+
+    def _traduzir_itens(self, detalhe: dict[str, Any]) -> tuple[list[dict[str, Any]], list[str]]:
+        """Liga cada item do pedido a um produto do ERP.
+
+        A ponte oficial e o `external_id` do cardapio; o nome e a que sobra
+        enquanto ninguem preencheu o external_id la. Nome que nao casa nao vira
+        palpite: ele volta na lista de pendencias e o pedido fica sem custo,
+        porque meio custo apresentado como custo inteiro e pior que nenhum.
+        """
+
+        brutos = _ler(detalhe, *CAMINHOS_ITENS) or []
+        if not isinstance(brutos, list):
+            return [], []
+
+        produtos = {linha["id"]: linha for linha in self.store.list("products")}
+        por_nome = {_fold(linha["name"]): linha for linha in produtos.values()}
+
+        linhas: list[dict[str, Any]] = []
+        faltando: list[str] = []
+        for bruto in brutos:
+            if not isinstance(bruto, dict):
+                continue
+            nome = str(_ler(bruto, "title", "name", "nome", "produto", "description") or "").strip()
+            quantidade = _inteiro(_ler(bruto, "quantity", "qtd", "quantidade", "amount", "qty"))
+            if not nome or quantidade <= 0:
+                continue
+            externo = str(_ler(bruto, "external_id", "externalId", "externalCode", "sku") or "")
+            produto = produtos.get(externo) or por_nome.get(_fold(nome))
+            if produto:
+                linhas.append({"product_id": produto["id"], "name": produto["name"], "quantity": quantidade})
+            else:
+                faltando.append(nome)
+        return linhas, faltando
+
+    def _e_entrega(self, detalhe: dict[str, Any]) -> bool:
+        """Entrega ou retirada. Frete positivo reforca, como no importador."""
+
+        bruto = _ler(detalhe, *CAMINHOS_TIPO)
+        if isinstance(bruto, bool):
+            return bruto
+        texto = _fold(bruto)
+        if texto:
+            if any(p in texto for p in ("retirada", "retirado", "takeout", "balcao", "pickup", "mesa")):
+                return False
+            if any(p in texto for p in ("delivery", "entrega")):
+                return True
+        return _dinheiro(_ler(detalhe, *CAMINHOS_FRETE)) > 0
+
+    def _endereco(self, detalhe: dict[str, Any]) -> str | None:
+        """O endereco em uma linha, para o mapa do entregador abrir direto."""
+
+        bruto = _ler(detalhe, *CAMINHOS_ENDERECO)
+        if isinstance(bruto, str):
+            return bruto.strip()[:160] or None
+        if isinstance(bruto, dict):
+            partes = [
+                str(bruto.get(campo) or "").strip()
+                for campo in ("street", "logradouro", "rua", "address", "number", "numero",
+                              "complement", "complemento", "neighborhood", "bairro", "district")
+            ]
+            junto = ", ".join(parte for parte in partes if parte)
+            return junto[:160] or None
+        return None
+
+    def _canal_do_pedido(self, detalhe: dict[str, Any]) -> str:
+        """A origem real — balcao, iFood, WhatsApp — que vem dentro do pedido.
+
+        Todo pedido da loja passa pela Anota Ai, entao "Anota Ai" nao e canal:
+        e o encanamento. O canal e de onde o cliente veio, e o cadastro precisa
+        te-lo para a comissao sair certa.
+        """
+
+        bruto = _fold(_ler(detalhe, *CAMINHOS_CANAL))
+        for nome, marcas in CANAIS_CONHECIDOS:
+            if any(marca in bruto for marca in marcas):
+                self._garantir_canal(nome)
+                return nome
+        self._garantir_canal(CANAL_PADRAO)
+        return CANAL_PADRAO
+
+    def _garantir_canal(self, nome: str) -> None:
+        if any(linha["name"] == nome for linha in self.erp.channels()):
+            return
+        identificador = f"channel-{_fold(nome).replace(' ', '-')}"
+        self.store.put("channels", identificador, {
+            "id": identificador, "name": nome, "fee_percent": 0.0, "fee_fixed": 0.0,
+            "active": True, "note": "Criado ao receber o primeiro pedido da Anota Aí.",
+        })
+
+    def _momento(self, valor: Any) -> datetime | None:
+        if not valor:
+            return None
+        texto = str(valor).replace("Z", "+00:00")
+        for formato in (None, "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S", "%d/%m/%Y %H:%M", "%d/%m/%Y"):
+            try:
+                momento = datetime.fromisoformat(texto) if formato is None else datetime.strptime(texto, formato)
+            except (TypeError, ValueError):
+                continue
+            if momento.tzinfo is None:
+                momento = momento.replace(tzinfo=FUSO_LOJA)
+            # Relogio adiantado do outro lado nao pode virar pedido no futuro.
+            return min(momento.astimezone(FUSO_LOJA), self._agora())
+        return None
 
     # ------------------------------------------------------------------
 
