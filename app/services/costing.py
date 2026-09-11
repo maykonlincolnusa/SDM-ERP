@@ -33,7 +33,7 @@ SUSPEITA_DE_CUSTO = 3.0
 LIMITE_DE_ESCALA = 0.10
 
 from app.repositories.store import Store
-from app.schemas import ProductSimulation
+from app.schemas import ProductDesign, ProductSimulation
 from app.services.erp import (
     FUSO_LOJA,
     PRODUCTION_KIND,
@@ -396,6 +396,155 @@ class CostingService:
             + self._shrinkage_alerts(lines, shrinkage, direct, days),
             "period_days": days,
         }
+
+    # ------------------------------------------------------------------
+    # Projetar o produto, em vez de validar o que ja foi imaginado
+    #
+    # O simulador responde "esta receita fecha?". E a pergunta de quem ja
+    # decidiu o produto. Quem esta construindo marca tem a pergunta anterior, e
+    # ela e outra: **quanto eu posso gastar de insumo para este produto existir
+    # neste canal?**
+    #
+    # A conta e a mesma invertida, e a inversao muda o que da para fazer com
+    # ela. Sabendo que no iFood, a R$ 25 e com 60% de margem, sobram R$ 7,30
+    # para o copo inteiro, o dono ja sabe que creme importado esta fora e que a
+    # granola cabe. Ele projeta dentro do orcamento em vez de desenhar primeiro
+    # e descobrir depois que nao fecha.
+    #
+    # E ela **nao depende da ficha tecnica atual**, que e o ponto: as fichas da
+    # loja estao erradas por mil e contaminam toda sugestao de preco do
+    # sistema. Esta conta parte do preco e da comissao — dois numeros que a loja
+    # conhece — e devolve o teto do insumo. O que ela produz e o orcamento que a
+    # receita tera de caber, nao uma leitura da receita que existe.
+    # ------------------------------------------------------------------
+
+    def design_budget(self, payload: ProductDesign) -> dict[str, Any]:
+        """Quanto sobra para o insumo, canal a canal, no preco pretendido."""
+
+        canais = [linha for linha in self.erp.channels() if linha.get("active", True)]
+        margem_alvo = payload.target_margin / 100
+        fixo = self._fixed_allocation(30, None)["per_unit"] if payload.include_fixed else None
+
+        linhas = []
+        for canal in canais:
+            comissao = round(payload.price * (canal.get("fee_percent", 0) / 100) + canal.get("fee_fixed", 0), 2)
+            liquido = round(payload.price - comissao, 2)
+            # O teto do insumo: o que sobra depois da comissao, da margem que a
+            # loja quer guardar e — se ela pedir — do rateio do custo fixo.
+            teto = liquido * (1 - margem_alvo) - (fixo or 0)
+            linhas.append({
+                "channel": canal["name"],
+                "fee_percent": canal.get("fee_percent", 0),
+                "fee": comissao,
+                "net_price": liquido,
+                "ingredient_budget": round(max(0.0, teto), 2),
+                "viable": teto > 0,
+                # O preco que faria este canal caber no mesmo orcamento do
+                # melhor canal. E a resposta para "quanto eu cobro no iFood".
+                "price_for_budget": None,
+            })
+
+        melhor = max((linha["ingredient_budget"] for linha in linhas), default=0.0)
+        for linha in linhas:
+            if linha["ingredient_budget"] < melhor and linha["fee_percent"] < 100:
+                # Preco que, naquele canal, devolveria o mesmo teto de insumo.
+                alvo = (melhor + (fixo or 0)) / (1 - margem_alvo) if margem_alvo < 1 else melhor
+                bruto = alvo / (1 - linha["fee_percent"] / 100)
+                linha["price_for_budget"] = round(bruto, 2)
+
+        linhas.sort(key=lambda linha: -linha["ingredient_budget"])
+        return {
+            "price": payload.price,
+            "target_margin": payload.target_margin,
+            "fixed_per_unit": round(fixo, 2) if fixo is not None else None,
+            "channels": linhas,
+            "affordable": self._insumos_no_orcamento(melhor),
+            "readings": self._leituras_do_projeto(linhas, payload),
+        }
+
+    def _insumos_no_orcamento(self, teto: float, limite: int = 12) -> list[dict[str, Any]]:
+        """O que o freezer ja tem e cabe no orcamento, comecando pelo parado.
+
+        Insumo ja comprado e nao usado por nenhum produto e o melhor ponto de
+        partida para um produto novo: ele nao acrescenta compra, e o capital
+        dele ja esta imobilizado de qualquer forma.
+        """
+
+        usados = {
+            linha["inventory_id"]
+            for produto in self.store.list("products") if produto.get("active", True)
+            for linha in produto.get("recipe") or []
+        }
+        candidatos = []
+        for item in self.store.list("inventory"):
+            custo = item.get("unit_cost") or 0
+            if custo <= 0 or custo > teto:
+                continue
+            # Embalagem nao e diferencial de produto: ninguem lanca um copo
+            # novo por causa da tampa. Ela entra no custo, nao na criacao.
+            #
+            # O radical, e nao a palavra inteira: a categoria da loja e
+            # "Embalagens", e "embalagem" nao e pedaco de "embalagens" — o
+            # plural troca o m pelo n, e o filtro passava batido.
+            texto = f"{_fold(item.get('category') or '')} {_fold(item.get('name') or '')}"
+            if any(marca in texto for marca in ("embalage", "copo", "tampa", "sacola", "saquinho", "colher")):
+                continue
+            candidatos.append({
+                "inventory_id": item["id"],
+                "name": str(item["name"]).strip(),
+                "unit": item.get("unit"),
+                "unit_cost": custo,
+                # Quanto cabe do orcamento inteiro, se so este insumo entrasse.
+                "max_units": round(teto / custo, 2),
+                "idle": item["id"] not in usados,
+                "in_stock": item.get("quantity") or 0,
+            })
+        # Parado primeiro: e capital ja gasto esperando virar produto.
+        candidatos.sort(key=lambda linha: (not linha["idle"], linha["unit_cost"]))
+        return candidatos[:limite]
+
+    def _leituras_do_projeto(self, linhas, payload) -> list[dict[str, str]]:
+        leituras: list[dict[str, str]] = []
+        if not linhas:
+            return leituras
+        inviaveis = [linha for linha in linhas if not linha["viable"]]
+        if inviaveis:
+            leituras.append({
+                "type": "attention",
+                "title": f"A {self._money(payload.price)} o produto não cabe em {len(inviaveis)} canal(is)",
+                "description": (
+                    f"Em {', '.join(linha['channel'] for linha in inviaveis)} a comissão e a margem "
+                    "pretendida já consomem o preço inteiro, sem sobrar nada para o insumo. "
+                    "Ou o preço sobe nesses canais, ou o produto não é para eles."
+                ),
+            })
+        if len(linhas) > 1:
+            melhor, pior = linhas[0], linhas[-1]
+            diferenca = melhor["ingredient_budget"] - pior["ingredient_budget"]
+            if diferenca >= 0.5:
+                leituras.append({
+                    "type": "info",
+                    "title": f"O mesmo produto tem {self._money(diferenca)} a mais de insumo em {melhor['channel']}",
+                    "description": (
+                        f"{melhor['channel']} deixa {self._money(melhor['ingredient_budget'])} para o copo; "
+                        f"{pior['channel']}, {self._money(pior['ingredient_budget'])}. Para igualar, o preço em "
+                        f"{pior['channel']} teria de ser "
+                        f"{self._money(pior['price_for_budget']) if pior['price_for_budget'] else 'maior'}. "
+                        "Cardápio com preço único entre canais entrega essa diferença à plataforma."
+                    ),
+                })
+        parados = [linha for linha in self._insumos_no_orcamento(linhas[0]["ingredient_budget"]) if linha["idle"]]
+        if parados:
+            leituras.append({
+                "type": "opportunity",
+                "title": f"{len(parados)} insumo(s) parados cabem neste orçamento",
+                "description": (
+                    f"{', '.join(linha['name'] for linha in parados[:4])} já estão comprados e nenhum "
+                    "produto do cardápio os usa. Produto novo feito com eles não acrescenta compra — "
+                    "e transforma capital parado em venda."
+                ),
+            })
+        return leituras
 
     def simulate(self, payload: ProductSimulation) -> dict[str, Any]:
         """Testa um produto novo antes de ele existir no cardapio.

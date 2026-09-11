@@ -58,6 +58,7 @@ from app.schemas import (
     OrderCreate,
     OrderUpdate,
     ProductCreate,
+    ProductDesign,
     ProductionRecipeCreate,
     ProductionRecipeUpdate,
     ProductionRun,
@@ -357,6 +358,23 @@ def products(service: ERPService = Depends(erp), _: dict = Depends(current_user)
 @app.post("/api/products", status_code=status.HTTP_201_CREATED)
 def create_product(payload: ProductCreate, service: ERPService = Depends(erp), _: dict = Depends(current_user)) -> dict:
     return _run(lambda: service.create_product(payload))
+
+
+@app.post("/api/products/design")
+def design_product(
+    payload: ProductDesign,
+    service: CostingService = Depends(costing_service),
+    _: dict = Depends(current_user),
+) -> dict:
+    """Quanto sobra para o insumo, canal a canal, no preço pretendido.
+
+    O simulador valida uma receita já imaginada. Esta rota responde a pergunta
+    anterior — a de quem está criando: dentro de que orçamento o produto novo
+    precisa caber para existir neste canal. Ela parte do preço e da comissão,
+    não da ficha técnica, e por isso continua valendo mesmo com as fichas atuais
+    erradas.
+    """
+    return _run(lambda: service.design_budget(payload))
 
 
 @app.post("/api/products/simulate")

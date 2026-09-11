@@ -864,6 +864,38 @@ function monthLabel(month) {
 // maior que percorre todos esses relatórios parecendo um número calculado.
 // Encontrar isso olhando é impossível; por isso a tela aponta, com a linha
 // culpada e a correção provável ao lado.
+// Projetar, em vez de validar. Quem constrói marca precisa saber dentro de que
+// orçamento o produto novo cabe, e esse orçamento é diferente em cada canal —
+// é a comissão que decide, não a receita.
+async function submitDesign(event) {
+  event.preventDefault();
+  const form = new FormData(event.currentTarget);
+  const alvo = document.getElementById("design-result");
+  try {
+    const r = await api("/api/products/design", { method: "POST", body: JSON.stringify({
+      price: Number(form.get("price")),
+      target_margin: Number(form.get("target_margin") || 60),
+      include_fixed: form.get("include_fixed") === "on",
+    })});
+    const parados = r.affordable.filter((linha) => linha.idle);
+    alvo.innerHTML = `
+      ${r.readings.map((linha) => `<article class="insight ${linha.type === "attention" ? "attention" : ""}"><span class="insight-icon"><i data-lucide="${linha.type === "attention" ? "triangle-alert" : "lightbulb"}"></i></span><div><strong>${escapeHtml(linha.title)}</strong><p>${escapeHtml(linha.description)}</p></div></article>`).join("")}
+      <div class="table-scroll"><table><thead><tr><th>Canal</th><th class="align-right">Comissão</th><th class="align-right">Sobra para o insumo</th><th class="align-right">Para igualar, cobrar</th></tr></thead><tbody>
+        ${r.channels.map((linha) => `<tr>
+          <td><strong>${escapeHtml(linha.channel)}</strong></td>
+          <td class="align-right muted-value">${number.format(linha.fee_percent)}%${linha.fee ? ` · ${currency.format(linha.fee)}` : ""}</td>
+          <td class="align-right ${linha.viable ? "positive" : "negative"}"><strong>${currency.format(linha.ingredient_budget)}</strong></td>
+          <td class="align-right">${linha.price_for_budget ? currency.format(linha.price_for_budget) : '<span class="muted-value">—</span>'}</td>
+        </tr>`).join("")}
+      </tbody></table></div>
+      ${parados.length ? `<p class="panel-note">Insumos que já estão comprados, nenhum produto usa, e cabem neste orçamento:</p>
+        <div class="value-rows">${parados.map((linha) => `<div class="ladder-row"><span>${escapeHtml(linha.name)}<small class="muted-value"> · cabem ${number.format(linha.max_units)} ${escapeHtml(linha.unit || "")}</small></span><b>${currency.format(linha.unit_cost)}</b></div>`).join("")}</div>` : ""}`;
+    refreshIcons();
+  } catch (error) {
+    toast(error.message || "Não foi possível calcular.", "error");
+  }
+}
+
 function renderRecipeAudit() {
   const auditoria = state.recipeAudit;
   const painel = document.getElementById("recipe-audit-panel");
@@ -1173,6 +1205,7 @@ function bindForms() {
   document.getElementById("import-anota-items").addEventListener("click", () => document.getElementById("anota-items-file").click());
   document.getElementById("anota-items-file").addEventListener("change", importAnotaItems);
   document.getElementById("adjust-form").addEventListener("submit", submitAdjustment);
+  document.getElementById("design-form").addEventListener("submit", submitDesign);
   document.getElementById("bulk-count-form").addEventListener("submit", submitBulkCount);
   document.getElementById("bulk-count-body").addEventListener("input", refreshBulkCountPreview);
   document.getElementById("bulk-count-body").addEventListener("change", refreshBulkCountPreview);

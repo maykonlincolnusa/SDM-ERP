@@ -668,6 +668,23 @@ class CatalogOrder(BaseModel):
     items: list[str] = Field(min_length=1, max_length=60)
 
 
+class ProductDesign(BaseModel):
+    """A pergunta anterior a da simulacao: quanto posso gastar de insumo?
+
+    O simulador valida uma receita ja imaginada. Quem esta construindo marca
+    precisa do caminho inverso — do preco e da comissao do canal ate o teto do
+    insumo —, porque e dentro desse teto que o produto novo sera desenhado.
+    """
+
+    price: float = Field(gt=0, le=10000)
+    # Quanto da venda liquida a loja quer guardar. Sessenta por cento e o
+    # patamar que o setor pratica em copo montado.
+    target_margin: float = Field(default=60.0, ge=0, le=95)
+    # Incluir o rateio do custo fixo por unidade. Fora dele o numero e margem
+    # de contribuicao; dentro, e lucro de verdade.
+    include_fixed: bool = False
+
+
 class ProductSimulation(BaseModel):
     """Testa um produto novo sem gravar nada no cardapio."""
 
