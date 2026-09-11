@@ -15,6 +15,7 @@ discordado sem alterar nenhum cadastro.
 
 from __future__ import annotations
 
+import re
 import unicodedata
 from collections import Counter, defaultdict
 from datetime import date, datetime, timedelta
@@ -25,6 +26,11 @@ from typing import Any
 # passa a ser "cadastro errado". Tres e folgado de proposito: produto vendido no
 # custo, ou com prejuizo deliberado numa promocao, nao pode cair aqui.
 SUSPEITA_DE_CUSTO = 3.0
+
+# Abaixo de dez centavos por quilo ou litro, o numero nao esta na unidade que o
+# rotulo diz: nenhum insumo de loja custa isso por quilo. Dez centavos e folgado
+# de proposito — gelo e agua ficam de fora, e nao se acusa quem esta certo.
+LIMITE_DE_ESCALA = 0.10
 
 from app.repositories.store import Store
 from app.schemas import ProductSimulation
@@ -104,6 +110,71 @@ class CostingService:
     # numa lista de linhas para corrigir, com a correcao provavel ao lado.
     # ------------------------------------------------------------------
 
+    def unit_audit(self) -> list[dict[str, Any]]:
+        """Insumos cujo cadastro de unidade nao se sustenta.
+
+        A ficha tecnica so pode estar certa se o insumo disser a verdade sobre
+        a propria unidade, e dois enganos passam despercebidos porque nada
+        reclama deles:
+
+        **A unidade que nao e unidade.** "60 quilos", "40", "360 gr" no campo da
+        unidade — alguem digitou ali o tamanho da embalagem. A partir dai o
+        sistema nao sabe se o saldo 60 sao 60 quilos ou 60 pacotes de 60 quilos,
+        e nenhuma conta feita em cima disso significa alguma coisa.
+
+        **O rotulo que mente sobre a escala.** Acai cadastrado em "litros" com
+        custo de R$ 0,008: nenhum litro custa oito milesimos de real. O numero
+        esta por mililitro e o rotulo diz litro. A conta da ficha fecha — quem
+        montou fez a divisao de cabeca — mas qualquer pessoa que leia "litros"
+        e lance em litro vai errar por mil, e a contagem de estoque vai comparar
+        mililitro com litro sem perceber.
+
+        Nenhum dos dois e acusacao de valor errado: os dois sao rotulo errado.
+        Por isso a mensagem diz o que esta incoerente e deixa a correcao com
+        quem sabe como o insumo entra na loja.
+        """
+
+        suspeitos: list[dict[str, Any]] = []
+        for item in self.store.list("inventory"):
+            unidade = str(item.get("unit") or "").strip()
+            custo = item.get("unit_cost") or 0
+            menor = unidade.lower()
+
+            if re.search(r"\d", unidade):
+                suspeitos.append({
+                    "inventory_id": item["id"],
+                    "name": item["name"],
+                    "unit": unidade,
+                    "unit_cost": custo,
+                    "kind": "unidade com número",
+                    "diagnosis": (
+                        f"A unidade está escrita como {unidade!r}, que parece o tamanho da "
+                        "embalagem e não a unidade de medida. Use a medida (kg, g, L, ml, un) no "
+                        "campo da unidade, e o tamanho da embalagem em 'como a equipe conta'."
+                    ),
+                })
+                continue
+
+            de_massa_ou_volume = any(menor.startswith(i) for i in ("kg", "quilo", "l", "litro"))
+            if de_massa_ou_volume and 0 < custo < LIMITE_DE_ESCALA:
+                medida = "grama" if menor.startswith(("kg", "quilo")) else "mililitro"
+                suspeitos.append({
+                    "inventory_id": item["id"],
+                    "name": item["name"],
+                    "unit": unidade,
+                    "unit_cost": custo,
+                    "kind": "rótulo em escala errada",
+                    "diagnosis": (
+                        f"{self._money(custo)} por {unidade} é impossível. Lido como {medida}, "
+                        f"o {unidade.rstrip('s')} sai a {self._money(custo * 1000)} — esse sim é "
+                        f"um preço real. A ficha técnica até fecha, porque quem a montou fez a "
+                        f"conta de cabeça; mas quem ler '{unidade}' e lançar em {unidade} erra por "
+                        "mil, e a contagem de estoque passa a comparar medidas diferentes."
+                    ),
+                })
+
+        return sorted(suspeitos, key=lambda linha: str(linha["name"]))
+
     def recipe_audit(self) -> dict[str, Any]:
         """Aponta fichas cujo custo nao pode estar certo, e por que.
 
@@ -156,6 +227,9 @@ class CostingService:
         suspeitos.sort(key=lambda linha: -linha["ratio"])
         return {
             "suspects": suspeitos,
+            # O cadastro do insumo vem junto: ficha so pode estar certa se o
+            # insumo disser a verdade sobre a propria unidade.
+            "units": self.unit_audit(),
             "checked": len([p for p in self.store.list("products") if p.get("active") is not False]),
             "threshold": SUSPEITA_DE_CUSTO,
         }

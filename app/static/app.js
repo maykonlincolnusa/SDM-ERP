@@ -865,6 +865,18 @@ function renderRecipeAudit() {
   const auditoria = state.recipeAudit;
   const painel = document.getElementById("recipe-audit-panel");
   if (!painel) return;
+  // O cadastro do insumo vem antes da ficha: "60 quilos" no campo da unidade,
+  // ou açaí em "litros" com custo de mililitro, envenenam toda conta feita em
+  // cima — e nada reclamava disso.
+  const unidades = auditoria?.units || [];
+  const painelUnidade = document.getElementById("unit-audit-panel");
+  painelUnidade.hidden = !unidades.length;
+  document.getElementById("unit-audit-list").innerHTML = unidades.map((linha) => `
+    <article class="insight attention"><span class="insight-icon"><i data-lucide="ruler"></i></span><div>
+      <strong>${escapeHtml(linha.name)} — unidade "${escapeHtml(linha.unit)}"</strong>
+      <p>${escapeHtml(linha.diagnosis)}</p>
+    </div></article>`).join("");
+
   const suspeitos = auditoria?.suspects || [];
   painel.hidden = !suspeitos.length;
   if (!suspeitos.length) return;

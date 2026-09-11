@@ -114,3 +114,50 @@ def test_ficha_sem_dois_estagios_nao_e_apontada(costing):
     _produto(costing, preco=15.0, receita=[("acai", 200.0)])
 
     assert costing.recipe_audit()["suspects"][0]["double_counted"] is None
+
+
+# ----------------------------------------------------------------------
+# O cadastro do insumo, antes da ficha
+# ----------------------------------------------------------------------
+
+
+def test_unidade_com_numero_e_apontada(costing):
+    """"60 quilos" no campo da unidade: alguém digitou o tamanho da embalagem.
+
+    A partir daí o sistema não sabe se o saldo 60 são 60 quilos ou 60 pacotes,
+    e nenhuma conta feita em cima disso significa alguma coisa.
+    """
+
+    costing.store.put("inventory", "barra", {
+        "id": "barra", "name": "Barra de 12", "unit": "60 quilos", "quantity": 60.0,
+        "minimum_quantity": 5.0, "unit_cost": 38.0, "category": "Polpas",
+    })
+
+    achado = next(linha for linha in costing.recipe_audit()["units"] if linha["name"] == "Barra de 12")
+
+    assert achado["kind"] == "unidade com número"
+    assert "tamanho da embalagem" in achado["diagnosis"]
+
+
+def test_rotulo_em_escala_errada_e_apontado(costing):
+    """Açaí em "litros" a R$ 0,008: o número está por mililitro."""
+
+    costing.store.put("inventory", "base", {
+        "id": "base", "name": "Açaí", "unit": "litros", "quantity": 0.0,
+        "minimum_quantity": 1.0, "unit_cost": 0.008388, "category": "Polpas",
+    })
+
+    achado = next(linha for linha in costing.recipe_audit()["units"] if linha["name"] == "Açaí")
+
+    assert achado["kind"] == "rótulo em escala errada"
+    assert "mililitro" in achado["diagnosis"]
+    assert "R$ 8,39" in achado["diagnosis"]
+
+
+def test_insumo_com_unidade_coerente_fica_de_fora(costing):
+    """Não se acusa quem está certo: kg a R$ 22,50 é preço real de quilo."""
+
+    nomes = [linha["name"] for linha in costing.recipe_audit()["units"]]
+
+    assert "Base de açaí" not in nomes
+    assert "Granola" not in nomes
