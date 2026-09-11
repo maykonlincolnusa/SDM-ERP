@@ -83,6 +83,7 @@ from app.services import (
     PlanningService,
     PricingService,
     PromotionService,
+    YieldService,
 )
 from scripts.import_anota_ai import (
     aplicar_itens as aplicar_itens_anota_ai,
@@ -108,6 +109,7 @@ async def lifespan(app: FastAPI):
     app.state.delivery = DeliveryService(app.state.store)
     app.state.dispatch = DispatchService(app.state.store)
     app.state.catalog = CatalogService(app.state.store)
+    app.state.yields = YieldService(app.state.store)
     app.state.secrets = build_secret_vault(settings, app.state.store.mode)
     app.state.anotaai = AnotaAiService(app.state.store, app.state.erp, app.state.secrets)
     app.state.ifood = IFoodService(app.state.store, app.state.erp, app.state.secrets)
@@ -562,6 +564,23 @@ def update_production_recipe(
 @app.delete("/api/production/recipes/{recipe_id}")
 def delete_production_recipe(recipe_id: str, service: ERPService = Depends(erp), _: dict = Depends(current_user)) -> dict:
     return _run(lambda: service.delete_production_recipe(recipe_id))
+
+
+@app.get("/api/production/acai-yield")
+def acai_yield(
+    days: int = Query(default=90, ge=7, le=365),
+    kg: float = Query(default=20.0, ge=0, le=1000),
+    request: Request = None,
+    _: dict = Depends(current_user),
+) -> dict:
+    """Quanto uma barra rende, deduzido do que a loja já registra.
+
+    O rendimento não precisa ser medido: os dois lados da conta já passam pelo
+    sistema por outros motivos. O quilo que entrou está na compra; o mililitro
+    que saiu está na venda. A razão entre eles já traz dentro o que a batida
+    declarada esconde — o que ficou na cuba, o que derreteu, a mão pesada.
+    """
+    return request.app.state.yields.acai_yield(days, kg)
 
 
 @app.get("/api/production/yield")

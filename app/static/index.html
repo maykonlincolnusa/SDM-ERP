@@ -253,6 +253,17 @@
             <div class="table-scroll"><table><thead><tr><th>Insumo</th><th>Classe</th><th class="align-right">Custo</th><th class="align-right">Acumulado</th><th class="align-right">Variação</th><th>Rotina sugerida</th></tr></thead><tbody id="pl-abc-body"></tbody></table></div>
           </section>
 
+          <section class="panel" id="acai-yield-panel" aria-labelledby="acai-yield-title">
+            <div class="panel-header"><div><p class="eyebrow">Rendimento</p><h2 id="acai-yield-title">Quanto a barra rende</h2></div><span class="soft-chip" id="acai-yield-state">--</span></div>
+            <p class="panel-note">Ninguém precisa medir a cuba. Os dois lados da conta já passam pelo sistema: o quilo que entrou está na compra, o mililitro que saiu está na venda. A razão entre eles já traz dentro o que a batida declarada esconde — o que ficou na cuba, o que derreteu, a mão pesada de quem serve.</p>
+            <p class="modal-result full neutral" id="acai-yield-summary"></p>
+            <div class="form-grid two" id="acai-yield-ask" hidden>
+              <label>Se eu comprar<input id="acai-yield-kg" type="number" min="1" max="1000" step="1" value="20" /><small class="field-hint">Quilos de barra.</small></label>
+            </div>
+            <div class="table-scroll" id="acai-yield-table" hidden><table><thead><tr><th>Copo</th><th class="align-right">Base por copo</th><th class="align-right">Copos</th><th class="align-right">Faturamento</th></tr></thead><tbody id="acai-yield-body"></tbody></table></div>
+            <div id="acai-yield-blockers"></div>
+          </section>
+
           <section class="panel table-panel" id="pl-blockers-panel">
             <div class="panel-header"><div><p class="eyebrow">Limites</p><h2>O que o plano ainda não enxerga</h2></div><i data-lucide="unplug" class="heading-icon"></i></div>
             <div class="insight-list" id="pl-blockers"></div>

@@ -11,6 +11,7 @@ from app.services.media import MediaService
 from app.services.planning import PlanningService
 from app.services.pricing import PricingService
 from app.services.promotions import PromotionService
+from app.services.yields import YieldService
 
 __all__ = [
     "AnotaAiClient",
@@ -30,4 +31,5 @@ __all__ = [
     "PlanningService",
     "PricingService",
     "PromotionService",
+    "YieldService",
 ]

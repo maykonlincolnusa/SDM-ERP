@@ -46,6 +46,7 @@ const state = {
   marketPrices: [],
   planning: null,
   planningService: 0.9,
+  acaiYieldKg: 20,
   couriers: [],
   deliveries: [],
   deliveryPerformance: null,
@@ -247,6 +248,7 @@ const CARGA_RELATORIOS = {
   productionAdvice: () => "/api/production/input-advice?days=30",
   packagingAudit: () => "/api/packaging/audit?days=30",
   planning: () => `/api/planning?days=90&horizon=7&service_level=${state.planningService}`,
+  acaiYield: () => `/api/production/acai-yield?days=90&kg=${state.acaiYieldKg}`,
   deliveries: () => `/api/deliveries?days=${state.deliveryPeriod}`,
   deliveryPerformance: () => `/api/couriers/performance?days=${state.deliveryPeriod}`,
   history: () => `/api/audit?limit=${state.historyLimit}`,
@@ -366,6 +368,7 @@ function renderAll() {
   renderConsumption();
   renderCrossing();
   renderPlanning();
+  renderAcaiYield();
   renderForecast();
   renderFinance();
   renderProducts();
@@ -1249,6 +1252,22 @@ function bindForms() {
   document.getElementById("anotaai-import-confirm").addEventListener("click", importarCardapioAnotaAi);
   bindAnotaAi();
   document.getElementById("dl-geofence-capture").addEventListener("click", capturarLocalDaLoja);
+  // Mudar os quilos reprojeta na hora: a conta é local, o rendimento já veio.
+  document.getElementById("acai-yield-kg").addEventListener("input", (evento) => {
+    const kg = Number(evento.target.value || 0);
+    if (!(kg > 0) || !state.acaiYield?.ready) return;
+    state.acaiYieldKg = kg;
+    const ml = state.acaiYield.ml_per_kg * kg;
+    state.acaiYield.projection = {
+      kg, ml: Math.round(ml),
+      cups: state.acaiYield.projection.cups.map((linha) => {
+        const copos = Math.floor(ml / linha.base_ml);
+        return { ...linha, cups: copos, revenue: Math.round(copos * (linha.revenue / (linha.cups || 1)) * 100) / 100 };
+      }),
+    };
+    renderAcaiYield();
+    refreshIcons();
+  });
 }
 
 function renderSaleProducts() {
@@ -3409,6 +3428,37 @@ async function loadPlanning() {
   } catch (error) {
     toast(error.message || "Não foi possível carregar o planejamento.", "error");
   }
+}
+
+// A pergunta do gestor: 20 kg de barra rendem quantos copos?
+//
+// Ela não é respondida medindo, e sim deduzindo do que a loja já registra. Sem
+// base suficiente, o painel diz o que falta em vez de devolver um número frágil
+// com cara de medida — porque esse número vira decisão de compra do mês.
+function renderAcaiYield() {
+  const dados = state.acaiYield;
+  const painel = document.getElementById("acai-yield-panel");
+  if (!painel || !dados) return;
+  setText("#acai-yield-state", dados.ready ? `confiança ${dados.confidence}` : "sem base ainda");
+  document.getElementById("acai-yield-ask").hidden = !dados.ready;
+  document.getElementById("acai-yield-table").hidden = !dados.ready;
+  document.getElementById("acai-yield-kg").value = state.acaiYieldKg;
+
+  const resumo = document.getElementById("acai-yield-summary");
+  resumo.textContent = dados.ready
+    ? `1 kg de barra rende ${number.format(dados.litres_per_kg)} litros de base. ${dados.basis}`
+    : "Ainda não dá para deduzir o rendimento. O que falta está abaixo.";
+  resumo.className = `modal-result full ${dados.ready ? "positive" : "neutral"}`;
+
+  document.getElementById("acai-yield-body").innerHTML = (dados.projection.cups || []).map((linha) => `
+    <tr><td><strong>${escapeHtml(linha.name)}</strong></td>
+        <td class="align-right muted-value">${number.format(linha.base_ml)} ml</td>
+        <td class="align-right"><strong>${number.format(linha.cups)}</strong></td>
+        <td class="align-right">${currency.format(linha.revenue)}</td></tr>`).join("")
+    || emptyRow(4, "Nenhum produto com base de açaí na ficha.");
+
+  document.getElementById("acai-yield-blockers").innerHTML = (dados.blockers || []).map((linha) => `
+    <article class="insight attention"><span class="insight-icon"><i data-lucide="triangle-alert"></i></span><div><strong>${escapeHtml(linha.title)}</strong><p>${escapeHtml(linha.description)}</p></div></article>`).join("");
 }
 
 function renderPlanning() {
