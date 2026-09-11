@@ -1052,7 +1052,7 @@ function activateView(target, updateHash = true) {
   document.querySelectorAll(".view").forEach(view => view.classList.toggle("active", view.id === target));
   // O estado da integração é buscado ao abrir a tela, e não no carregamento
   // geral: o iFood fora do ar não pode derrubar o painel inteiro.
-  if (target === "settings") loadIFood();
+  if (target === "settings") { loadIFood(); loadAnotaAi(); }
   if (target === "delivery") loadDispatch();
   document.querySelectorAll(".nav-item").forEach(item => item.classList.toggle("active", item.dataset.viewTarget === target));
   setMobileNavigation(false);
@@ -1233,6 +1233,8 @@ function bindForms() {
   document.getElementById("media-upload").addEventListener("change", uploadMedia);
   document.getElementById("media-form").addEventListener("submit", submitMedia);
   document.getElementById("media-entity-type").addEventListener("change", (event) => populateEntityTargets(event.target.value));
+  document.getElementById("anotaai-import-confirm").addEventListener("click", importarCardapioAnotaAi);
+  bindAnotaAi();
 }
 
 function renderSaleProducts() {
@@ -2584,6 +2586,129 @@ const IFOOD_ACOES = {
   sync: () => ({ path: "/api/integrations/ifood/sync", method: "POST", ok: "Busca concluída." }),
   disconnect: () => ({ path: "/api/integrations/ifood", method: "DELETE", ok: "Integração desligada." }),
 };
+
+// A Anota Aí, onde a loja mantém o cardápio e por onde passa toda a venda.
+//
+// Carregada ao abrir Ajustes, como a do iFood: uma integração fora do ar não
+// pode derrubar o painel inteiro, e a tela de ajustes é o único lugar onde
+// alguém precisa dessa informação.
+async function loadAnotaAi() {
+  const corpo = document.getElementById("anotaai-body");
+  if (!corpo) return;
+  try {
+    renderAnotaAi(await api("/api/integrations/anota-ai"));
+  } catch (error) {
+    setText("#anotaai-state", "Indisponível");
+    corpo.innerHTML = `<p class="empty-state">${escapeHtml(error.message || "Não foi possível ler o estado da integração.")}</p>`;
+  }
+}
+
+function renderAnotaAi(estado) {
+  setText("#anotaai-state", estado.connected ? "Conectada" : "Desconectada");
+  const corpo = document.getElementById("anotaai-body");
+  if (!estado.connected) {
+    corpo.innerHTML = `
+      <ol class="ifood-steps">
+        <li class="ifood-step">No painel da Anota Aí, abra <strong>Configurações → Integrações</strong> e copie a chave de integração.</li>
+        <li class="ifood-step">Cole abaixo. Ela vai para o cofre e nunca mais aparece nesta tela.</li>
+      </ol>
+      <div class="form-grid">
+        <label class="full">Chave de integração<input name="integration_key" type="password" autocomplete="off" placeholder="Cole aqui a chave do painel da Anota Aí" /><small class="field-hint">Não serve a chave que aparece no endereço do navegador: ela é uma sessão de 15 minutos e é recusada.</small></label>
+      </div>
+      <button class="primary-button" type="button" data-anotaai="connect"><i data-lucide="plug"></i><span>Conectar</span></button>`;
+  } else {
+    const ultima = estado.last_catalog_sync ? formatDateTime(estado.last_catalog_sync) : "nunca";
+    corpo.innerHTML = `
+      <dl class="ifood-summary">
+        <div><dt>Situação</dt><dd>Conectada</dd></div>
+        <div><dt>Última importação de cardápio</dt><dd>${escapeHtml(ultima)}</dd></div>
+      </dl>
+      <button class="primary-button" type="button" data-anotaai="catalog"><i data-lucide="book-open"></i><span>Conferir o cardápio</span></button>
+      <button class="secondary-button" type="button" data-anotaai="disconnect"><i data-lucide="unplug"></i><span>Desconectar</span></button>`;
+  }
+  refreshIcons();
+}
+
+function bindAnotaAi() {
+  const corpo = document.getElementById("anotaai-body");
+  if (!corpo) return;
+  corpo.addEventListener("click", (event) => {
+    const botao = event.target.closest("[data-anotaai]");
+    if (!botao || botao.disabled) return;
+    ({ connect: conectarAnotaAi, catalog: abrirCardapioAnotaAi, disconnect: desconectarAnotaAi })[botao.dataset.anotaai]?.(botao);
+  });
+}
+
+async function conectarAnotaAi(botao) {
+  const corpo = document.getElementById("anotaai-body");
+  const campo = corpo.querySelector('[name="integration_key"]');
+  const chave = (campo?.value || "").trim();
+  if (chave.length < 8) return toast("Cole a chave de integração do painel da Anota Aí.", "error");
+  botao.disabled = true;
+  try {
+    const resultado = await api("/api/integrations/anota-ai/connect", { method: "POST", body: JSON.stringify({ integration_key: chave }) });
+    if (campo) campo.value = "";
+    toast(`Conectada. O cardápio de lá tem ${number.format(resultado.items)} item(ns) em ${number.format(resultado.categories)} categoria(s).`, "success");
+    await loadAnotaAi();
+  } catch (error) {
+    toast(error.message || "Não foi possível conectar.", "error");
+  } finally {
+    botao.disabled = false;
+  }
+}
+
+async function desconectarAnotaAi() {
+  if (!confirm("Desconectar a Anota Aí?\n\nA chave é apagada do cofre. Os produtos já importados continuam aqui.")) return;
+  try {
+    await api("/api/integrations/anota-ai", { method: "DELETE" });
+    toast("Anota Aí desconectada.", "success");
+    await loadAnotaAi();
+  } catch (error) {
+    toast(error.message || "Não foi possível desconectar.", "error");
+  }
+}
+
+// Relatar antes de criar. Cardápio de loja acumula item sazonal e teste
+// abandonado; despejar tudo no ERP encheria o catálogo de coisa que ninguém
+// vende, e cada produto inventado vira uma ficha técnica para preencher.
+async function abrirCardapioAnotaAi(botao) {
+  botao.disabled = true;
+  try {
+    const previa = await api("/api/integrations/anota-ai/catalog");
+    state.anotaCatalog = previa;
+    document.getElementById("anotaai-catalog-readings").innerHTML = previa.readings.map((linha) => `
+      <article class="insight ${linha.type === "attention" ? "attention" : ""}"><span class="insight-icon"><i data-lucide="${linha.type === "attention" ? "triangle-alert" : "info"}"></i></span><div><strong>${escapeHtml(linha.title)}</strong><p>${escapeHtml(linha.description)}</p></div></article>`).join("");
+    setText("#anotaai-catalog-summary", `${previa.matched.length} produto(s) já casam · ${previa.new.length} item(ns) vendidos lá e sem cadastro aqui · ${previa.only_here.length} só existem aqui · ${previa.addons.length} complemento(s).`);
+    document.getElementById("anotaai-catalog-detail").innerHTML = previa.new.length
+      ? `<p class="panel-note">Estes são vendidos na Anota Aí e não existem no seu cardápio. Cada um é um pedido que chega sem produto identificado — e por isso sem custo e sem margem:</p>
+         <div class="value-rows">${previa.new.map((linha) => `<div class="ladder-row"><span>${escapeHtml(linha.name)}${linha.unavailable ? " <small class=\"muted-value\">(fora do ar lá)</small>" : ""}</span><b>${currency.format(linha.price)}</b></div>`).join("")}</div>`
+      : '<p class="empty-state">Todo item do cardápio de lá já tem produto aqui.</p>';
+    document.getElementById("anotaai-import-confirm").hidden = !previa.new.length;
+    openDialog("anotaai-catalog-modal");
+    refreshIcons();
+  } catch (error) {
+    toast(error.message || "Não foi possível ler o cardápio.", "error");
+  } finally {
+    botao.disabled = false;
+  }
+}
+
+async function importarCardapioAnotaAi() {
+  const botao = document.getElementById("anotaai-import-confirm");
+  botao.disabled = true;
+  try {
+    const resultado = await api("/api/integrations/anota-ai/catalog/import", { method: "POST", body: JSON.stringify({ anota_ids: [] }) });
+    closeModal();
+    const recusados = resultado.rejected?.length ? ` ${resultado.rejected.length} não entraram: ${resultado.rejected.map((linha) => linha.name).join(", ")}.` : "";
+    toast(`${resultado.created.length} produto(s) criados sem ficha técnica.${recusados} Preencha a ficha para o custo deixar de ser desconhecido.`, "success");
+    await loadAll();
+    await loadAnotaAi();
+  } catch (error) {
+    toast(error.message || "Não foi possível importar o cardápio.", "error");
+  } finally {
+    botao.disabled = false;
+  }
+}
 
 async function loadIFood() {
   const corpo = document.getElementById("ifood-body");

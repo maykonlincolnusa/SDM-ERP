@@ -16,6 +16,8 @@ from app.repositories.store import Store, build_store
 from app.schemas import (
     AddonCreate,
     AddonUpdate,
+    AnotaAiCatalogImport,
+    AnotaAiConnect,
     CatalogItem,
     CatalogOrder,
     CatalogRename,
@@ -66,6 +68,8 @@ from app.schemas import (
 )
 from app.services.dispatch import SemEntregadorEscolhido
 from app.services import (
+    AnotaAiError,
+    AnotaAiService,
     CatalogService,
     CostingService,
     DeliveryService,
@@ -104,6 +108,7 @@ async def lifespan(app: FastAPI):
     app.state.dispatch = DispatchService(app.state.store)
     app.state.catalog = CatalogService(app.state.store)
     app.state.secrets = build_secret_vault(settings, app.state.store.mode)
+    app.state.anotaai = AnotaAiService(app.state.store, app.state.erp, app.state.secrets)
     app.state.ifood = IFoodService(app.state.store, app.state.erp, app.state.secrets)
     app.state.media = MediaService(app.state.store, settings)
     app.state.media.sync_workspace()
@@ -705,6 +710,59 @@ def operating_result(
     """Lucro operacional sem mascarar pedidos que ainda não têm custo."""
     delivery_cost = delivery.performance(days)["totals"]["payout"]
     return service.operating_result(days, delivery_cost)
+
+
+def anotaai_service(request: Request) -> AnotaAiService:
+    return request.app.state.anotaai
+
+
+def _anota(acao):
+    """Recusa da Anota Aí é texto para a tela, não erro 500."""
+    try:
+        return acao()
+    except AnotaAiError as erro:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(erro)) from erro
+
+
+@app.get("/api/integrations/anota-ai")
+def anotaai_status(service: AnotaAiService = Depends(anotaai_service), _: dict = Depends(current_user)) -> dict:
+    """Se está conectada e quando foi a última sincronização. A chave nunca volta."""
+    return service.status()
+
+
+@app.post("/api/integrations/anota-ai/connect")
+def anotaai_connect(
+    payload: AnotaAiConnect,
+    service: AnotaAiService = Depends(anotaai_service),
+    _: dict = Depends(current_user),
+) -> dict:
+    """Guarda a chave no cofre e confirma na hora que ela funciona.
+
+    Confirmar agora evita o pior modo de falha: chave errada guardada em
+    silêncio, e três dias depois "a sincronização não traz nada".
+    """
+    return _anota(lambda: service.connect(payload.integration_key))
+
+
+@app.delete("/api/integrations/anota-ai")
+def anotaai_disconnect(service: AnotaAiService = Depends(anotaai_service), _: dict = Depends(current_user)) -> dict:
+    return _anota(service.disconnect)
+
+
+@app.get("/api/integrations/anota-ai/catalog")
+def anotaai_catalog(service: AnotaAiService = Depends(anotaai_service), _: dict = Depends(current_user)) -> dict:
+    """Compara o cardápio de lá com o daqui, sem gravar nada."""
+    return _anota(service.catalog_preview)
+
+
+@app.post("/api/integrations/anota-ai/catalog/import")
+def anotaai_catalog_import(
+    payload: AnotaAiCatalogImport,
+    service: AnotaAiService = Depends(anotaai_service),
+    _: dict = Depends(current_user),
+) -> dict:
+    """Cria no ERP os itens escolhidos — sem ficha técnica, que é da loja."""
+    return _anota(lambda: service.import_catalog(payload.anota_ids))
 
 
 @app.post("/api/imports/anota-ai")

@@ -795,6 +795,27 @@ class MediaUpdate(BaseModel):
     entity_id: str | None = Field(default=None, max_length=120)
 
 
+class AnotaAiConnect(BaseModel):
+    """A chave de integracao da loja na Anota Ai.
+
+    Ela entra uma vez e vai para o cofre. A chave que aparece no endereco do
+    navegador nao serve: e sessao de quinze minutos, e o erro de colar a errada
+    e comum o bastante para a mensagem de recusa dizer onde achar a certa.
+    """
+
+    integration_key: str = Field(min_length=8, max_length=2000)
+
+
+class AnotaAiCatalogImport(BaseModel):
+    """Quais itens do cardapio viram produto no ERP.
+
+    Vazio importa todos os que ainda nao existem aqui. A lista explicita e o
+    caminho normal: cardapio de loja acumula item sazonal e teste abandonado.
+    """
+
+    anota_ids: list[str] = Field(default_factory=list, max_length=300)
+
+
 class IFoodActivationStart(BaseModel):
     """Chave e segredo do aplicativo criado no Portal do Desenvolvedor do iFood.
 

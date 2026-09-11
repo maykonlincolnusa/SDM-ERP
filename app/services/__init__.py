@@ -1,3 +1,4 @@
+from app.services.anotaai import AnotaAiClient, AnotaAiError, AnotaAiService
 from app.services.catalog import CatalogService
 from app.services.costing import CostingService
 from app.services.delivery import DeliveryService
@@ -12,6 +13,9 @@ from app.services.pricing import PricingService
 from app.services.promotions import PromotionService
 
 __all__ = [
+    "AnotaAiClient",
+    "AnotaAiError",
+    "AnotaAiService",
     "CatalogService",
     "CostingService",
     "DeliveryService",

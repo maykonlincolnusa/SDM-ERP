@@ -1,6 +1,8 @@
 from app.schemas.models import (
     PAYMENT_METHODS,
     PRODUCT_LINES,
+    AnotaAiCatalogImport,
+    AnotaAiConnect,
     AddonCreate,
     AddonUpdate,
     CatalogItem,
@@ -67,6 +69,8 @@ from app.schemas.models import (
 __all__ = [
     "PAYMENT_METHODS",
     "PRODUCT_LINES",
+    "AnotaAiCatalogImport",
+    "AnotaAiConnect",
     "AddonCreate",
     "AddonUpdate",
     "CatalogItem",
