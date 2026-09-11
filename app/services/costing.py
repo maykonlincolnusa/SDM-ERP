@@ -144,6 +144,7 @@ class CostingService:
             # e ordenar por peso poe a correcao mais util em primeiro lugar.
             linhas.sort(key=lambda item: -item["cost"])
             suspeitos.append({
+                "double_counted": self._duplo_estagio(linhas),
                 "product_id": produto["id"],
                 "name": produto["name"],
                 "price": round(preco, 2),
@@ -159,30 +160,76 @@ class CostingService:
             "threshold": SUSPEITA_DE_CUSTO,
         }
 
-    @classmethod
-    def _diagnostico_da_linha(cls, linha: dict[str, Any], preco: float) -> str | None:
-        """A correcao provavel, quando ela e obvia o bastante para ser sugerida.
+    @staticmethod
+    def _duplo_estagio(linhas: list[dict[str, Any]]) -> list[str] | None:
+        """O mesmo insumo em dois estagios da mesma ficha.
 
-        Dividir por mil nao e chute: e o unico erro que produz esta assinatura —
-        quantidade inteira grande num insumo medido em quilo ou litro, custo da
-        linha sozinho maior que o preco do produto, e tudo voltando ao lugar
-        quando a quantidade e lida como grama ou mililitro.
+        A barra sai do freezer e vira base pronta na batida; a base pronta e o
+        que o copo consome. Ter os dois na mesma ficha tira o acai do estoque
+        duas vezes — uma como barra, outra como base — e infla o custo do copo
+        pelo caminho. E um erro que nenhuma conta de unidade corrige: mesmo com
+        gramas e quilos certos, o acai continua contado em dobro.
+
+        Nao e acusacao: receita com pedaco de barra por cima da base existe. Por
+        isso a tela pergunta em vez de afirmar.
         """
 
-        unidade = str(linha.get("unit") or "").strip().lower()
-        de_massa_ou_volume = any(unidade.startswith(inicio) for inicio in ("kg", "quilo", "l", "litro"))
-        if de_massa_ou_volume and linha["cost"] > preco and linha["quantity"] >= 1:
-            convertida = linha["quantity"] / 1000
-            if (linha["unit_cost"] * convertida) <= preco:
-                medida = "gramas" if unidade.startswith(("kg", "quilo")) else "mililitros"
-                return (
-                    f"Parece {medida}: {linha['quantity']:g} em vez de {convertida:g} "
-                    f"{linha['unit']}. Assim a linha sairia de {cls._money(linha['cost'])} para "
-                    f"{cls._money(linha['unit_cost'] * convertida)}."
-                )
-        if linha["cost"] > preco:
-            return f"Esta linha sozinha custa mais que o preço do produto ({cls._money(preco)})."
-        return None
+        # "Acai", "Base de acai" e "barra 12%" sao o mesmo insumo em estagios
+        # diferentes. O nome exato varia de loja para loja, entao o que vale e
+        # a palavra: o que e acai e nao e barra nem polpa esta pronto.
+        nomes = {str(linha.get("name") or "") for linha in linhas}
+        bruto = {nome for nome in nomes if any(p in _fold(nome) for p in ("barra", "polpa"))}
+        pronto = {
+            nome for nome in nomes - bruto
+            if "acai" in _fold(nome)
+        }
+        return sorted(pronto | bruto) if pronto and bruto else None
+
+    @classmethod
+    def _diagnostico_da_linha(cls, linha: dict[str, Any], preco: float) -> str | None:
+        """O que esta linha tem de impossivel — e as duas explicacoes possiveis.
+
+        A conferencia consegue provar que a linha esta errada: ela sozinha custa
+        mais do que o produto inteiro e vendido. O que ela **nao** consegue e
+        dizer qual dos dois numeros errou, e essa distincao importa porque as
+        correcoes sao opostas.
+
+        Ou a quantidade esta na medida da cozinha e o cadastro esta em quilo (16
+        g de amendoim lancados como 16 kg), ou o custo do insumo e que esta na
+        escala errada. Numa mesma ficha da loja as duas coisas aparecem: o acai
+        tem custo por mililitro com unidade escrita "litros" — e ali a conta
+        fecha —, enquanto o amendoim tem custo real por quilo com quantidade em
+        grama. Sugerir "divida por mil" para todas mandaria trocar justamente a
+        que estava certa, e a barra de acai, que a loja compra por quilo e usa
+        aos gramas de verdade, viraria 20 g num copo de 500 ml.
+
+        Entao a frase mostra a conta e devolve a decisao para quem conhece a
+        receita, em vez de dar uma instrucao que pode estar invertida.
+        """
+
+        if linha["cost"] <= preco:
+            return None
+
+        unidade = str(linha.get("unit") or "").strip()
+        menor = unidade.lower()
+        de_massa_ou_volume = any(menor.startswith(inicio) for inicio in ("kg", "quilo", "l", "litro"))
+        base = (
+            f"Esta linha sozinha custa {cls._money(linha['cost'])} — mais que o produto inteiro, "
+            f"vendido a {cls._money(preco)}."
+        )
+        if not de_massa_ou_volume:
+            return base
+
+        medida = "grama" if menor.startswith(("kg", "quilo")) else "mililitro"
+        por_menor = linha["unit_cost"] / 1000
+        return (
+            f"{base} Ou a quantidade está em {medida} e o cadastro em {unidade} "
+            f"({linha['quantity']:g} viraria {linha['quantity'] / 1000:g} {unidade}, "
+            f"e a linha, {cls._money(linha['unit_cost'] * linha['quantity'] / 1000)}); "
+            f"ou o custo é que deveria ser por {medida} "
+            f"({cls._money(linha['unit_cost'])} por {unidade} viraria {cls._money(por_menor)} por {medida}). "
+            f"Quem sabe a receita decide qual dos dois."
+        )
 
     def dossier(self, product_id: str, days: int = 30, target_margin: float = 0.0) -> dict[str, Any]:
         product = self.store.get("products", product_id)

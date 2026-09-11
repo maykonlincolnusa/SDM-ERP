@@ -872,6 +872,7 @@ function renderRecipeAudit() {
     <article class="insight attention"><span class="insight-icon"><i data-lucide="triangle-alert"></i></span><div>
       <strong>${escapeHtml(produto.name)} — a ficha soma ${currency.format(produto.recipe_cost)} e o produto é vendido a ${currency.format(produto.price)}</strong>
       <p>${number.format(produto.ratio)}× o preço de venda. As linhas que mais pesam:</p>
+      ${produto.double_counted ? `<p class="negative"><strong>A ficha tem a base pronta e a barra ao mesmo tempo</strong> (${produto.double_counted.map(escapeHtml).join(" + ")}). A barra vira base na batida, então ter as duas aqui tira o açaí do estoque duas vezes — e nenhuma correção de grama ou quilo conserta isso. Confira se é mesmo pedaço de barra por cima, ou se uma das duas linhas sobra.</p>` : ""}
       <div class="value-rows">${produto.lines.map((linha) => `
         <div class="ladder-row"><span>${number.format(linha.quantity)} ${escapeHtml(linha.unit || "")} de ${escapeHtml(linha.name)}${linha.diagnosis ? `<small class="muted-value"> ${escapeHtml(linha.diagnosis)}</small>` : ""}</span><b>${currency.format(linha.cost)}</b></div>`).join("")}</div>
     </div></article>`).join("");
