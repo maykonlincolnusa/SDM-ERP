@@ -35,6 +35,14 @@ DIAS = ("segunda", "terça", "quarta", "quinta", "sexta", "sábado", "domingo")
 MARKETPLACES = ("ifood", "99food", "99", "rappi", "uber eats", "ubereats")
 
 # Abaixo disso o par de produtos pode ter saido junto por acaso.
+# Acima de quantas vezes o preco o custo da ficha deixa de ser "produto caro" e
+# passa a ser cadastro errado. Mesmo limite que a conferencia do cardapio usa.
+SUSPEITA_DE_CUSTO = 3.0
+
+# Quanto um tamanho pode estar perto de um degrau da escada e ainda ser "o
+# mesmo degrau". Quinze por cento cobre 330 contra 300 e 770 contra 700.
+PROXIMIDADE_DE_TAMANHO = 0.15
+
 MINIMO_PEDIDOS_PARA_CESTA = 20
 MINIMO_OCORRENCIAS_DO_PAR = 3
 
@@ -185,10 +193,13 @@ class GrowthService:
                 continue
 
             preco_cheio = produto_a["price"] + produto_b["price"]
-            custo = (
-                self._recipe_cost(produto_a, inventory)
-                + self._recipe_cost(produto_b, inventory)
-            )
+            custo_a = self._custo_confiavel(produto_a, inventory)
+            custo_b = self._custo_confiavel(produto_b, inventory)
+            if custo_a is None or custo_b is None:
+                # Combo montado sobre custo errado sugere desconto que fura o
+                # piso. Sem os dois custos confiaveis, o par nao vira sugestao.
+                continue
+            custo = custo_a + custo_b
             preco_combo = round(preco_cheio * (1 - DESCONTO_COMBO), 2)
             sobra_combo = round(preco_combo - custo, 2)
             if sobra_combo <= 0:
@@ -201,8 +212,7 @@ class GrowthService:
             avulsos = isolados[a] + isolados[b]
             conversao_mes = (avulsos / contexto["months"]) * CONVERSAO_ASSUMIDA if contexto["months"] else 0
             sobra_avulsa_media = round(
-                (produto_a["price"] - self._recipe_cost(produto_a, inventory)
-                 + produto_b["price"] - self._recipe_cost(produto_b, inventory)) / 2, 2)
+                (produto_a["price"] - custo_a + produto_b["price"] - custo_b) / 2, 2)
             ganho = round(conversao_mes * (sobra_combo - sobra_avulsa_media), 2)
             perda_desconto = round(juntos_por_mes * (preco_cheio - preco_combo), 2)
             impacto = round(ganho - perda_desconto, 2)
@@ -389,7 +399,24 @@ class GrowthService:
 
     def _pricing_rules(self, detailed, products, inventory, contexto) -> list[dict[str, Any]]:
         sugestoes: list[dict[str, Any]] = []
-        ativos = [p for p in products.values() if p.get("active", True) and p.get("recipe")]
+        todos = [p for p in products.values() if p.get("active", True) and p.get("recipe")]
+        # Margem calculada sobre ficha errada nao e margem baixa: e ficha errada.
+        # O produto sai da amostra em vez de puxar a mediana para o absurdo.
+        ativos = [p for p in todos if self._custo_confiavel(p, inventory) is not None]
+        cegos = [p for p in todos if self._custo_confiavel(p, inventory) is None]
+        if cegos:
+            sugestoes.append(self._suggestion(
+                "preco-ficha-impossivel", "preco",
+                f"{len(cegos)} produto(s) não dá para avaliar: a ficha técnica custa mais que o preço",
+                f"{', '.join(p['name'] for p in cegos[:5])} têm ficha somando mais de "
+                f"{SUSPEITA_DE_CUSTO:g}× o preço de venda. Nenhuma loja vende por oito o que lhe custa mil — "
+                "é erro de cadastro, quase sempre de unidade.",
+                "Corrija em Cardápio, no quadro 'Fichas técnicas com custo impossível'. Enquanto não for "
+                "corrigido, margem, preço sugerido, combo e promoção destes produtos ficam de fora — "
+                "publicar número tirado de ficha errada é pior que não publicar.",
+                confidence="alta",
+                confidence_note="custo da ficha acima de três vezes o preço de venda",
+            ))
         if not ativos:
             return sugestoes
         vendas = self._unit_sales(detailed)
@@ -828,6 +855,28 @@ class GrowthService:
             for line in product.get("recipe", [])
         )
 
+    @classmethod
+    def _custo_confiavel(cls, product: dict[str, Any], inventory: dict[str, dict[str, Any]]) -> float | None:
+        """O custo da ficha, ou nada quando ele nao pode estar certo.
+
+        Custo de ficha alimenta margem, preco sugerido, combo e promocao. Quando
+        a ficha esta errada — e nesta loja as nove estao, por erro de unidade —
+        ele nao erra sozinho: ele sai por todos esses lugares com cara de numero
+        calculado. O motor chegou a publicar "um copo de R$ 7,87 custa
+        R$ 1.828,17 para fazer", e uma frase dessas nao e so inutil: ela ensina
+        o dono a desconfiar de tudo o que a tela diz.
+
+        Nenhuma loja vende por oito o que lhe custa mil e oitocentos. Acima de
+        tres vezes o preco, o custo e cadastro errado e nao produto caro — e a
+        sugestao que dependeria dele e omitida, em vez de publicada torta.
+        """
+
+        preco = product.get("price") or 0
+        custo = cls._recipe_cost(product, inventory)
+        if preco <= 0 or not product.get("recipe"):
+            return None
+        return None if custo > preco * SUSPEITA_DE_CUSTO else custo
+
     @staticmethod
     def _margin(price: float, cost: float) -> float:
         return round(((price - cost) / price) * 100, 1) if price else 0.0
@@ -878,7 +927,15 @@ class GrowthService:
             if len(tamanhos) < 2:
                 continue
             menor, maior = min(tamanhos), max(tamanhos)
-            faltando = [t for t in escada if menor < t < maior and t not in tamanhos]
+            # Vizinho proximo nao e vao. A escada de referencia e redonda (300,
+            # 500, 700) e o cardapio real quase nunca e: esta loja vende 330 e
+            # 770, e sem esta folga o motor pedia "falta o 700 ml" para quem ja
+            # tem 770. Sugestao obvia como essa ensina a ignorar a tela.
+            faltando = [
+                degrau for degrau in escada
+                if menor < degrau < maior
+                and not any(abs(tamanho - degrau) <= degrau * PROXIMIDADE_DE_TAMANHO for tamanho in tamanhos)
+            ]
             if not faltando:
                 continue
             referencia = max(

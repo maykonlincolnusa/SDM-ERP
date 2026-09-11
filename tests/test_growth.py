@@ -281,3 +281,61 @@ def test_canal_proprio_com_taxa_zero_nao_vira_aviso(tmp_path):
     ids = {linha["id"] for linha in GrowthService(store).opportunities(90)["suggestions"]}
 
     assert not any(identificador.startswith("canal-taxa-zero") for identificador in ids)
+
+
+# ----------------------------------------------------------------------
+# O motor recusa numero que nao pode estar certo
+#
+# Custo de ficha alimenta margem, preco sugerido, combo e promocao. Quando a
+# ficha esta errada ele nao erra sozinho: sai por todos esses lugares com cara
+# de numero calculado. O motor chegou a publicar "um copo de R$ 7,87 custa
+# R$ 1.828,17 para fazer" — e uma frase dessas ensina o dono a desconfiar de
+# tudo o que a tela diz.
+# ----------------------------------------------------------------------
+
+
+def test_ficha_impossivel_vira_aviso_em_vez_de_sugestao_de_preco(store):
+    produto = next(p for p in store.list("products") if p.get("recipe"))
+    produto["recipe"] = [{"inventory_id": "acai", "quantity": 900.0}]
+    store.put("products", produto["id"], produto)
+
+    sugestoes = GrowthService(store).opportunities(90)["suggestions"]
+
+    aviso = next((s for s in sugestoes if s["id"] == "preco-ficha-impossivel"), None)
+    assert aviso is not None
+    assert "custo impossível" in aviso["action"]
+    # E nenhuma sugestão de preço saiu com o número torto.
+    assert not any(
+        s["type"] == "preco" and produto["name"] in s["title"] and "impossível" not in s["title"]
+        for s in sugestoes
+    )
+
+
+def test_combo_nao_e_montado_sobre_custo_que_nao_fecha(store):
+    """Combo sobre custo errado sugere desconto que fura o piso."""
+
+    for produto in store.list("products"):
+        if produto.get("recipe"):
+            produto["recipe"] = [{"inventory_id": "acai", "quantity": 900.0}]
+            store.put("products", produto["id"], produto)
+    for numero in range(25):
+        _pedido(store, 9000 + numero, 5, [("acai-500", 1), ("acai-300", 1)])
+
+    combos = [s for s in GrowthService(store).opportunities(90)["suggestions"] if s["type"] == "combo"]
+
+    assert not any("Combo" in s["title"] for s in combos)
+
+
+def test_tamanho_vizinho_nao_e_apontado_como_lacuna(store):
+    """A loja vende 330 e 770; pedir "o 700 ml" ensina a ignorar a tela."""
+
+    for identificador, nome, preco in [("p330", "Açaí 330 ml", 10.0), ("p770", "Açaí 770 ml", 26.0)]:
+        store.put("products", identificador, {
+            "id": identificador, "name": nome, "price": preco, "category": "Copos",
+            "active": True, "line": "Classico",
+            "recipe": [{"inventory_id": "acai", "quantity": 0.2}],
+        })
+
+    sugestoes = GrowthService(store).opportunities(90)["suggestions"]
+
+    assert not any("700 ml" in s["title"] for s in sugestoes)
