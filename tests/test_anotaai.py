@@ -18,7 +18,13 @@ import pytest
 from app.repositories.secrets import FileVault
 from app.repositories.store import DemoStore
 from app.services import ERPService
-from app.services.anotaai import MENU_PATH, AnotaAiClient, AnotaAiError, AnotaAiService
+from app.services.anotaai import (
+    MENU_PATH,
+    SECRET_NAME,
+    AnotaAiClient,
+    AnotaAiError,
+    AnotaAiService,
+)
 
 CHAVE = "chave-de-integracao-da-loja"
 
@@ -509,3 +515,97 @@ def test_o_pedido_da_anota_ai_aparece_na_fila_do_entregador(tmp_path):
     assert fila[0]["freight"] == 6.0
     assert "Rua das Flores" in fila[0]["address"]
     assert fila[0]["items"][0]["name"] == "Açaí 500 ml"
+
+
+# ----------------------------------------------------------------------
+# Token vencido nao e token errado
+#
+# A API responde as duas coisas com a mesma frase ("Failed to authenticate
+# token."), e elas pedem acoes opostas: uma se resolve copiando de novo, a outra
+# so com o suporte. O token que a Anota Ai emite vale 15 minutos — curto o
+# bastante para vencer entre copiar e colar. Quando o valor e um JWT, da para
+# separar os dois casos antes de gastar a chamada.
+# ----------------------------------------------------------------------
+
+
+def _jwt(segundos_ate_expirar: int) -> str:
+    """Um token com a forma que a Anota Aí emite. A assinatura não importa aqui."""
+
+    import base64
+    import time
+
+    def parte(dados):
+        return base64.urlsafe_b64encode(json.dumps(dados).encode()).decode().rstrip("=")
+
+    agora = int(time.time())
+    cabecalho = parte({"alg": "HS256", "typ": "JWT"})
+    corpo = parte({
+        "idpage": "66dfb3a439b8de0012bbfd26", "iat": agora,
+        "exp": agora + segundos_ate_expirar, "iss": "session-api",
+    })
+    return f"{cabecalho}.{corpo}.assinatura"
+
+
+def _com_registro(tmp_path):
+    chamadas: list[dict] = []
+    store = DemoStore(tmp_path / "store.json")
+    cofre = FileVault(tmp_path / "cofre.json")
+    service = AnotaAiService(
+        store, ERPService(store), cofre,
+        AnotaAiClient(_transporte(CARDAPIO, registro=chamadas)),
+    )
+    return service, cofre, chamadas
+
+
+def test_token_vencido_diz_que_venceu_em_vez_de_chave_errada(tmp_path):
+    service, cofre, chamadas = _com_registro(tmp_path)
+
+    with pytest.raises(AnotaAiError) as erro:
+        service.connect(_jwt(-1800))
+
+    assert "expirou" in str(erro.value)
+    assert "15 minutos" in str(erro.value)
+    # E nao gastou chamada: nao ha o que perguntar a uma credencial morta.
+    assert chamadas == []
+    assert not (cofre.read(SECRET_NAME) or {}).get("integration_key")
+
+
+def test_token_dentro_da_validade_segue_para_a_api(tmp_path):
+    service, cofre, chamadas = _com_registro(tmp_path)
+
+    service.connect(_jwt(600))
+
+    assert len(chamadas) == 1
+
+
+def test_chave_comum_nao_e_confundida_com_token_vencido(tmp_path):
+    """Nem toda credencial é um JWT; a que não for passa direto."""
+
+    service, cofre, chamadas = _com_registro(tmp_path)
+
+    service.connect("chave-fixa-do-painel-1234")
+
+    assert len(chamadas) == 1
+
+
+def test_a_tela_avisa_quando_a_chave_guardada_venceu(tmp_path):
+    """Chave guardada não é chave viva, e "conectado" sozinho esconde isso."""
+
+    service, cofre, chamadas = _com_registro(tmp_path)
+    cofre.write(SECRET_NAME, {"integration_key": _jwt(-3600)})
+
+    estado = service.status()
+
+    assert estado["connected"] is True
+    assert estado["key_expired"] is True
+    assert estado["key_expired_minutes"] >= 59
+
+
+def test_chave_viva_nao_e_marcada_como_vencida(tmp_path):
+    service, cofre, chamadas = _com_registro(tmp_path)
+    service.connect(_jwt(600))
+
+    estado = service.status()
+
+    assert estado["key_expired"] is False
+    assert estado["key_expired_minutes"] is None

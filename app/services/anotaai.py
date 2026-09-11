@@ -36,6 +36,8 @@ encheria o catálogo de coisa que ninguém vende.
 
 from __future__ import annotations
 
+import base64
+import binascii
 import json
 import logging
 import re
@@ -172,6 +174,25 @@ def _decode(raw: bytes | None) -> Any:
         return None
 
 
+def _minutos_vencido(chave: str) -> int | None:
+    """Ha quantos minutos este JWT venceu, ou None se nao for um JWT.
+
+    Nao valida assinatura nem confia no conteudo: le `exp` so para separar
+    "token vencido" de "token errado", que a API responde com a mesma frase.
+    """
+
+    partes = chave.split(".")
+    if len(partes) != 3:
+        return None
+    try:
+        corpo = partes[1]
+        dados = json.loads(base64.urlsafe_b64decode(corpo + "=" * (-len(corpo) % 4)))
+        expira = float(dados["exp"])
+    except (ValueError, KeyError, TypeError, binascii.Error):
+        return None
+    return int((datetime.now(timezone.utc).timestamp() - expira) / 60)
+
+
 def _fold(value: Any) -> str:
     """Sem acento, sem pontuação e em minúsculas, para casar nome com nome."""
 
@@ -264,9 +285,17 @@ class AnotaAiService:
         """O que a tela mostra. A chave nunca aparece aqui."""
 
         estado = self._state()
-        conectado = bool((self.vault.read(SECRET_NAME) or {}).get("integration_key"))
+        chave = (self.vault.read(SECRET_NAME) or {}).get("integration_key")
+        conectado = bool(chave)
+        # Uma chave guardada nao e uma chave viva. Se o que a loja colou foi um
+        # token de sessao de 15 minutos, ele morreu no cofre — e a tela dizer
+        # "conectado" transforma isso em "a sincronizacao nao traz nada" sem
+        # ninguem entender por que.
+        vencido = _minutos_vencido(chave) if conectado else None
         return {
             "connected": conectado,
+            "key_expired": bool(vencido is not None and vencido > 0),
+            "key_expired_minutes": vencido if (vencido is not None and vencido > 0) else None,
             "last_order_sync": estado.get("last_order_sync"),
             "last_order_result": estado.get("last_order_result"),
             "last_catalog_sync": estado.get("last_catalog_sync"),
@@ -285,6 +314,18 @@ class AnotaAiService:
         chave = (integration_key or "").strip()
         if len(chave) < 8:
             raise AnotaAiError("A chave de integração parece curta demais. Copie o valor inteiro do painel.")
+
+        # Token vencido e recusado com a mesma frase de token errado, e a
+        # diferenca entre as duas coisas e enorme: uma se resolve copiando de
+        # novo, a outra so com o suporte da Anota Ai. Quando o valor colado e um
+        # JWT, da para dizer qual das duas antes de gastar a chamada.
+        vencido = _minutos_vencido(chave)
+        if vencido is not None and vencido > 0:
+            raise AnotaAiError(
+                f"Este token expirou há {vencido} minuto(s) — ele vale só 15 minutos a partir do "
+                "momento em que aparece no painel. Copie um novo e cole aqui em seguida, sem "
+                "fechar a tela no meio."
+            )
 
         resposta = self.client.catalog(chave)
         if not resposta.get("success", True):

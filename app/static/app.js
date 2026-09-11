@@ -2670,7 +2670,7 @@ async function loadAnotaAi() {
 }
 
 function renderAnotaAi(estado) {
-  setText("#anotaai-state", estado.connected ? "Conectada" : "Desconectada");
+  setText("#anotaai-state", estado.key_expired ? "Chave vencida" : estado.connected ? "Conectada" : "Desconectada");
   const corpo = document.getElementById("anotaai-body");
   if (!estado.connected) {
     corpo.innerHTML = `
@@ -2679,14 +2679,21 @@ function renderAnotaAi(estado) {
         <li class="ifood-step">Cole abaixo. Ela vai para o cofre e nunca mais aparece nesta tela.</li>
       </ol>
       <div class="form-grid">
-        <label class="full">Chave de integração<input name="integration_key" type="password" autocomplete="off" placeholder="Cole aqui a chave do painel da Anota Aí" /><small class="field-hint">Não serve a chave que aparece no endereço do navegador: ela é uma sessão de 15 minutos e é recusada.</small></label>
+        <label class="full">Chave de integração<input name="integration_key" type="password" autocomplete="off" placeholder="Cole aqui a chave do painel da Anota Aí" /><small class="field-hint">O token do painel vale só 15 minutos: copie e cole em seguida, sem parar no meio. Se vencer, o sistema avisa e basta copiar outro.</small></label>
       </div>
       <button class="primary-button" type="button" data-anotaai="connect"><i data-lucide="plug"></i><span>Conectar</span></button>`;
   } else {
     const ultima = estado.last_catalog_sync ? formatDateTime(estado.last_catalog_sync) : "nunca";
+    // Chave guardada nao e chave viva: um token de 15 minutos morre no cofre, e
+    // dizer so "conectada" transforma isso em "a sincronizacao nao traz nada"
+    // tres dias depois, sem ninguem ligar uma coisa a outra.
+    const vencida = estado.key_expired
+      ? `<p class="ifood-warning">A chave guardada venceu há ${escapeHtml(String(estado.key_expired_minutes))} minuto(s). Desconecte e cole um token novo — ele vale 15 minutos a partir do momento em que aparece no painel.</p>`
+      : "";
     corpo.innerHTML = `
+      ${vencida}
       <dl class="ifood-summary">
-        <div><dt>Situação</dt><dd>Conectada</dd></div>
+        <div><dt>Situação</dt><dd>${estado.key_expired ? "Chave vencida" : "Conectada"}</dd></div>
         <div><dt>Última importação de cardápio</dt><dd>${escapeHtml(ultima)}</dd></div>
         <div><dt>Última busca de pedidos</dt><dd>${escapeHtml(estado.last_order_sync ? formatDateTime(estado.last_order_sync) : "nunca")}</dd></div>
       </dl>
