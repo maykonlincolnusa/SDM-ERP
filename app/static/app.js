@@ -32,6 +32,8 @@ const state = {
   growth: null,
   growthPeriod: 90,
   growthFilter: "all",
+  advisor: null,
+  advisorPeriod: 30,
   productionRecipes: [],
   productionYield: null,
   productionEconomics: null,
@@ -111,6 +113,10 @@ async function init() {
   document.getElementById("growth-period").addEventListener("change", async (event) => {
     state.growthPeriod = Number(event.target.value);
     await loadGrowth();
+  });
+  document.getElementById("advisor-period").addEventListener("change", async (event) => {
+    state.advisorPeriod = Number(event.target.value);
+    await loadAdvisor();
   });
   document.getElementById("promotions-period").addEventListener("change", async (event) => {
     state.promotionsPeriod = Number(event.target.value);
@@ -383,6 +389,7 @@ function renderAll() {
   if (state.dispatch) loadDispatch();
   renderBrand();
   renderGrowth();
+  renderAdvisor();
   renderPromotions();
   renderPromotionMonth();
   renderPricing();
@@ -1102,6 +1109,7 @@ function activateView(target, updateHash = true) {
   // geral: o iFood fora do ar não pode derrubar o painel inteiro.
   if (target === "settings") { loadIFood(); loadAnotaAi(); }
   if (target === "delivery") loadDispatch();
+  if (target === "advisor") loadAdvisor();
   document.querySelectorAll(".nav-item").forEach(item => item.classList.toggle("active", item.dataset.viewTarget === target));
   setMobileNavigation(false);
   if (updateHash) history.replaceState(null, "", `#${target}`);
@@ -3155,6 +3163,86 @@ async function loadGrowth() {
   }
 }
 
+async function loadAdvisor() {
+  if (loadAdvisor.pending) return;
+  loadAdvisor.pending = true;
+  try {
+    state.advisor = await api(`/api/advisor?days=${state.advisorPeriod}`);
+    renderAdvisor();
+  } catch (error) {
+    toast(error.message || "Não foi possível carregar o conselheiro.", "error");
+  } finally {
+    loadAdvisor.pending = false;
+  }
+}
+
+const ADVISOR_KINDS = {
+  risco: { label: "Risco", icon: "triangle-alert" },
+  decisao: { label: "Decisão", icon: "scale" },
+  execucao: { label: "Execução", icon: "arrow-right" },
+};
+
+function renderAdvisor() {
+  const data = state.advisor;
+  if (!data) return;
+  const situacao = data.situation;
+  const lucroFechado = situacao.complete && situacao.operating_profit !== null;
+
+  setText("#advisor-revenue", currency.format(situacao.revenue));
+  setText("#advisor-orders", `${number.format(situacao.orders)} pedido${situacao.orders === 1 ? "" : "s"} · ticket ${currency.format(situacao.average_ticket)}`);
+  setText("#advisor-profit", lucroFechado ? currency.format(situacao.operating_profit) : currency.format(situacao.profit_upper_bound));
+  setText("#advisor-coverage", situacao.complete
+    ? "cobertura de custo completa"
+    : `teto · cobertura ${number.format(situacao.cost_coverage)}%`);
+  setText("#advisor-count", number.format(data.priorities.length));
+  setText("#advisor-count-note", data.priorities.length === 1 ? "uma frente nesta semana" : "no máximo três");
+  setText("#advisor-fees", currency.format(situacao.channel_fees));
+  setText("#advisor-owner-copy", situacao.for_owner);
+  setText("#advisor-manager-copy", situacao.for_manager);
+
+  const badge = document.getElementById("nav-advisor-count");
+  badge.hidden = data.priorities.length === 0;
+  badge.textContent = data.priorities.length;
+
+  document.getElementById("advisor-list").innerHTML = data.priorities.length
+    ? data.priorities.map(advisorCard).join("")
+    : '<p class="empty-state">Ainda não há prioridade sustentada neste período. O que falta cadastrar está abaixo.</p>';
+
+  document.getElementById("advisor-dont").innerHTML = data.dont.map((row) => `
+    <article class="insight attention"><span class="insight-icon"><i data-lucide="ban"></i></span><div><strong>${escapeHtml(row.title)}</strong><p>${escapeHtml(row.reason)}</p></div></article>`).join("");
+
+  const blockers = document.getElementById("advisor-blockers");
+  document.getElementById("advisor-blockers-panel").hidden = data.blockers.length === 0;
+  blockers.innerHTML = data.blockers.map((row) => `
+    <article class="insight attention"><span class="insight-icon"><i data-lucide="triangle-alert"></i></span><div><strong>${escapeHtml(row.title)}</strong><p>${escapeHtml(row.description)}</p></div></article>`).join("");
+  refreshIcons();
+}
+
+function advisorCard(row) {
+  const tipo = ADVISOR_KINDS[row.kind] || { label: row.kind, icon: "lightbulb" };
+  const confidence = { alta: "success", media: "pending", baixa: "neutral" }[row.confidence] || "neutral";
+  const impact = row.impact_monthly !== null && row.impact_monthly !== undefined
+    ? `<span class="growth-impact"><b>+${currency.format(row.impact_monthly)}</b><small>por mês, na premissa</small></span>`
+    : `<span class="growth-impact none"><b>sem valor</b><small>calculável</small></span>`;
+  return `<article class="growth-card" data-advisor-kind="${escapeHtml(row.kind)}">
+    <div class="growth-rank">${row.rank}</div>
+    <div class="growth-body">
+      <div class="growth-top">
+        <span class="advisor-kind"><i data-lucide="${tipo.icon}"></i>${escapeHtml(tipo.label)} · ${escapeHtml(row.source)}</span>
+        <span class="advisor-score" title="${escapeHtml(row.score_note || "Pontuação de prioridade.")}">prioridade ${number.format(row.decision_score || 0)}/100</span>
+        <span class="status-pill ${confidence}" title="${escapeHtml(row.confidence_note || "")}">confiança ${escapeHtml(row.confidence)}</span>
+      </div>
+      <h3>${escapeHtml(row.title)}</h3>
+      <div class="advisor-voices-card"><span>Para o empresário</span><p>${escapeHtml(row.for_owner)}</p></div>
+      <div class="advisor-voices-card"><span>Para o gestor</span><p>${escapeHtml(row.for_manager)}</p></div>
+      <p class="growth-evidence"><i data-lucide="search"></i><span>${escapeHtml(row.evidence)}</span></p>
+      ${row.premise ? `<p class="growth-premise"><i data-lucide="scale"></i><span>${escapeHtml(row.premise)}</span></p>` : ""}
+      <button class="text-button" type="button" data-view-target="${escapeHtml(row.view)}">Abrir a tela <i data-lucide="arrow-right"></i></button>
+    </div>
+    ${impact}
+  </article>`;
+}
+
 const GROWTH_TYPES = {
   combo: { label: "Combo", icon: "layers" },
   produto: { label: "Produto", icon: "cup-soda" },
@@ -3248,7 +3336,36 @@ function renderPromotionMonth() {
       ${ofertas}
     </section>`;
   }).join("");
+  const discovery = data.market_discovery || { experiments: [] };
+  document.getElementById("promotions-discovery").innerHTML = discovery.experiments.length
+    ? discovery.experiments.map(portfolioExperimentCard).join("")
+    : '<p class="empty-state">Nenhum teste de portfólio disponível.</p>';
   refreshIcons();
+}
+
+function portfolioExperimentCard(experiment) {
+  const reused = experiment.reused_ingredients.length
+    ? `Reaproveita: ${experiment.reused_ingredients.join(", ")}.`
+    : "Nenhum insumo atual casa com o conceito; estime a compra antes de testar.";
+  const slot = experiment.test_slot.reliable
+    ? `${experiment.test_slot.weekday}, ${formatDate(experiment.test_slot.date)}`
+    : "data a definir";
+  const references = experiment.references.map((reference) =>
+    `<a href="${escapeHtml(reference.url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(reference.publisher)}: ${escapeHtml(reference.title)} <i data-lucide="external-link"></i></a>`
+  ).join("");
+  return `<article class="growth-card experiment-card">
+    <div class="growth-rank"><i data-lucide="flask-conical"></i></div>
+    <div class="growth-body">
+      <div class="growth-top"><span class="advisor-kind"><i data-lucide="sparkles"></i>${escapeHtml(experiment.line)} · ${escapeHtml(experiment.category)}</span><span class="advisor-score">prioridade ${number.format(experiment.priority_score)}/100</span></div>
+      <h3>${escapeHtml(experiment.title)}</h3>
+      <p class="growth-action"><i data-lucide="package-plus"></i><span>${escapeHtml(experiment.format)}</span></p>
+      <p class="growth-premise"><i data-lucide="calendar-days"></i><span><strong>Janela:</strong> ${escapeHtml(slot)}. ${escapeHtml(experiment.test_slot.reason)}</span></p>
+      <p class="growth-premise"><i data-lucide="boxes"></i><span>${escapeHtml(reused)}</span></p>
+      <p class="growth-action"><i data-lucide="megaphone"></i><span>${escapeHtml(experiment.mechanic)}</span></p>
+      <div class="experiment-references">${references}</div>
+      <p class="growth-premise warning"><i data-lucide="shield-alert"></i><span>${escapeHtml(experiment.guardrail)}</span></p>
+    </div>
+  </article>`;
 }
 
 function renderPromotions() {
@@ -4052,12 +4169,11 @@ function renderRuns(entregas) {
 function renderGeofence(local) {
   if (!local) return;
   const marcada = local.latitude !== null && local.longitude !== null;
-  setText("#dl-geofence-state", !marcada ? "Sem posição" : local.required ? "Conferindo" : "Só registrando");
+  setText("#dl-geofence-state", !marcada ? "Sem posição" : "Conferindo");
   document.getElementById("dl-geofence-radius").value = local.radius_m;
-  document.getElementById("dl-geofence-required").checked = Boolean(local.required);
   setText("#dl-geofence-summary", marcada
     ? `Loja marcada em ${local.latitude.toFixed(5)}, ${local.longitude.toFixed(5)}${local.address ? ` · ${local.address}` : ""}. Definida em ${formatDateTime(local.updated_at)}.`
-    : "A loja ainda não tem posição marcada, então nada é conferido no check-in.");
+    : "A loja ainda não tem posição marcada. Até ela ser marcada, check-in e check-out ficam bloqueados.");
   document.getElementById("dl-geofence-summary").className = `modal-result full ${marcada ? "positive" : "neutral"}`;
 }
 
@@ -4079,7 +4195,7 @@ async function capturarLocalDaLoja() {
       latitude: posicao.coords.latitude,
       longitude: posicao.coords.longitude,
       radius_m: raio,
-      required: document.getElementById("dl-geofence-required").checked,
+      required: true,
     }, "Posição da loja marcada.", "PUT");
   } catch (_) {
     toast("Não foi possível ler a localização. Autorize o acesso no navegador e tente de novo.", "error");

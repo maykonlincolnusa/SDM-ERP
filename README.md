@@ -142,6 +142,10 @@ gcloud run deploy sdm --source . --region <region>
 
 Set `DATA_MODE=firebase`, `AUTH_REQUIRED=true`, and the Firebase project variables. The container refuses to boot in production with authentication disabled — the settings validator enforces it rather than trusting a checklist.
 
+The advisor runs as an explainable, evidence-weighted decision engine inside the
+same Cloud Run service. Its scoring model, required IAM roles and production
+deployment procedure are documented in [the Cloud Run guide](docs/conselheiro-cloud-run.md).
+
 Access is granted per role, and never by editing a list in the code:
 
 ```bash

@@ -77,6 +77,79 @@ FATIA_DA_CONTRIBUICAO = 0.5
 # sobre o acaso do que sobre a loja.
 AMOSTRAS_MINIMAS_POR_DIA = 3
 
+# Referências externas não são dados de venda da loja. Elas servem para abrir
+# hipóteses de produto que merecem um teste pequeno; jamais entram como receita
+# prevista ou como prova de benefício nutricional. As fontes ficam no retorno
+# da API para que o gestor possa conferir a origem antes de copiar uma ideia.
+REFERENCIAS_DE_MERCADO = {
+    "nutricao-esportiva": {
+        "title": "Nutrição esportiva no Brasil",
+        "publisher": "International Trade Administration",
+        "url": "https://www.trade.gov/market-intelligence/brazil-dietary-supplements-and-sports-nutrition",
+        "observed_on": "2026-09-14",
+        "reading": "Sinal de demanda por opções de nutrição esportiva; não é evidência de venda no bairro.",
+    },
+    "guia-alimentar": {
+        "title": "Guia Alimentar para a População Brasileira",
+        "publisher": "Ministério da Saúde",
+        "url": "https://www.gov.br/saude/pt-br/assuntos/saude-brasil/publicacoes-para-promocao-a-saude/guia_alimentar_populacao_brasileira_2ed.pdf/view",
+        "observed_on": "2026-09-14",
+        "reading": "Frutas e preparações minimamente processadas orientam conceitos de sucos e bowls, sem prometer efeito de saúde.",
+    },
+    "sorvetes": {
+        "title": "Retrospectiva do setor de sorvetes 2025",
+        "publisher": "ABIS",
+        "url": "https://abis.com.br/retrospectiva-abis-2025-lideranca-inovacao-e-sustentabilidade-no-setor-de-sorvetes/",
+        "observed_on": "2026-09-14",
+        "reading": "Sinal setorial para testar gelados; não substitui o teste de aceitação e margem local.",
+    },
+    "rotulagem": {
+        "title": "Rotulagem nutricional",
+        "publisher": "Anvisa",
+        "url": "https://www.gov.br/anvisa/pt-br/assuntos/alimentos/rotulagem/rotulagem-nutricional",
+        "observed_on": "2026-09-14",
+        "reading": "Alegações nutricionais exigem composição e rotulagem compatíveis; não devem ser inventadas em uma promoção.",
+    },
+}
+
+# Ideias de portfólio, não receitas prontas. A ficha técnica, o custo e a
+# checagem regulatória continuam obrigatórios antes de qualquer lançamento.
+PLAYBOOK_DE_LANCAMENTO = (
+    {
+        "id": "smoothie-proteico",
+        "line": "Sport",
+        "category": "Bebida esportiva",
+        "title": "Teste um smoothie proteico de fruta",
+        "format": "Copo batido com fruta e proteína cadastrada",
+        "mechanic": "Degustação ou preço de lançamento uma única vez no dia de treino; não repetir como desconto fixo.",
+        "ingredient_signals": ("banana", "morango", "leite", "proteina"),
+        "references": ("nutricao-esportiva", "rotulagem"),
+        "audience": "sport",
+    },
+    {
+        "id": "suco-da-estacao",
+        "line": "Sucos",
+        "category": "Suco preparado na hora",
+        "title": "Teste um suco da estação preparado na hora",
+        "format": "Fruta + água ou base declarada; vender o sabor e os ingredientes, não uma cura.",
+        "mechanic": "Oferta de primeira compra no vale da semana, com opção de complemento em vez de desconto profundo.",
+        "ingredient_signals": ("banana", "morango", "laranja", "manga"),
+        "references": ("guia-alimentar", "rotulagem"),
+        "audience": "general",
+    },
+    {
+        "id": "taca-gelada-de-fruta",
+        "line": "Sorvetes",
+        "category": "Sobremesa gelada",
+        "title": "Teste uma taça gelada de fruta e complemento",
+        "format": "Porção gelada com fruta e complemento medido na ficha técnica.",
+        "mechanic": "Lançamento no fim de semana com adicional de complemento; preservar o preço do item principal.",
+        "ingredient_signals": ("morango", "banana", "granola", "chocolate"),
+        "references": ("sorvetes", "rotulagem"),
+        "audience": "general",
+    },
+)
+
 
 def _fold(value: str) -> str:
     """Sem acento e em minusculas, para "Açaí" e "acai" serem a mesma familia."""
@@ -203,6 +276,7 @@ class PromotionService:
         economia = self._economia_dos_produtos(produtos, insumos, canal, days)
         vendas = self._unidades_por_produto_e_dia(detalhados)
         blocos = self._blocos(pedidos)
+        semana = self._semana(pedidos, horizon=7)
 
         # O veredito de preço de cada produto, para viajar junto da oferta.
         orientacao = PricingService(self.store).guidance(days)
@@ -308,6 +382,7 @@ class PromotionService:
             "strong_block": forte["id"] if forte else None,
             "channel": canal,
             "calendar": calendario,
+            "market_discovery": self._descoberta_de_mercado(semana, produtos, insumos, ancoras),
             "coverage": {
                 "orders": len(pedidos),
                 "detailed_orders": len(detalhados),
@@ -1392,6 +1467,102 @@ class PromotionService:
                 "esportiva não tem o que comunicar, e vira desconto genérico."
             )
         return "A oferta se comunica com o que a ficha sustenta: " + " · ".join(partes) + "."
+
+    def _descoberta_de_mercado(self, semana, produtos, insumos, ancoras) -> dict[str, Any]:
+        """Escolhe conceitos externos que valem um teste local pequeno.
+
+        O algoritmo não cria produto nem preço: sem ficha técnica, custo e uma
+        primeira venda não existe margem nem há base para desconto. A seleção
+        faz a etapa anterior — prioriza o conceito que reaproveita mais a
+        operação atual, preenche uma linha ausente e tem uma janela semanal
+        onde pode ser testado sem brigar com o pico de vendas.
+        """
+
+        linhas_ativas = {
+            _fold(produto.get("line") or "Classico")
+            for produto in produtos.values() if produto.get("active", True)
+        }
+        nomes_de_insumo = " ".join(_fold(item.get("name", "")) for item in insumos.values())
+        slot = self._slot_de_teste(semana)
+        experimentos = []
+
+        for conceito in PLAYBOOK_DE_LANCAMENTO:
+            sinais = conceito["ingredient_signals"]
+            reaproveitados = [sinal for sinal in sinais if _fold(sinal) in nomes_de_insumo]
+            reutilizacao = round(len(reaproveitados) / len(sinais) * 25, 1)
+            lacuna = 25.0 if _fold(conceito["line"]) not in linhas_ativas else 5.0
+            publico = 20.0 if conceito["audience"] == "sport" and ancoras else (10.0 if conceito["audience"] == "general" else 0.0)
+            janela = 20.0 if slot["reliable"] else 10.0
+            fontes = 10.0
+            score = round(lacuna + reutilizacao + publico + janela + fontes, 1)
+            referencias = [{"id": ref, **REFERENCIAS_DE_MERCADO[ref]} for ref in conceito["references"]]
+            experimentos.append({
+                "id": conceito["id"],
+                "line": conceito["line"],
+                "category": conceito["category"],
+                "title": conceito["title"],
+                "format": conceito["format"],
+                "mechanic": conceito["mechanic"],
+                "test_slot": slot,
+                "reused_ingredients": reaproveitados,
+                "missing_ingredients": [sinal for sinal in sinais if sinal not in reaproveitados],
+                "priority_score": score,
+                "score_breakdown": {
+                    "catalog_gap": lacuna,
+                    "operational_reuse": reutilizacao,
+                    "declared_audience": publico,
+                    "weekly_slot": janela,
+                    "external_references": fontes,
+                },
+                "references": referencias,
+                "next_steps": [
+                    "Use Cardápio > Projetar produto para definir o teto de custo antes de comprar.",
+                    "Simule a ficha técnica e só publique preço ou desconto se a margem do canal fechar.",
+                    "Cadastre ingredientes e informação nutricional medida; não use alegação de saúde sem validação.",
+                    "Rode uma semana, marque as vendas pelo item e deixe o próximo ciclo decidir com dado local.",
+                ],
+                "guardrail": (
+                    "Referência externa abre a hipótese; não é demanda medida da loja, promessa de saúde nem autorização para alegação nutricional."
+                ),
+            })
+
+        experimentos.sort(key=lambda linha: (-linha["priority_score"], linha["id"]))
+        return {
+            "model": {
+                "id": "portfolio-experiment-v1",
+                "description": (
+                    "Prioriza testes de portfólio pela lacuna no cardápio, reaproveitamento operacional, "
+                    "público declarado, janela semanal e referências externas. Não estima faturamento."
+                ),
+                "criteria": [
+                    {"id": "catalog_gap", "label": "Linha ainda ausente", "max_points": 25},
+                    {"id": "operational_reuse", "label": "Insumos já usados", "max_points": 25},
+                    {"id": "declared_audience", "label": "Público declarado", "max_points": 20},
+                    {"id": "weekly_slot", "label": "Janela de teste", "max_points": 20},
+                    {"id": "external_references", "label": "Referências externas", "max_points": 10},
+                ],
+            },
+            "experiments": experimentos,
+        }
+
+    @staticmethod
+    def _slot_de_teste(semana) -> dict[str, Any]:
+        """A primeira escolha é o vale aberto; sem base, o teste não ganha data falsa."""
+
+        candidatos = [
+            dia for dia in semana
+            if dia.get("is_valley") and dia.get("reliable") and not dia.get("mostly_closed")
+        ]
+        if candidatos:
+            escolhido = candidatos[0]
+            return {
+                "date": escolhido["date"], "weekday": escolhido["name"], "reliable": True,
+                "reason": "Vale medido: é a janela em que uma primeira oferta tem menor risco de substituir venda cheia.",
+            }
+        return {
+            "date": None, "weekday": None, "reliable": False,
+            "reason": "Ainda não há vale medido. Defina a data do teste com o gestor e não chame a escolha de recomendação algorítmica.",
+        }
 
     @staticmethod
     def _resumo_da_ancora(linha: dict[str, Any]) -> dict[str, Any]:

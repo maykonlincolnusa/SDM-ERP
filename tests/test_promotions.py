@@ -251,6 +251,24 @@ def test_produto_sem_ficha_nutricional_pede_o_cadastro_em_vez_de_inventar(loja):
     assert "Cadastre proteína" in sport[0]["why_this_day"]
 
 
+def test_descoberta_externa_cria_testes_de_esportes_sucos_e_sorvetes_sem_inventar_venda(loja):
+    """Referência de fora abre hipótese; a primeira venda ainda precisa acontecer aqui."""
+
+    erp, promo = loja
+    _semana_com_vale(erp, vale=1)
+
+    descoberta = promo.month(days=90)["market_discovery"]
+    experimentos = descoberta["experiments"]
+
+    assert descoberta["model"]["id"] == "portfolio-experiment-v1"
+    assert {linha["line"] for linha in experimentos} == {"Sport", "Sucos", "Sorvetes"}
+    assert all(0 <= linha["priority_score"] <= 100 for linha in experimentos)
+    assert all(linha["references"] for linha in experimentos)
+    assert all(ref["url"].startswith("https://") for linha in experimentos for ref in linha["references"])
+    assert all("não é demanda medida" in linha["guardrail"] for linha in experimentos)
+    assert all("faturamento" not in linha for linha in experimentos)
+
+
 # ----------------------------------------------------------------------
 # Honestidade da origem
 # ----------------------------------------------------------------------

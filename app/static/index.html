@@ -39,6 +39,7 @@
 
         <nav class="nav-list" id="main-navigation">
           <button class="nav-item active" data-view-target="dashboard"><i data-lucide="layout-dashboard"></i><span>Visão geral</span></button>
+          <button class="nav-item" data-view-target="advisor"><i data-lucide="compass"></i><span>Conselheiro</span><b id="nav-advisor-count" hidden>0</b></button>
           <button class="nav-item" data-view-target="closing"><i data-lucide="calendar-check"></i><span>Fechamento do dia</span></button>
           <button class="nav-item" data-view-target="orders"><i data-lucide="receipt-text"></i><span>Pedidos</span></button>
           <button class="nav-item" data-view-target="inventory"><i data-lucide="package-search"></i><span>Estoque</span><b id="nav-stock-count" hidden>0</b></button>
@@ -83,7 +84,15 @@
             <label class="period-control">Período <select id="period-select" aria-label="Selecionar período"><option value="7">Últimos 7 dias</option><option value="30">Últimos 30 dias</option></select></label>
           </div>
 
-          <p class="period-gap" id="period-gap" hidden></p><div class="metric-grid" id="metric-grid" aria-live="polite">
+          <p class="period-gap" id="period-gap" hidden></p>
+          <section class="panel advisor-teaser" aria-labelledby="advisor-teaser-title">
+            <div class="panel-header">
+              <div><p class="eyebrow">Reunião da semana</p><h2 id="advisor-teaser-title">O que levar ao dono</h2></div>
+              <button class="text-button" type="button" data-view-target="advisor">Abrir briefing <i data-lucide="arrow-right"></i></button>
+            </div>
+            <p class="page-description">Situação, uma decisão e uma execução — com a conta aberta. Não é meta e não é palpite de marketing.</p>
+          </section>
+          <div class="metric-grid" id="metric-grid" aria-live="polite">
             <article class="metric-card"><span class="metric-icon revenue"><i data-lucide="banknote"></i></span><p>Faturamento</p><strong data-metric="revenue">--</strong><small data-metric="revenue-change">Atualizando</small></article>
             <article class="metric-card"><span class="metric-icon orders"><i data-lucide="shopping-bag"></i></span><p>Pedidos concluídos</p><strong data-metric="orders">--</strong><small>no período selecionado</small></article>
             <article class="metric-card"><span class="metric-icon ticket"><i data-lucide="tag"></i></span><p>Ticket médio</p><strong data-metric="ticket">--</strong><small>por venda</small></article>
@@ -108,6 +117,52 @@
           </div>
 
           <section class="panel orders-panel" aria-labelledby="recent-orders-title"><div class="panel-header"><div><p class="eyebrow">Operação</p><h2 id="recent-orders-title">Pedidos recentes</h2></div><button class="text-button" type="button" data-view-target="orders">Ver todos <i data-lucide="arrow-right"></i></button></div><div class="table-scroll"><table><thead><tr><th>Pedido</th><th>Canal</th><th>Itens</th><th>Pagamento</th><th>Valor</th></tr></thead><tbody id="recent-orders-body"></tbody></table></div></section>
+        </section>
+
+        <section class="view" id="advisor" aria-labelledby="advisor-title">
+          <div class="page-heading">
+            <div>
+              <p class="eyebrow">Reunião da semana</p>
+              <h1 id="advisor-title">Conselheiro</h1>
+              <p class="page-description">Roteiro para o gestor dirigir o empresário. O algoritmo ordena urgência, evidência e impacto ajustado; cada item mantém a conta e a premissa abertas.</p>
+            </div>
+            <label class="period-control">Base <select id="advisor-period" aria-label="Período do briefing"><option value="14">Últimos 14 dias</option><option value="30" selected>Últimos 30 dias</option><option value="90">Últimos 90 dias</option></select></label>
+          </div>
+
+          <div class="metric-grid">
+            <article class="metric-card"><span class="metric-icon revenue"><i data-lucide="banknote"></i></span><p>Faturamento</p><strong id="advisor-revenue">--</strong><small id="advisor-orders">--</small></article>
+            <article class="metric-card"><span class="metric-icon margin"><i data-lucide="chart-no-axes-combined"></i></span><p>Lucro operacional</p><strong id="advisor-profit">--</strong><small id="advisor-coverage">--</small></article>
+            <article class="metric-card"><span class="metric-icon ticket"><i data-lucide="list-checks"></i></span><p>Prioridades</p><strong id="advisor-count">--</strong><small id="advisor-count-note">no máximo três</small></article>
+            <article class="metric-card"><span class="metric-icon orders"><i data-lucide="handshake"></i></span><p>Taxas de canal</p><strong id="advisor-fees">--</strong><small>já descontadas no resultado</small></article>
+          </div>
+
+          <section class="panel">
+            <p class="panel-note growth-disclaimer"><i data-lucide="info"></i>Este briefing ordena a reunião. Nenhum valor abaixo é meta, e a soma das oportunidades de crescimento não entra aqui de propósito.</p>
+          </section>
+
+          <div class="advisor-voices">
+            <section class="panel" aria-labelledby="advisor-owner-title">
+              <div class="panel-header"><div><p class="eyebrow">Para o empresário</p><h2 id="advisor-owner-title">O que dizer na reunião</h2></div><i data-lucide="briefcase" class="heading-icon"></i></div>
+              <p id="advisor-owner-copy" class="advisor-copy">Carregando o briefing…</p>
+            </section>
+            <section class="panel" aria-labelledby="advisor-manager-title">
+              <div class="panel-header"><div><p class="eyebrow">Para o gestor</p><h2 id="advisor-manager-title">O que conferir antes</h2></div><i data-lucide="clipboard-check" class="heading-icon"></i></div>
+              <p id="advisor-manager-copy" class="advisor-copy">Carregando o briefing…</p>
+            </section>
+          </div>
+
+          <div class="growth-list" id="advisor-list"></div>
+
+          <section class="panel table-panel" id="advisor-dont-panel">
+            <div class="panel-header"><div><p class="eyebrow">O que não fazer</p><h2 id="advisor-dont-title">Esta semana, recuse</h2></div><i data-lucide="ban" class="heading-icon"></i></div>
+            <div class="insight-list" id="advisor-dont"></div>
+          </section>
+
+          <section class="panel table-panel" id="advisor-blockers-panel" hidden>
+            <div class="panel-header"><div><p class="eyebrow">Antes de tudo</p><h2>O que está limitando o conselho</h2></div><i data-lucide="unplug" class="heading-icon"></i></div>
+            <p class="panel-note">Cada item aqui é um pedaço da loja que o algoritmo não enxerga. Resolver um deles melhora o briefing inteiro.</p>
+            <div class="insight-list" id="advisor-blockers"></div>
+          </section>
         </section>
 
         <section class="view" id="closing" aria-labelledby="closing-title">
@@ -356,10 +411,9 @@
 
           <section class="panel" id="dl-geofence-panel" aria-labelledby="dl-geofence-title">
             <div class="panel-header"><div><p class="eyebrow">Ponto</p><h2 id="dl-geofence-title">Onde o ponto pode ser batido</h2></div><span class="soft-chip" id="dl-geofence-state">--</span></div>
-            <p class="panel-note">Ponto batido de casa não é ponto. Com a loja marcada aqui, o check-in e o check-out conferem onde o aparelho está. <strong>Capture a posição de dentro da loja</strong> — converter o endereço em coordenada devolve o meio da rua, e duzentos metros de erro já recusariam quem chegou na porta.</p>
+            <p class="panel-note">Ponto batido de casa não é ponto. O check-in e o check-out só são aceitos dentro do raio da loja. <strong>Capture a posição de dentro da loja</strong> — converter o endereço em coordenada devolve o meio da rua, e duzentos metros de erro já recusariam quem chegou na porta.</p>
             <div class="form-grid two">
               <label>Raio aceito<input id="dl-geofence-radius" type="number" min="50" max="2000" step="10" value="150" /><small class="field-hint">Metros. Abaixo de 50 o erro normal de GPS na cidade recusa quem está na porta.</small></label>
-              <label class="checkbox-field"><input type="checkbox" id="dl-geofence-required" /><span>Recusar o ponto fora do raio<small>Desmarcado, o sistema só registra a distância — bom para ver os números reais antes de barrar alguém.</small></span></label>
             </div>
             <p class="modal-result full neutral" id="dl-geofence-summary"></p>
             <button class="primary-button" type="button" id="dl-geofence-capture"><i data-lucide="crosshair"></i><span>Estou na loja — usar esta posição</span></button>
@@ -510,6 +564,12 @@
             <div class="panel-header"><div><p class="eyebrow">Calendário</p><h2 id="promotions-month-title">As quatro semanas</h2></div></div>
             <p class="panel-note">O pedaço vazio pede <strong>preço</strong>, porque nele falta gente. O pedaço cheio pede <strong>ticket</strong> — descontar ali compraria a venda que já aconteceria. As quatro semanas não repetem a mesma âncora: desconto que se repete vira o preço novo.</p>
             <div id="promotions-month" class="month-grid"></div>
+          </section>
+
+          <section class="panel" aria-labelledby="promotions-discovery-title">
+            <div class="panel-header"><div><p class="eyebrow">Novas linhas</p><h2 id="promotions-discovery-title">Testes de portfólio</h2></div><i data-lucide="flask-conical" class="heading-icon"></i></div>
+            <p class="panel-note">Esportes, sucos e sorvetes entram como testes pequenos, nunca como previsão. Referências externas abrem a hipótese; ficha técnica, margem e venda local decidem se ela continua.</p>
+            <div id="promotions-discovery" class="growth-list"></div>
           </section>
 
           <section class="panel" aria-labelledby="promotions-week-title">

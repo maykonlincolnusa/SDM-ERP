@@ -41,6 +41,7 @@ import binascii
 import json
 import logging
 import re
+import threading
 import unicodedata
 import urllib.error
 import urllib.parse
@@ -78,6 +79,11 @@ INTEGRATION_ID = "anota-ai"
 
 
 ORDER_LINKS = "anotaai_order_links"
+
+# O aplicativo do entregador consulta a própria fila periodicamente. Limitar a
+# busca evita que vários celulares abertos façam uma chamada à Anota Aí a cada
+# renderização, sem deixar um pedido novo esperando alguém abrir o painel.
+DISPATCH_SYNC_INTERVAL_SECONDS = 20
 
 # Todo pedido da loja passa pela Anota Ai, entao "Anota Ai" nao e canal: e o
 # encanamento. O canal e de onde o cliente veio, e ele vem dentro do pedido.
@@ -262,6 +268,10 @@ class AnotaAiService:
         self.erp = erp
         self.vault = vault
         self.client = client or AnotaAiClient()
+        # A tela de rua pode estar aberta no celular de mais de um entregador.
+        # Só uma consulta à fila externa deve sair por processo; quem chegar
+        # enquanto ela está em andamento recebe a fila local imediatamente.
+        self._dispatch_sync_lock = threading.Lock()
 
     # ------------------------------------------------------------------
     # Conexao
@@ -598,6 +608,49 @@ class AnotaAiService:
 
         self._remember(last_order_sync=self._agora().isoformat(), last_order_result=resumo)
         return resumo
+
+    def sync_for_dispatch(self) -> dict[str, Any] | None:
+        """Atualiza a fila que o entregador vê, sem tornar a rua dependente da API.
+
+        A tela do entregador é consultada automaticamente; se a Anota Aí estiver
+        indisponível, ela continua mostrando os pedidos já recebidos. A falha é
+        guardada para aparecer nos Ajustes, onde a loja pode renovar a chave.
+        """
+
+        if not self._dispatch_sync_lock.acquire(blocking=False):
+            return None
+        try:
+            return self._sync_for_dispatch()
+        finally:
+            self._dispatch_sync_lock.release()
+
+    def _sync_for_dispatch(self) -> dict[str, Any] | None:
+        """Executa a sincronização já reservada por `sync_for_dispatch`."""
+
+        estado = self.status()
+        if not estado["connected"] or estado["key_expired"]:
+            return None
+
+        ultimo = estado.get("last_order_sync")
+        if ultimo:
+            try:
+                momento = datetime.fromisoformat(str(ultimo))
+                if momento.tzinfo is None:
+                    momento = momento.replace(tzinfo=FUSO_LOJA)
+                if (self._agora() - momento.astimezone(FUSO_LOJA)).total_seconds() < DISPATCH_SYNC_INTERVAL_SECONDS:
+                    return None
+            except (TypeError, ValueError):
+                # Um estado antigo ou editado não deve impedir a próxima busca.
+                pass
+
+        try:
+            resultado = self.sync()
+        except AnotaAiError as erro:
+            self._remember(last_error=str(erro))
+            logger.warning("anotaai: não foi possível atualizar a fila do entregador: %s", erro)
+            return None
+        self._remember(last_error=None)
+        return resultado
 
     def _registrar(self, pedido_id: str, detalhe: dict[str, Any], resumo: dict[str, Any]) -> None:
         total = _dinheiro(_ler(detalhe, *CAMINHOS_TOTAL))

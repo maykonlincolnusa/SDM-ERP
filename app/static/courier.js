@@ -11,7 +11,7 @@
  * telas divergirem justo quando alguém precisa fechar o turno pela outra.
  */
 
-const estado = { data: null, escolhido: null, enviando: false, courierId: null };
+const estado = { data: null, escolhido: null, enviando: false, carregando: false, courierId: null };
 
 const moeda = new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" });
 
@@ -22,6 +22,12 @@ document.addEventListener("DOMContentLoaded", async () => {
   sair.hidden = !window.erpAuth.canSignOut;
   sair.addEventListener("click", () => window.erpAuth.signOut());
   await carregar();
+  // Pedido novo da Anota Aí não deve depender de alguém tocar em atualizar no
+  // painel da loja. Só atualiza com a tela visível para não gastar a rede do
+  // entregador enquanto o celular está no bolso.
+  window.setInterval(() => {
+    if (document.visibilityState === "visible" && !estado.enviando) carregar();
+  }, 20000);
 });
 
 function ligar() {
@@ -31,7 +37,7 @@ function ligar() {
   document.getElementById("field-checkin").addEventListener("click", async () => {
     // A posição é pedida aqui, no toque, e não no carregamento da tela.
     const onde = await posicaoAtual();
-    await acao("/api/field/check-in", { courier_id: escolhidoNaUrl(), ...(onde || {}) }, "Check-in feito. Bom turno.");
+    await acao("/api/field/check-in", { courier_id: courierIdAtual(), ...(onde || {}) }, "Check-in feito. Bom turno.");
   });
   document.getElementById("field-checkout").addEventListener("click", encerrar);
   document.getElementById("field-refresh").addEventListener("click", () => carregar());
@@ -76,11 +82,18 @@ function ligar() {
 // ------------------------------------------------------------------ estado
 
 async function carregar() {
+  // O intervalo, o botão Atualizar e o retorno de uma ação podem coincidir em
+  // rede lenta. Uma única leitura em voo evita gasto duplicado e impede uma
+  // resposta antiga de redesenhar a tela depois de uma nova.
+  if (estado.carregando) return;
+  estado.carregando = true;
   try {
     estado.data = await api(`/api/field/state${chave()}`);
     render();
   } catch (erro) {
     mostrar(erro.message || "Não foi possível carregar o turno.");
+  } finally {
+    estado.carregando = false;
   }
 }
 
@@ -441,8 +454,12 @@ function chave() {
   // Três origens, nesta ordem: o que a loja acabou de escolher, o que ela
   // escolheu antes neste aparelho, e o parâmetro na URL (que é como o modo
   // demonstrativo e o teste dizem de quem é o turno).
-  const escolhido = estado.courierId || guardado() || escolhidoNaUrl();
+  const escolhido = courierIdAtual();
   return escolhido ? `?courier_id=${encodeURIComponent(escolhido)}` : "";
+}
+
+function courierIdAtual() {
+  return estado.courierId || guardado() || escolhidoNaUrl();
 }
 
 function guardado() {

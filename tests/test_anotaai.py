@@ -493,7 +493,7 @@ def test_o_pedido_da_anota_ai_aparece_na_fila_do_entregador(tmp_path):
     lançado no balcão já percorria; nada do que existia foi retirado.
     """
 
-    from app.schemas import CourierCheckIn, CourierCreate
+    from app.schemas import CourierCheckIn, CourierCreate, StoreLocation
     from app.services import DeliveryService, DispatchService
 
     servico = _servico_com(tmp_path, {
@@ -506,7 +506,8 @@ def test_o_pedido_da_anota_ai_aparece_na_fila_do_entregador(tmp_path):
 
     despacho = DispatchService(servico.store)
     entregador = DeliveryService(servico.store).create_courier(CourierCreate(name="Leonardo"))
-    despacho.check_in(entregador, CourierCheckIn())
+    despacho.set_store_location(StoreLocation(latitude=-22.9632676, longitude=-43.406644))
+    despacho.check_in(entregador, CourierCheckIn(latitude=-22.9632676, longitude=-43.406644, accuracy=10))
 
     fila = despacho.queue(entregador["id"])["orders"]
 
@@ -515,6 +516,22 @@ def test_o_pedido_da_anota_ai_aparece_na_fila_do_entregador(tmp_path):
     assert fila[0]["freight"] == 6.0
     assert "Rua das Flores" in fila[0]["address"]
     assert fila[0]["items"][0]["name"] == "Açaí 500 ml"
+
+
+def test_a_fila_do_entregador_sincroniza_a_anota_ai_sem_acao_do_painel(tmp_path):
+    """A leitura do aplicativo de rua é o gatilho da fila, não Ajustes."""
+
+    servico = _servico_com(tmp_path, {
+        "displayId": "9101", "total": 29.0, "deliveryFee": 6.0, "type": "DELIVERY",
+        "itens": [{"title": "Açaí 500 ml", "quantity": 1}],
+    })
+
+    resultado = servico.sync_for_dispatch()
+
+    assert resultado and resultado["created"] == 1
+    assert len([linha for linha in servico.store.list("orders") if linha.get("anota_order_id")]) == 1
+    # O intervalo impede uma chamada externa por nova renderização da tela.
+    assert servico.sync_for_dispatch() is None
 
 
 # ----------------------------------------------------------------------

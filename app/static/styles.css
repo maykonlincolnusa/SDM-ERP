@@ -927,6 +927,21 @@ tbody tr:hover .row-action.danger { color: var(--muted); }
 /* Crescimento -------------------------------------------------------------
    O cartao poe evidencia e acao lado a lado de proposito: sugestao sem a
    conta que a gerou vira palpite, e conta sem acao vira relatorio. */
+.advisor-teaser { margin-bottom: 18px; }
+.advisor-teaser .page-description { margin: 0; padding: 0 22px 18px; }
+.advisor-voices { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-bottom: 18px; }
+.advisor-copy { margin: 0; padding: 0 22px 20px; color: var(--ink-soft); font-size: 14px; line-height: 1.55; }
+.advisor-kind {
+  display: inline-flex; align-items: center; gap: 5px; color: var(--accent);
+  font-size: 11px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase;
+}
+.advisor-voices-card { display: grid; gap: 8px; margin: 10px 0 0; }
+.advisor-voices-card span { color: var(--faint); font-size: 10.5px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; }
+.advisor-voices-card p { margin: 0; color: var(--ink-soft); font-size: 13px; line-height: 1.5; }
+@media (max-width: 860px) {
+  .advisor-voices { grid-template-columns: 1fr; }
+}
+
 .growth-disclaimer { display: flex; align-items: flex-start; gap: 9px; padding: 20px 22px; }
 .growth-disclaimer i { flex: 0 0 16px; width: 16px; height: 16px; margin-top: 1px; color: var(--accent); }
 .growth-filters-row { margin-bottom: 14px; }
@@ -950,6 +965,13 @@ tbody tr:hover .row-action.danger { color: var(--muted); }
   font-size: 11px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase;
 }
 .growth-type i { width: 13px; height: 13px; }
+.advisor-score { padding: 3px 7px; border-radius: var(--r-pill); background: var(--neutral-soft); color: var(--neutral-ink); font-size: 10px; font-weight: 700; letter-spacing: 0.03em; }
+.experiment-card { grid-template-columns: 40px minmax(0, 1fr); }
+.experiment-card .growth-rank i { width: 15px; height: 15px; }
+.experiment-references { display: flex; flex-wrap: wrap; gap: 7px 12px; margin: 10px 0; }
+.experiment-references a { display: inline-flex; align-items: center; gap: 4px; color: var(--accent); font-size: 11px; font-weight: 700; text-decoration: none; }
+.experiment-references a:hover { text-decoration: underline; }
+.experiment-references i { width: 12px; height: 12px; }
 .growth-card h3 { margin: 0 0 10px; color: var(--ink); font-size: 17px; font-weight: 700; letter-spacing: -0.01em; line-height: 1.25; }
 .growth-evidence, .growth-action, .growth-premise { display: flex; align-items: flex-start; gap: 8px; margin: 0 0 7px; font-size: 13px; line-height: 1.5; }
 .growth-evidence i, .growth-action i, .growth-premise i { flex: 0 0 14px; width: 14px; height: 14px; margin-top: 3px; }

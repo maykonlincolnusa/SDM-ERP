@@ -917,9 +917,11 @@ class StoreLocation(BaseModel):
     # recusaria quem esta na porta; acima de 2 km a cerca deixa de cercar.
     radius_m: int = Field(default=150, ge=50, le=2000)
     address: str | None = Field(default=None, max_length=160)
-    # Recusar de fato, ou apenas registrar. Comecar registrando deixa a loja ver
-    # as distancias reais antes de barrar alguem por um erro de GPS.
-    required: bool = False
+    # O ponto precisa ser conferido. Aceitar o registro sem validar a posição
+    # transforma check-in em um botão que funciona de qualquer lugar.
+    # Mantemos o campo para aceitar clientes antigos, mas o serviço sempre
+    # grava e aplica a conferência.
+    required: bool = True
 
 
 class CourierCheckIn(BaseModel):

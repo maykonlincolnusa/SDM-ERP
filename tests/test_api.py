@@ -60,6 +60,7 @@ def test_health_e_config_respondem(client):
     "/api/forecast",
     "/api/planning",
     "/api/growth",
+    "/api/advisor",
     "/api/promotions/week",
     "/api/promotions/month",
     "/api/pricing",
@@ -265,6 +266,7 @@ def test_venda_pela_rota_baixa_o_estoque(client):
     "/api/promotions/week?days=1",
     "/api/pricing?days=9999",
     "/api/dashboard?days=0",
+    "/api/advisor?days=0",
 ])
 def test_parametro_fora_do_limite_e_recusado(client, caminho):
     assert client.get(caminho).status_code == 422

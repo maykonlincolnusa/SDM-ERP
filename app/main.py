@@ -5,7 +5,7 @@ from urllib.parse import quote
 from zipfile import BadZipFile
 from xml.etree.ElementTree import ParseError
 
-from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, UploadFile, status
+from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, HTTPException, Query, Request, UploadFile, status
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 
@@ -70,6 +70,7 @@ from app.schemas import (
 )
 from app.services.dispatch import SemEntregadorEscolhido
 from app.services import (
+    AdvisorService,
     AnotaAiError,
     AnotaAiService,
     CatalogService,
@@ -106,6 +107,7 @@ async def lifespan(app: FastAPI):
     app.state.forecast = ForecastService(app.state.store)
     app.state.costing = CostingService(app.state.store)
     app.state.growth = GrowthService(app.state.store)
+    app.state.advisor = AdvisorService(app.state.store)
     app.state.planning = PlanningService(app.state.store)
     app.state.delivery = DeliveryService(app.state.store)
     app.state.dispatch = DispatchService(app.state.store)
@@ -143,6 +145,10 @@ def costing_service(request: Request) -> CostingService:
 
 def growth_service(request: Request) -> GrowthService:
     return request.app.state.growth
+
+
+def advisor_service(request: Request) -> AdvisorService:
+    return request.app.state.advisor
 
 
 def planning_service(request: Request) -> PlanningService:
@@ -332,6 +338,16 @@ def growth(
 ) -> dict:
     """Produtos, combos, serviços e ações de marketing sugeridos pelo movimento da loja."""
     return service.opportunities(days)
+
+
+@app.get("/api/advisor")
+def advisor(
+    days: int = Query(default=30, ge=7, le=90),
+    service: AdvisorService = Depends(advisor_service),
+    _: dict = Depends(current_user),
+) -> dict:
+    """Roteiro da semana: o que o gestor leva ao dono, com a conta aberta."""
+    return service.brief(days)
 
 
 @app.get("/api/audit")
@@ -1371,8 +1387,10 @@ def _courier_of(request: Request, service: DispatchService, fallback: str | None
 @app.get("/api/field/state")
 def field_state(
     request: Request,
+    background_tasks: BackgroundTasks,
     courier_id: str | None = None,
     service: DispatchService = Depends(dispatch_service),
+    anota: AnotaAiService = Depends(anotaai_service),
 ) -> dict:
     """Turno, entregas em rota e fila do dia — tudo numa chamada.
 
@@ -1397,6 +1415,12 @@ def field_state(
                 for linha in service.couriers_for_picker()
             ],
         }
+    # A busca externa pode demorar o timeout inteiro. A tela devolve primeiro a
+    # fila que já existe e atualiza a integração depois da resposta; assim o
+    # entregador não fica com a tela branca por causa da Anota Aí. A próxima
+    # atualização automática traz o pedido novo, e `sync_for_dispatch` já
+    # limita chamadas repetidas entre aparelhos.
+    background_tasks.add_task(anota.sync_for_dispatch)
     return _run(lambda: service.field_state(entregador))
 
 

@@ -101,7 +101,14 @@ class GrowthService:
         # Ordena por impacto mensal; sem impacto calculavel, vai depois — mas
         # nao some, porque parte do que importa nao tem numero (base de
         # clientes, por exemplo) e ainda assim precisa ser feito.
-        suggestions.sort(key=lambda row: (row["impact_monthly"] is None, -(row["impact_monthly"] or 0)))
+        # Impacto ordena; confiança só desempata. Rebaixar um número alto por
+        # amostra pequena esconderia a conta que o gestor precisa discordar.
+        ordem_confianca = {"alta": 0, "media": 1, "baixa": 2}
+        suggestions.sort(key=lambda row: (
+            row["impact_monthly"] is None,
+            -(row["impact_monthly"] or 0),
+            ordem_confianca.get(row["confidence"], 1),
+        ))
         for index, row in enumerate(suggestions, start=1):
             row["rank"] = index
 
