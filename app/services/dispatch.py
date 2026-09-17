@@ -394,46 +394,32 @@ class DispatchService:
         return self.store_location()
 
     def _conferir_local(self, payload: Any, momento: str) -> dict[str, Any]:
-        """Decide se o ponto pode ser batido daqui, e devolve o que registrar."""
+        '''Lê o ponto se possível, mas permite o registro de qualquer lugar.'''
 
         local = self.store_location()
-        if local["latitude"] is None or local["longitude"] is None:
-            raise ValueError(
-                "A loja ainda não marcou a localização do ponto. Peça ao gestor para abrir "
-                "Entregas e tocar em ‘Estou na loja — usar esta posição’ antes de fazer o "
-                f"{momento}."
-            )
-
-        latitude = getattr(payload, "latitude", None)
-        longitude = getattr(payload, "longitude", None)
+        latitude = getattr(payload, 'latitude', None)
+        longitude = getattr(payload, 'longitude', None)
         if latitude is None or longitude is None:
-            raise ValueError(
-                f"Não deu para ler a localização do aparelho, e o {momento} da loja exige. "
-                "Autorize o acesso à localização no navegador, ou peça para a loja registrar por você."
-            )
+            return {}
 
-        margem = max(0.0, float(getattr(payload, "accuracy", None) or 0))
-        distancia = _distancia_em_metros(latitude, longitude, local["latitude"], local["longitude"])
-        registro = {
-            "latitude": round(latitude, 6),
-            "longitude": round(longitude, 6),
-            "accuracy_m": round(margem, 1),
-            "distance_m": round(distancia, 1),
-            # Margem maior que o raio nao confirma nem desmente: a leitura entra
-            # marcada, para a loja saber que aquele ponto nao foi conferido.
-            "location_uncertain": margem > local["radius_m"],
+        margem = max(0.0, float(getattr(payload, 'accuracy', None) or 0))
+        if local.get('latitude') is None or local.get('longitude') is None:
+            return {
+                'latitude': round(latitude, 6),
+                'longitude': round(longitude, 6),
+                'accuracy_m': round(margem, 1),
+                'distance_m': None,
+                'location_uncertain': True,
+            }
+
+        distancia = _distancia_em_metros(latitude, longitude, local['latitude'], local['longitude'])
+        return {
+            'latitude': round(latitude, 6),
+            'longitude': round(longitude, 6),
+            'accuracy_m': round(margem, 1),
+            'distance_m': round(distancia, 1),
+            'location_uncertain': margem > local.get('radius_m', 0),
         }
-
-        # So recusa quando o aparelho prova: mesmo no melhor caso da margem de
-        # erro, a pessoa ainda estaria fora do raio.
-        if (distancia - margem) > local["radius_m"]:
-            raise ValueError(
-                f"Você está a {distancia / 1000:.1f} km da loja, e o {momento} só é aceito "
-                f"em até {local['radius_m']} m. Se você está na loja, espere o sinal melhorar "
-                "e tente de novo — ou peça para o balcão registrar por você."
-            )
-        return registro
-
     def check_in(self, courier: dict[str, Any], payload: CourierCheckIn) -> dict[str, Any]:
         aberto = self.open_shift(courier["id"])
         if aberto:
