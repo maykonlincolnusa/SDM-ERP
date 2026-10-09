@@ -3,7 +3,7 @@
  * deliberately excluded: a device must never display stale sales or finance data.
  */
 const CACHE_PREFIX = "acai-gestao-shell-";
-const CACHE_NAME = `${CACHE_PREFIX}v50`;
+const CACHE_NAME = `${CACHE_PREFIX}v52`;
 const APP_SHELL = [
   "/",
   "/static/index.html",
@@ -18,8 +18,7 @@ const APP_SHELL = [
   "/static/manifest.webmanifest",
   "/static/icons/icon-192.png",
   "/static/icons/icon-512.png",
-  "/static/icons/icon-512-maskable.png",
-  "/static/assets/acai-copo.png"
+  "/static/icons/icon-512-maskable.png"
 ];
 
 self.addEventListener("install", (event) => {

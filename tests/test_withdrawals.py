@@ -213,6 +213,33 @@ def test_consumo_separa_retirada_de_perda(service):
     )
 
 
+def test_consumo_expoe_barras_kg_e_copos_sem_converter_peso_em_volume(service):
+    """A leitura gerencial mostra as duas medidas que a operação realmente usa."""
+
+    acai = service.store.get("inventory", "acai")
+    service.store.put("inventory", "acai", {**acai, "pack_unit": "barra", "pack_size": 2.8})
+    antes = next(
+        (row["sales_volume"] for row in service.consumption(7)["items"] if row["inventory_id"] == "acai"),
+        {"cups": 0.0, "milliliters": 0.0, "by_volume": []},
+    )
+    service.create_order(OrderCreate(items=[OrderLine(product_id="acai-500", quantity=2)]))
+    service.register_inventory_withdrawal(
+        _retirada(items=[("acai", 2.8)], responsible="Maria", reason="Batida da manhã")
+    )
+
+    acai_consumo = next(row for row in service.consumption(7)["items"] if row["inventory_id"] == "acai")
+
+    assert acai_consumo["pack_unit"] == "barra"
+    assert acai_consumo["pack_size"] == 2.8
+    assert acai_consumo["sold"] == 0.92  # ficha: dois copos de 500 ml
+    assert acai_consumo["withdrawn"] == 2.8
+    assert acai_consumo["sales_volume"]["cups"] == antes["cups"] + 2
+    assert acai_consumo["sales_volume"]["milliliters"] == antes["milliliters"] + 1000
+    tamanho_500 = next(row for row in acai_consumo["sales_volume"]["by_volume"] if row["milliliters"] == 500)
+    antes_500 = next((row["cups"] for row in antes["by_volume"] if row["milliliters"] == 500), 0)
+    assert tamanho_500["cups"] == antes_500 + 2
+
+
 def test_historico_do_consumo_marca_a_retirada_como_tal(service):
     retirada = service.register_inventory_withdrawal(
         _retirada(items=[("granola", 1)], responsible="Maria", note="Turno da tarde")

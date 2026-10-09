@@ -2509,7 +2509,46 @@ class ERPService:
         today = datetime.now(FUSO_LOJA).date()
         start = self._window_start(days)
         stock = {item["id"]: item for item in self.store.list("inventory")}
+        products = {item["id"]: item for item in self.store.list("products")}
+        orders_com_baixa = {
+            movement.get("order_id")
+            for movement in self.store.list("inventory_movements")
+            if movement.get("reason") == SALE_REASON and self._timestamp(movement["created_at"]) >= start
+        }
 
+        # Peso e volume não são intercambiáveis sem uma densidade medida. A
+        # leitura guarda os dois fatos: kg baixados pela ficha e copos/ml que
+        # foram vendidos, sem inventar uma conversão entre eles.
+        volume_vendido: dict[str, dict[str, Any]] = {}
+        for order in self.store.list("orders"):
+            if (
+                not is_active_order(order)
+                or not order.get("stock_usage")
+                or order.get("id") not in orders_com_baixa
+                or self._timestamp(order["created_at"]) < start
+            ):
+                continue
+            for line in order.get("items") or []:
+                product = products.get(line.get("product_id"))
+                if not product:
+                    continue
+                try:
+                    cups = float(line.get("quantity") or 0)
+                except (TypeError, ValueError):
+                    continue
+                volume_ml = self._volume_do_produto(product.get("name"))
+                if cups <= 0 or volume_ml is None:
+                    continue
+                for recipe_line in product.get("recipe") or []:
+                    inventory_id = recipe_line.get("inventory_id")
+                    if inventory_id not in stock:
+                        continue
+                    row = volume_vendido.setdefault(inventory_id, {
+                        "cups": 0.0, "milliliters": 0.0, "by_volume": Counter(),
+                    })
+                    row["cups"] += cups
+                    row["milliliters"] += cups * volume_ml
+                    row["by_volume"][volume_ml] += cups
         by_item: dict[str, dict[str, Any]] = {}
         by_day: dict[str, dict[str, float]] = {}
         for offset in range(days - 1, -1, -1):
@@ -2571,6 +2610,8 @@ class ERPService:
                 **movement,
                 "name": item["name"],
                 "unit": item["unit"],
+                "pack_unit": item.get("pack_unit"),
+                "pack_size": item.get("pack_size"),
                 "kind": kind,
                 "cost": cost,
                 # A tela precisa saber o que pode oferecer para editar: baixa de
@@ -2593,6 +2634,21 @@ class ERPService:
                 "cost": round(row["cost"], 2),
                 "quantity": item["quantity"],
                 "daily_average": round(daily_average, 3),
+                # A unidade técnica continua sendo a fonte de verdade do
+                # saldo. Estes metadados servem apenas para a tela explicar
+                # esse mesmo saldo na linguagem da operação (barra, pote...).
+                "pack_unit": item.get("pack_unit"),
+                "pack_size": item.get("pack_size"),
+                "sales_volume": {
+                    "cups": round(volume_vendido.get(row["inventory_id"], {}).get("cups", 0.0), 3),
+                    "milliliters": round(volume_vendido.get(row["inventory_id"], {}).get("milliliters", 0.0), 3),
+                    "by_volume": [
+                        {"milliliters": volume, "cups": round(cups, 3)}
+                        for volume, cups in sorted(
+                            volume_vendido.get(row["inventory_id"], {}).get("by_volume", {}).items()
+                        )
+                    ],
+                },
                 # Sem consumo no periodo nao da para projetar duracao sem inventar numero.
                 "days_left": round(item["quantity"] / daily_average, 1) if daily_average > 0 else None,
             })
@@ -2618,6 +2674,21 @@ class ERPService:
             "running_out": [row for row in items if row["days_left"] is not None and row["days_left"] <= 7],
             "history": history[:60],
         }
+
+    @staticmethod
+    def _volume_do_produto(name: Any) -> int | None:
+        """Extrai o volume declarado no nome do copo, sem supor densidade.
+
+        Produtos sem `ml` no nome (combo, adicional, pote sem tamanho) não
+        entram na leitura de volume. O estoque continua contabilizado em kg;
+        só não há uma descrição de copos para exibir naquele caso.
+        """
+
+        found = re.search(r"(?<!\d)(\d{2,4})\s*ml\b", str(name or ""), flags=re.IGNORECASE)
+        if not found:
+            return None
+        volume = int(found.group(1))
+        return volume if 50 <= volume <= 3000 else None
 
     def ingredient_crossing(self, days: int = 30) -> dict[str, Any]:
         """Cruza cada venda com o estoque, separando ficha tecnica de complemento.

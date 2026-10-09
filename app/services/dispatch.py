@@ -362,7 +362,7 @@ class DispatchService:
             "address": gravado.get("address"),
             # A localização deixou de ser apenas informativa: sem essa trava,
             # check-in e check-out podem ser feitos de qualquer lugar.
-            "required": True,
+            "required": False,
             "updated_at": gravado.get("updated_at"),
         }
 
@@ -382,7 +382,7 @@ class DispatchService:
             "longitude": payload.longitude,
             "radius_m": payload.radius_m,
             "address": self.erp._optional_text(payload.address) or atual.get("address"),
-            "required": True,
+            "required": False,
             "updated_at": self._agora().isoformat(),
         }
         self.store.put("system", LOCAL_DA_LOJA, dados)
@@ -393,32 +393,53 @@ class DispatchService:
         )
         return self.store_location()
 
+    def _registrar_localizacao(self, payload: Any) -> dict[str, Any] | None:
+        """Registra uma posicao enviada pelo aparelho, sem validar onde ela fica."""
+
+        latitude = getattr(payload, "latitude", None)
+        longitude = getattr(payload, "longitude", None)
+        if latitude is None or longitude is None:
+            return None
+        return {
+            "latitude": round(latitude, 6),
+            "longitude": round(longitude, 6),
+            "accuracy_m": round(max(0.0, float(getattr(payload, "accuracy", None) or 0)), 1),
+        }
+
     def _conferir_local(self, payload: Any, momento: str) -> dict[str, Any]:
-        '''Lê o ponto se possível, mas permite o registro de qualquer lugar.'''
+        '''Confere que o ponto foi batido na loja, respeitando a margem do GPS.'''
 
         local = self.store_location()
         latitude = getattr(payload, 'latitude', None)
         longitude = getattr(payload, 'longitude', None)
+        if local.get('latitude') is None or local.get('longitude') is None:
+            raise ValueError(
+                'A loja ainda não marcou a localização do ponto. '
+                'Peça ao gestor para configurá-la antes do ' + momento + '.'
+            )
         if latitude is None or longitude is None:
-            return {}
+            raise ValueError(
+                'Autorize o acesso à localização para fazer o ' + momento + ' na loja.'
+            )
 
         margem = max(0.0, float(getattr(payload, 'accuracy', None) or 0))
-        if local.get('latitude') is None or local.get('longitude') is None:
-            return {
-                'latitude': round(latitude, 6),
-                'longitude': round(longitude, 6),
-                'accuracy_m': round(margem, 1),
-                'distance_m': None,
-                'location_uncertain': True,
-            }
-
         distancia = _distancia_em_metros(latitude, longitude, local['latitude'], local['longitude'])
+        raio = float(local.get('radius_m') or self.RAIO_PADRAO_M)
+        # A margem do aparelho é parte da evidência: distância de 200 m com
+        # precisão de 300 m ainda pode ser a porta da loja. Mas, quando até a
+        # posição mais favorável fica fora do raio, aceitar seria permitir que
+        # o ponto fosse batido de casa.
+        if distancia - margem > raio:
+            raise ValueError(
+                f'Você está a {distancia:.0f} m da loja; o {momento} só é aceito '
+                f'dentro de {raio:.0f} m.'
+            )
         return {
             'latitude': round(latitude, 6),
             'longitude': round(longitude, 6),
             'accuracy_m': round(margem, 1),
             'distance_m': round(distancia, 1),
-            'location_uncertain': margem > local.get('radius_m', 0),
+            'location_uncertain': margem > raio,
         }
     def check_in(self, courier: dict[str, Any], payload: CourierCheckIn) -> dict[str, Any]:
         aberto = self.open_shift(courier["id"])
@@ -429,8 +450,8 @@ class DispatchService:
         if courier.get("active") is False:
             raise ValueError("Este entregador está inativo no cadastro da loja.")
 
-        # Antes de abrir: o ponto e batido de onde se trabalha.
-        local = self._conferir_local(payload, "check-in")
+        # A posição, quando enviada, é apenas um dado adicional do registro.
+        local = self._registrar_localizacao(payload)
 
         agora = self._agora()
         shift = {
@@ -446,8 +467,8 @@ class DispatchService:
         self.store.put(SHIFTS, shift["id"], shift)
         self.erp._audit(
             self.store, "shift", shift["id"], "check-in",
-            f"{courier['name']} chegou às {self._hora(shift['checkin_at'])}"
-            + (f" · {local['distance_m']:.0f} m da loja" if local.get("distance_m") is not None else ""),
+            f"{courier['name']} iniciou o turno às {self._hora(shift['checkin_at'])}"
+            + (" · localização registrada" if local else ""),
         )
         return self._decorar_turno(shift, courier)
 
@@ -464,8 +485,6 @@ class DispatchService:
             raise ValueError("Não há turno aberto para fechar. Faça o check-in primeiro.")
 
         # Esta é a pendência que a pessoa consegue resolver sem sair da tela.
-        # Conferi-la antes de pedir GPS evita que, com sinal ruim, o aplicativo
-        # esconda "ainda há entrega em rota" atrás de uma espera de localização.
         entregas = self._runs_do_turno(shift["id"])
         em_rota = [run for run in entregas if not run.get("finished_at")]
         if em_rota:
@@ -473,13 +492,11 @@ class DispatchService:
                 f"{len(em_rota)} entrega(s) ainda estão em rota. Marque a chegada de cada uma antes de encerrar o turno."
             )
 
-        # O ponto de saida vale tanto quanto o de entrada: fechar turno de casa
-        # faria a cerca do check-in servir para nada.
-        local = self._conferir_local(payload, "check-out")
+        # A posição, quando enviada, é apenas um dado adicional do registro.
+        local = self._registrar_localizacao(payload)
 
-        # A localização pode levar alguns segundos para chegar. Releia depois
-        # dela: outro aparelho (ou o balcão) pode ter aberto uma entrega nesse
-        # intervalo, e o turno não pode fechar deixando-a em rota.
+        # Releia: outro aparelho (ou o balcão) pode ter aberto uma entrega
+        # nesse intervalo, e o turno não pode fechar deixando-a em rota.
         entregas = self._runs_do_turno(shift["id"])
         em_rota = [run for run in entregas if not run.get("finished_at")]
         if em_rota:
@@ -828,7 +845,6 @@ class DispatchService:
             "queue": self.queue(courier["id"]) if shift else self.queue(courier["id"], somente_cadastros=True),
             # O celular precisa saber se vai ter de pedir a localizacao antes de
             # bater o ponto: pedir sempre gastaria bateria e assustaria a toa.
-            "location_check": {chave: self.store_location()[chave] for chave in ("required", "radius_m")},
         }
 
     # ------------------------------------------------------------------

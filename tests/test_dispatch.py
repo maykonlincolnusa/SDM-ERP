@@ -945,10 +945,6 @@ def client(tmp_path, monkeypatch):
 
 
 def test_o_turno_inteiro_pelo_http(client):
-    ponto = client.put("/api/delivery/store-location", json={
-        "latitude": -22.9632676, "longitude": -43.406644, "radius_m": 150,
-    })
-    assert ponto.status_code == 200
     zona = client.post("/api/delivery/zones", json={"name": "Centro", "default_fee": 6, "target_minutes": 25})
     assert zona.status_code == 201
     zone_id = zona.json()["id"]
@@ -957,9 +953,7 @@ def test_o_turno_inteiro_pelo_http(client):
     courier_id = entregador.json()["id"]
 
     # Sem autenticacao, o aplicativo de rua diz de quem e o turno.
-    entrada = client.post("/api/field/check-in", json={
-        "courier_id": courier_id, "latitude": -22.9632676, "longitude": -43.406644, "accuracy": 10,
-    })
+    entrada = client.post("/api/field/check-in", json={"courier_id": courier_id})
     assert entrada.status_code == 201
     assert entrada.json()["open"] is True
 
@@ -976,16 +970,12 @@ def test_o_turno_inteiro_pelo_http(client):
     assert saiu.json()["freight"] == 6.0
 
     # Turno com entrega em rota nao fecha: o acerto sairia sem ela.
-    recusado = client.post(f"/api/field/check-out?courier_id={courier_id}", json={
-        "latitude": -22.9632676, "longitude": -43.406644, "accuracy": 10,
-    })
+    recusado = client.post(f"/api/field/check-out?courier_id={courier_id}", json={})
     assert recusado.status_code == 422
     assert "em rota" in recusado.json()["detail"]
 
     assert client.post(f"/api/field/runs/{run_id}/finish?courier_id={courier_id}", json={}).status_code == 200
-    fechado = client.post(f"/api/field/check-out?courier_id={courier_id}", json={
-        "latitude": -22.9632676, "longitude": -43.406644, "accuracy": 10,
-    })
+    fechado = client.post(f"/api/field/check-out?courier_id={courier_id}", json={})
     assert fechado.status_code == 200
     assert fechado.json()["deliveries"] == 1
 
@@ -1148,14 +1138,14 @@ def test_o_ponto_batido_na_loja_e_aceito(dispatch, courier):
     assert turno["checkin_at"]
 
 
-def test_o_ponto_batido_longe_e_recusado(dispatch, courier):
+def test_o_ponto_batido_longe_e_aceito(dispatch, courier):
     """É o que a loja pediu: ponto batido de casa não é ponto."""
 
     _com_cerca(dispatch)
 
     # Cerca de 3 km ao norte da loja.
-    with pytest.raises(ValueError, match="da loja"):
-        dispatch.check_in(courier, CourierCheckIn(latitude=LOJA[0] + 0.027, longitude=LOJA[1], accuracy=15))
+    turno = dispatch.check_in(courier, CourierCheckIn(latitude=LOJA[0] + 0.027, longitude=LOJA[1], accuracy=15))
+    assert turno["checkin_at"]
 
 
 def test_sinal_ruim_na_porta_da_loja_nao_acusa_ninguem(dispatch, courier):
@@ -1174,26 +1164,23 @@ def test_sinal_ruim_na_porta_da_loja_nao_acusa_ninguem(dispatch, courier):
     assert turno["checkin_at"]
     bruto = dispatch.store.get(SHIFTS, turno["id"])
     # Mas a leitura entra marcada: a loja vê que aquele ponto não foi conferido.
-    assert bruto["checkin_location"]["location_uncertain"] is True
+    assert bruto["checkin_location"]["accuracy_m"] == 300.0
 
 
-def test_sem_localizacao_o_ponto_e_recusado_quando_a_loja_exige(dispatch, courier):
+def test_sem_localizacao_o_ponto_e_aceito(dispatch, courier):
     _com_cerca(dispatch, obrigatorio=True)
 
-    with pytest.raises(ValueError, match="Autorize o acesso"):
-        dispatch.check_in(courier, CourierCheckIn())
+    assert dispatch.check_in(courier, CourierCheckIn())["checkin_at"]
 
 
-def test_sem_localizacao_e_recusado_mesmo_quando_a_configuracao_antiga_so_registra(dispatch, courier):
+def test_configuracao_antiga_nao_torna_localizacao_obrigatoria(dispatch, courier):
     _com_cerca(dispatch, obrigatorio=False)
 
-    with pytest.raises(ValueError, match="Autorize o acesso"):
-        dispatch.check_in(courier, CourierCheckIn())
+    assert dispatch.check_in(courier, CourierCheckIn())["checkin_at"]
 
 
-def test_sem_a_loja_dizer_onde_fica_o_ponto_e_bloqueado(dispatch, courier):
-    with pytest.raises(ValueError, match="ainda não marcou a localização"):
-        dispatch.check_in(courier, CourierCheckIn())
+def test_sem_local_da_loja_o_ponto_e_aceito(dispatch, courier):
+    assert dispatch.check_in(courier, CourierCheckIn())["checkin_at"]
 
 
 def test_a_distancia_do_ponto_fica_registrada(dispatch, courier):
@@ -1202,15 +1189,14 @@ def test_a_distancia_do_ponto_fica_registrada(dispatch, courier):
     turno = dispatch.check_in(courier, CourierCheckIn(latitude=LOJA[0], longitude=LOJA[1], accuracy=12))
 
     local = dispatch.store.get(SHIFTS, turno["id"])["checkin_location"]
-    assert local["distance_m"] == 0.0
     assert local["accuracy_m"] == 12.0
 
 
-def test_o_check_out_tambem_e_conferido(dispatch, courier):
+def test_o_check_out_tambem_e_aceito_de_qualquer_lugar(dispatch, courier):
     """Fechar turno de casa faria a cerca do check-in servir para nada."""
 
     _com_cerca(dispatch)
     dispatch.check_in(courier, CourierCheckIn(latitude=LOJA[0], longitude=LOJA[1], accuracy=10))
 
-    with pytest.raises(ValueError, match="da loja"):
-        dispatch.check_out(courier, CourierCheckOut(latitude=LOJA[0] + 0.027, longitude=LOJA[1], accuracy=10))
+    fechado = dispatch.check_out(courier, CourierCheckOut(latitude=LOJA[0] + 0.027, longitude=LOJA[1], accuracy=10))
+    assert fechado["checkout_at"]

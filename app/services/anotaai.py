@@ -125,15 +125,30 @@ def _ler(dados: Any, *caminhos: str) -> Any:
     nao acha volta como "nao entendi", nunca como zero.
     """
 
-    for caminho in caminhos:
-        atual: Any = dados
-        for parte in caminho.split("."):
-            if not isinstance(atual, dict) or parte not in atual:
-                atual = None
-                break
-            atual = atual[parte]
-        if atual not in (None, "", [], {}):
-            return atual
+    # A API de pedidos teve mais de uma forma de resposta. Em algumas contas o
+    # pedido vem na raiz; em outras, dentro de `info`, `data` ou `order`. A
+    # leitura continua privilegiando a raiz e só então abre esses envelopes
+    # conhecidos. Assim um campo de cliente, por exemplo, não é confundido com
+    # outro objeto arbitrário aninhado na resposta.
+    camadas = [dados]
+    for atual in camadas:
+        if not isinstance(atual, dict):
+            continue
+        for chave in ("info", "data", "order", "pedido", "result"):
+            aninhado = atual.get(chave)
+            if isinstance(aninhado, dict) and aninhado not in camadas:
+                camadas.append(aninhado)
+
+    for camada in camadas:
+        for caminho in caminhos:
+            atual: Any = camada
+            for parte in caminho.split("."):
+                if not isinstance(atual, dict) or parte not in atual:
+                    atual = None
+                    break
+                atual = atual[parte]
+            if atual not in (None, "", [], {}):
+                return atual
     return None
 
 
@@ -564,7 +579,7 @@ class AnotaAiService:
 
         chave = self._key()
         fila = self.client.order_queue(chave)
-        avisos = ((fila.get("info") or {}).get("docs") or [])
+        avisos = self._avisos_da_fila(fila)
         if not avisos:
             return {
                 "queue_shape": sorted((fila.get("info") or {}).keys()),
@@ -572,7 +587,7 @@ class AnotaAiService:
                 "detail": "A fila está vazia agora. Faça um pedido de teste na Anota Aí e chame de novo.",
             }
         primeiro = avisos[0]
-        pedido_id = str(primeiro.get("_id") or primeiro.get("id") or "")
+        pedido_id = self._id_do_aviso(primeiro)
         detalhe = self.client.order(chave, pedido_id) if pedido_id else {}
         return {
             "orders_waiting": len(avisos),
@@ -588,14 +603,14 @@ class AnotaAiService:
 
         chave = self._key()
         fila = self.client.order_queue(chave)
-        avisos = ((fila.get("info") or {}).get("docs") or [])
+        avisos = self._avisos_da_fila(fila)
         resumo: dict[str, Any] = {
             "queued": len(avisos), "created": 0, "skipped": 0,
             "without_items": 0, "unreadable": [],
         }
 
         for aviso in avisos[:limit]:
-            pedido_id = str(aviso.get("_id") or aviso.get("id") or "")
+            pedido_id = self._id_do_aviso(aviso)
             if not pedido_id or self.store.get(ORDER_LINKS, pedido_id):
                 resumo["skipped"] += 1
                 continue
@@ -608,6 +623,27 @@ class AnotaAiService:
 
         self._remember(last_order_sync=self._agora().isoformat(), last_order_result=resumo)
         return resumo
+
+    @staticmethod
+    def _avisos_da_fila(fila: dict[str, Any]) -> list[dict[str, Any]]:
+        """Lê os avisos nas variações conhecidas do PING/LIST.
+
+        A versão antiga expõe `info.docs`; instalações mais recentes podem
+        colocar a mesma lista em `data` ou nomeá-la `orders`. Ignorar uma dessas
+        formas fazia a sincronização terminar com sucesso e trazer zero pedidos.
+        """
+
+        for caminho in ("info.docs", "data.docs", "info.orders", "data.orders", "docs", "orders"):
+            avisos = _ler(fila, caminho)
+            if isinstance(avisos, list):
+                return [aviso for aviso in avisos if isinstance(aviso, dict)]
+        return []
+
+    @staticmethod
+    def _id_do_aviso(aviso: dict[str, Any]) -> str:
+        """O identificador imutável do pedido no aviso da Anota Aí."""
+
+        return str(_ler(aviso, "_id", "id", "order_id", "orderId", "pedido_id", "pedidoId") or "")
 
     def sync_for_dispatch(self) -> dict[str, Any] | None:
         """Atualiza a fila que o entregador vê, sem tornar a rua dependente da API.
@@ -666,8 +702,19 @@ class AnotaAiService:
 
         momento = self._momento(_ler(detalhe, *CAMINHOS_DATA)) or self._agora()
         numero = str(_ler(detalhe, *CAMINHOS_NUMERO) or pedido_id[:8])
-        identificador = f"{INTEGRATION_ID}-{numero}-{momento.date().isoformat()}"
-        if self.store.get("orders", identificador):
+        identificador_base = f"{INTEGRATION_ID}-{numero}-{momento.date().isoformat()}"
+        identificador = identificador_base
+        existente = self.store.get("orders", identificador)
+        if existente and existente.get("anota_order_id") not in (None, pedido_id):
+            # O número mostrado ao cliente não é a chave técnica do pedido. Há
+            # lojas/canais em que ele se repete no mesmo dia; gravar os dois no
+            # mesmo documento fazia a segunda entrega nunca chegar à fila. O
+            # sufixo só existe nessa colisão concreta e usa o ID estável da API.
+            sufixo = re.sub(r"[^a-zA-Z0-9_-]+", "-", pedido_id).strip("-")[:48] or "pedido"
+            identificador = f"{identificador_base}-{sufixo}"
+            existente = self.store.get("orders", identificador)
+
+        if existente:
             resumo["skipped"] += 1
             self.store.put(ORDER_LINKS, pedido_id, {"id": pedido_id, "order_id": identificador})
             return

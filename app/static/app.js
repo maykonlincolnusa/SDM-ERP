@@ -221,17 +221,17 @@ function setMobileNavigation(open) {
 
 const CARGA_ESSENCIAL = {
   dashboard: () => `/api/dashboard?days=${state.period}`,
-  consumption: () => `/api/inventory/consumption?days=${state.period}`,
   inventory: () => "/api/inventory",
   products: () => "/api/products",
   addons: () => "/api/addons",
-  orders: () => "/api/orders",
   channels: () => "/api/channels",
   catalogs: () => "/api/catalogs",
   couriers: () => "/api/couriers",
 };
 
-const CARGA_RELATORIOS = {
+const CARGA_SOB_DEMANDA = {
+  orders: () => "/api/orders",
+  consumption: () => `/api/inventory/consumption?days=${state.period}`,
   crossing: () => `/api/inventory/crossing?days=${state.operatingPeriod}`,
   forecast: () => "/api/forecast?horizon=7",
   expenses: () => "/api/expenses",
@@ -260,37 +260,86 @@ const CARGA_RELATORIOS = {
   history: () => `/api/audit?limit=${state.historyLimit}`,
 };
 
+const CARGA_POR_TELA = {
+  orders: ["orders"],
+  consumption: ["consumption"],
+  closing: ["salesDay"],
+  inventory: ["productionRecipes", "productionYield", "productionEconomics", "productionAdvice", "packagingAudit"],
+  forecast: ["forecast"],
+  finance: ["crossing", "expenses", "expenseSeries", "operating"],
+  channels: ["channelPerformance"],
+  products: ["recipeAudit", "productionRecipes"],
+  brand: ["lines"],
+  promotions: ["promotions", "promotionMonth"],
+  pricing: ["pricing", "marketPrices"],
+  planning: ["planning", "productionRecipes", "productionYield"],
+  growth: ["growth"],
+  files: ["mediaSummary", "media"],
+  history: ["history"],
+};
+
+const dadosCarregados = new Set();
+const dadosEmCarga = new Set();
+let cargaInicialConcluida = false;
+
 async function carregarGrupo(grupo) {
   const chaves = Object.keys(grupo);
   const respostas = await Promise.all(chaves.map((chave) => api(grupo[chave]())));
   return Object.fromEntries(chaves.map((chave, indice) => [chave, respostas[indice]]));
 }
 
-// O mesmo, mas cada relatório responde por si.
-//
-// Aconteceu de verdade: um erro na análise de promoção — uma ordenação que
-// tentava comparar dois produtos do mesmo tamanho — derrubava aquela rota com
-// 500, e como o painel pedia os relatórios todos juntos, o erro apagava
-// previsão, planejamento, financeiro e crescimento de uma vez. Telas que não
-// têm nada a ver com promoção ficavam em branco, e não havia como o gestor
-// saber por quê. Um relatório quebrado agora perde só a si mesmo, e diz o nome.
-async function carregarGrupoTolerante(grupo) {
-  const chaves = Object.keys(grupo);
-  const respostas = await Promise.allSettled(chaves.map((chave) => api(grupo[chave]())));
+function setViewLoading(target, loading) {
+  const view = document.getElementById(target);
+  if (!view) return;
+  view.classList.toggle("is-loading", loading);
+  view.setAttribute("aria-busy", String(loading));
+  const status = document.getElementById("data-status");
+  if (status && loading) {
+    status.textContent = "Atualizando esta tela";
+    status.hidden = false;
+  }
+  if (status && !loading && !document.querySelector(".view.is-loading")) status.hidden = true;
+}
+
+// Relatórios só são buscados quando a pessoa abre a respectiva tela. Isso evita
+// que uma análise pesada de promoções ou previsão atrase uma venda no balcão.
+async function carregarDadosDaTela(target, force = false) {
+  const chaves = (CARGA_POR_TELA[target] || []).filter((chave) =>
+    !dadosEmCarga.has(chave) && (force || !dadosCarregados.has(chave))
+  );
+  if (!chaves.length) return true;
+
+  chaves.forEach((chave) => dadosEmCarga.add(chave));
+  setViewLoading(target, true);
+  const respostas = await Promise.allSettled(chaves.map((chave) => api(CARGA_SOB_DEMANDA[chave]())));
   const dados = {};
   const falharam = [];
   respostas.forEach((resposta, indice) => {
-    if (resposta.status === "fulfilled") dados[chaves[indice]] = resposta.value;
+    const chave = chaves[indice];
+    dadosEmCarga.delete(chave);
+    if (resposta.status === "fulfilled") {
+      dados[chave] = resposta.value;
+      dadosCarregados.add(chave);
+    }
     else falharam.push(chaves[indice]);
   });
-  return { dados, falharam };
+  Object.assign(state, dados);
+  setViewLoading(target, false);
+  renderAll();
+  if (falharam.length) {
+    toast(`${falharam.length} dado(s) não carregaram: ${falharam.map(nomeDoRelatorio).join(", ")}.`, "error");
+    return false;
+  }
+  return true;
 }
 
 async function loadAll() {
   setRefreshing(true);
+  dadosCarregados.clear();
   try {
     const [config, essencial] = await Promise.all([api("/api/config"), carregarGrupo(CARGA_ESSENCIAL)]);
     Object.assign(state, essencial);
+    cargaInicialConcluida = true;
     document.getElementById("storage-mode").textContent = config.storage === "firebase" ? "Firebase conectado" : "Modo demonstrativo";
     renderAll();
   } catch (error) {
@@ -299,18 +348,21 @@ async function loadAll() {
     return false;
   }
 
-  // Os relatórios chegam depois e redesenham. A falha aqui não derruba o que
-  // já está na tela: perder o painel inteiro porque a análise de promoção não
-  // respondeu seria trocar um problema grande por um maior.
   try {
-    const { dados, falharam } = await carregarGrupoTolerante(CARGA_RELATORIOS);
-    Object.assign(state, dados);
-    renderAll();
-    if (falharam.length) {
-      toast(`${falharam.length} relatório(s) não carregaram: ${falharam.map(nomeDoRelatorio).join(", ")}. O resto da tela está atualizado.`, "error");
-      return false;
+    const atual = document.querySelector(".view.active")?.id || "dashboard";
+    if (atual === "delivery") {
+      await loadDispatch();
+      return true;
     }
-    return true;
+    if (atual === "advisor") {
+      await loadAdvisor();
+      return true;
+    }
+    if (atual === "settings") {
+      await Promise.all([loadIFood(), loadAnotaAi()]);
+      return true;
+    }
+    return await carregarDadosDaTela(atual, true);
   } finally {
     setRefreshing(false);
   }
@@ -334,17 +386,9 @@ function nomeDoRelatorio(chave) {
 
 async function loadDashboard() {
   try {
-    const [dashboard, consumption, operating] = await Promise.all([
-      api(`/api/dashboard?days=${state.period}`),
-      api(`/api/inventory/consumption?days=${state.period}`),
-      api(`/api/finance/operating?days=${state.operatingPeriod}`),
-    ]);
+    const dashboard = await api(`/api/dashboard?days=${state.period}`);
     state.dashboard = dashboard;
-    state.consumption = consumption;
-    state.operating = operating;
     renderDashboard();
-    renderConsumption();
-    renderFinance();
   } catch (error) {
     toast(error.message, "error");
   }
@@ -386,7 +430,6 @@ function renderAll() {
   // e o `state` dela continua o de antes da gravação. Sem esta releitura, a
   // zona recém-criada e a entrega recém-corrigida só apareciam ao trocar de
   // tela e voltar — o botão parecia não ter feito nada.
-  if (state.dispatch) loadDispatch();
   renderBrand();
   renderGrowth();
   renderAdvisor();
@@ -547,6 +590,36 @@ function orderActions(order) {
   </div>`;
 }
 
+// O cadastro guarda o saldo na unidade técnica (kg, L, un.). Quando a equipe
+// manuseia o item por barra, pote ou fardo, mostramos a mesma quantidade nas
+// duas leituras. A sobra fica em kg em vez de virar uma fração confusa de barra.
+function operationalQuantity(item, quantity) {
+  const unit = item?.unit || "unidade";
+  const pack = packOf(item);
+  const sign = quantity < 0 ? "−" : "";
+  const absolute = Math.abs(Number(quantity) || 0);
+  const base = `${sign}${number.format(absolute)} ${unit}`;
+  if (!pack) return { main: base, base: null };
+  const packs = Math.floor((absolute + 0.0005) / pack.size);
+  const remainder = roundQuantity(Math.max(0, absolute - packs * pack.size));
+  if (!packs) return { main: base, base: null };
+  const loose = remainder >= 0.001 ? ` + ${number.format(remainder)} ${unit}` : "";
+  return { main: `${sign}${packAmount(pack, packs)}${loose}`, base };
+}
+
+function stockQuantityHtml(item, quantity, { signal = "" } = {}) {
+  const reading = operationalQuantity(item, quantity);
+  const shownSignal = signal && quantity >= 0 ? signal : "";
+  return `<span class="stock-amount"><strong>${shownSignal}${escapeHtml(reading.main)}</strong>${reading.base ? `<small>${escapeHtml(reading.base)}</small>` : ""}</span>`;
+}
+
+function salesVolumeHtml(sales) {
+  if (!sales?.cups || !sales?.milliliters) return "";
+  const sizes = (sales.by_volume || []).map((line) => `${number.format(line.cups)} × ${number.format(line.milliliters)} ml`).join(" · ");
+  const volume = sales.milliliters >= 1000 ? `${number.format(sales.milliliters / 1000)} L` : `${number.format(sales.milliliters)} ml`;
+  return `<small class="sales-volume">${escapeHtml(`${number.format(sales.cups)} copo(s) · ${volume}${sizes ? ` (${sizes})` : ""}`)}</small>`;
+}
+
 function renderInventory() {
   const query = document.getElementById("inventory-search")?.value.trim().toLocaleLowerCase("pt-BR") || "";
   const items = state.inventory.filter(item => `${item.name} ${item.category}`.toLocaleLowerCase("pt-BR").includes(query));
@@ -569,8 +642,8 @@ function renderInventory() {
       : uncounted ? { css: "neutral", label: "Sem contagem" }
       : { css: "success", label: "Saudável" };
     const dot = negative ? "negative" : low ? "low" : uncounted ? "idle" : "";
-    const minimum = item.minimum_quantity ? `${number.format(item.minimum_quantity)} ${escapeHtml(item.unit)}` : "não definido";
-    return `<tr><td><strong>${escapeHtml(item.name)}</strong></td><td>${escapeHtml(item.category)}</td><td><span class="stock-level"><i class="stock-dot ${dot}"></i><span class="stock-amount">${number.format(item.quantity)} ${escapeHtml(item.unit)}</span></span></td><td class="muted-value">${minimum}</td><td>${currency.format(item.unit_cost)}</td><td><span class="status-pill ${status.css}">${status.label}</span></td><td class="align-right"><div class="row-actions">
+    const minimum = item.minimum_quantity ? stockQuantityHtml(item, item.minimum_quantity) : "não definido";
+    return `<tr><td><strong>${escapeHtml(item.name)}</strong></td><td>${escapeHtml(item.category)}</td><td><span class="stock-level"><i class="stock-dot ${dot}"></i>${stockQuantityHtml(item, item.quantity)}</span></td><td class="muted-value">${minimum}</td><td>${currency.format(item.unit_cost)}</td><td><span class="status-pill ${status.css}">${status.label}</span></td><td class="align-right"><div class="row-actions">
       <button class="row-action" type="button" data-purchase-item="${item.id}" title="Registrar compra"><i data-lucide="shopping-cart"></i></button>
       <button class="row-action" type="button" data-count-item="${item.id}" title="Contagem física"><i data-lucide="clipboard-check"></i></button>
       <button class="row-action" type="button" data-edit-inventory="${item.id}" title="Editar cadastro"><i data-lucide="pencil"></i></button>
@@ -595,19 +668,22 @@ function renderConsumption() {
 
   const query = document.getElementById("consumption-search")?.value.trim().toLocaleLowerCase("pt-BR") || "";
   const items = data.items.filter((item) => item.name.toLocaleLowerCase("pt-BR").includes(query));
+  renderConsumptionFlow(items);
   document.getElementById("consumption-body").innerHTML = items.length ? items.map((item) => {
     const duration = item.days_left === null
       ? '<span class="muted-value">sem consumo</span>'
       : `<span class="status-pill ${item.days_left <= 7 ? "pending" : "success"}">${number.format(item.days_left)} dias</span>`;
-    const lost = item.lost > 0 ? `<strong class="negative">${number.format(item.lost)} ${escapeHtml(item.unit)}</strong>` : `<span class="muted-value">—</span>`;
-    const withdrawn = item.withdrawn > 0 ? `<strong>${number.format(item.withdrawn)} ${escapeHtml(item.unit)}</strong>` : `<span class="muted-value">—</span>`;
-    return `<tr><td><strong>${escapeHtml(item.name)}</strong></td><td class="align-right">${number.format(item.sold)} ${escapeHtml(item.unit)}</td><td class="align-right">${withdrawn}</td><td class="align-right">${lost}</td><td class="align-right">${currency.format(item.cost)}</td><td class="align-right muted-value">${number.format(item.quantity)} ${escapeHtml(item.unit)}</td><td>${duration}</td></tr>`;
+    const sold = item.sold > 0 ? `${stockQuantityHtml(item, item.sold)}${salesVolumeHtml(item.sales_volume)}` : `<span class="muted-value">—</span>`;
+    const received = item.received > 0 ? stockQuantityHtml(item, item.received) : `<span class="muted-value">—</span>`;
+    const lost = item.lost > 0 ? `<span class="negative">${stockQuantityHtml(item, item.lost)}</span>` : `<span class="muted-value">—</span>`;
+    const withdrawn = item.withdrawn > 0 ? stockQuantityHtml(item, item.withdrawn) : `<span class="muted-value">—</span>`;
+    return `<tr><td><strong>${escapeHtml(item.name)}</strong></td><td class="align-right">${received}</td><td class="align-right">${sold}</td><td class="align-right">${withdrawn}</td><td class="align-right">${lost}</td><td class="align-right">${currency.format(item.cost)}</td><td class="align-right muted-value">${stockQuantityHtml(item, item.quantity)}</td><td>${duration}</td></tr>`;
   }).join("") : emptyRow(7, "Nenhuma saída de insumo no período.");
 
   document.getElementById("movement-body").innerHTML = data.history.length ? data.history.map((row) => {
     const labels = { venda: "Venda", retirada: "Retirada", perda: "Baixa", entrada: "Entrada", compra: "Compra", estorno: "Estorno" };
     const css = { venda: "success", retirada: "neutral", perda: "pending", entrada: "neutral", compra: "success", estorno: "neutral" };
-    const signal = row.quantity_delta > 0 ? "+" : "";
+    const signal = row.quantity_delta > 0 ? "+" : "−";
     // Baixa de venda só muda pelo pedido: oferecer o lápis aqui separaria o
     // pedido do estoque, que é exatamente o que a edição precisa evitar.
     const actions = row.kind === "retirada"
@@ -618,9 +694,24 @@ function renderConsumption() {
     // A retirada lancada por cima do saldo e a excecao que precisa ficar a
     // vista: e ela que explica o negativo na tela de Estoque.
     const abaixo = row.below_balance ? ' <span class="status-pill pending" title="Registrada sem saldo: o estoque ficou negativo até a próxima contagem.">sem saldo</span>' : "";
-    return `<tr><td class="muted-value">${escapeHtml(formatDateTime(row.created_at))}</td><td><strong>${escapeHtml(row.name)}</strong></td><td><span class="status-pill ${css[row.kind]}">${labels[row.kind]}</span></td><td>${escapeHtml(row.reason)}${abaixo}</td><td class="align-right"><strong>${signal}${number.format(row.quantity_delta)} ${escapeHtml(row.unit)}</strong></td><td class="align-right">${actions}</td></tr>`;
+    const movementQuantity = stockQuantityHtml(row, Math.abs(row.quantity_delta), { signal });
+    return `<tr><td class="muted-value">${escapeHtml(formatDateTime(row.created_at))}</td><td><strong>${escapeHtml(row.name)}</strong></td><td><span class="status-pill ${css[row.kind]}">${labels[row.kind]}</span></td><td>${escapeHtml(row.reason)}${abaixo}</td><td class="align-right">${movementQuantity}</td><td class="align-right">${actions}</td></tr>`;
   }).join("") : emptyRow(6, "Nenhuma movimentação registrada.");
   refreshIcons();
+}
+
+function renderConsumptionFlow(items) {
+  const target = document.getElementById("consumption-flow");
+  if (!target) return;
+  const tracked = items.filter((item) => item.pack_size > 0 || item.sales_volume?.cups > 0);
+  target.innerHTML = tracked.length ? tracked.map((item) => {
+    const sales = item.sales_volume || {};
+    const sold = sales.cups
+      ? `${number.format(sales.cups)} copo(s) / ${sales.milliliters >= 1000 ? `${number.format(sales.milliliters / 1000)} L` : `${number.format(sales.milliliters)} ml`}`
+      : "sem copos com volume identificado";
+    const withdrawals = operationalQuantity(item, item.withdrawn + item.lost).main;
+    return `<article class="stock-flow-item"><div><strong>${escapeHtml(item.name)}</strong><small>Saldo: ${escapeHtml(operationalQuantity(item, item.quantity).main)}${item.pack_size ? ` · ${number.format(item.quantity)} ${escapeHtml(item.unit)}` : ""}</small></div><div class="stock-flow-step"><span>Entrou</span><b>${escapeHtml(operationalQuantity(item, item.received).main)}</b><small>no período</small></div><i data-lucide="arrow-right"></i><div class="stock-flow-step"><span>Virou venda</span><b>${escapeHtml(sold)}</b><small>${escapeHtml(operationalQuantity(item, item.sold).main)} baixados pela ficha</small></div><i data-lucide="arrow-right"></i><div class="stock-flow-step"><span>Retirada / perda</span><b>${escapeHtml(withdrawals)}</b><small>${item.withdrawn ? `${escapeHtml(operationalQuantity(item, item.withdrawn).main)} retirada` : "sem retirada"}${item.lost ? ` · ${escapeHtml(operationalQuantity(item, item.lost).main)} perda` : ""}</small></div></article>`;
+  }).join("") : `<p class="empty-note">Cadastre a unidade de manuseio, por exemplo “barra = 2,8 kg”, para acompanhar o fluxo do açaí nesta leitura.</p>`;
 }
 
 function renderConsumptionChart(series) {
@@ -1107,9 +1198,12 @@ function activateView(target, updateHash = true) {
   document.querySelectorAll(".view").forEach(view => view.classList.toggle("active", view.id === target));
   // O estado da integração é buscado ao abrir a tela, e não no carregamento
   // geral: o iFood fora do ar não pode derrubar o painel inteiro.
-  if (target === "settings") { loadIFood(); loadAnotaAi(); }
-  if (target === "delivery") loadDispatch();
-  if (target === "advisor") loadAdvisor();
+  if (cargaInicialConcluida) {
+    if (target === "settings") { loadIFood(); loadAnotaAi(); }
+    else if (target === "delivery") { loadDelivery(); loadDispatch(); }
+    else if (target === "advisor") loadAdvisor();
+    else carregarDadosDaTela(target);
+  }
   document.querySelectorAll(".nav-item").forEach(item => item.classList.toggle("active", item.dataset.viewTarget === target));
   setMobileNavigation(false);
   if (updateHash) history.replaceState(null, "", `#${target}`);
@@ -1230,6 +1324,11 @@ function bindForms() {
     refreshProductionPreview();
   });
   document.getElementById("production-lines").addEventListener("input", refreshProductionPreview);
+  document.getElementById("production-lines").addEventListener("change", (event) => {
+    const unidade = event.target.closest("[data-production-unit]");
+    if (unidade) unidade.dataset.chosen = "1";
+    refreshProductionPreview();
+  });
   document.getElementById("production-override").addEventListener("change", refreshProductionPreview);
   ["output_inventory_id", "output_quantity"].forEach((campo) => {
     document.querySelector(`#production-form [name="${campo}"]`).addEventListener("input", refreshProductionPreview);
@@ -1292,7 +1391,6 @@ function bindForms() {
   document.getElementById("media-entity-type").addEventListener("change", (event) => populateEntityTargets(event.target.value));
   document.getElementById("anotaai-import-confirm").addEventListener("click", importarCardapioAnotaAi);
   bindAnotaAi();
-  document.getElementById("dl-geofence-capture").addEventListener("click", capturarLocalDaLoja);
   // Mudar os quilos reprojeta na hora: a conta é local, o rendimento já veio.
   document.getElementById("acai-yield-kg").addEventListener("input", (evento) => {
     const kg = Number(evento.target.value || 0);
@@ -1713,33 +1811,80 @@ function refreshInventoryPack(origem = "") {
     : `O que a ficha técnica usa, por ${unidade}.`);
 }
 
-function addProductionLine(container, inventoryId = "", quantity = "") {
-  document.getElementById(container).insertAdjacentHTML("beforeend", `<div class="recipe-line production-line"><label>Insumo<select required data-production-item>${inventoryOptions(inventoryId)}</select></label><label>Quantidade<input type="number" min="0.001" step="0.001" required placeholder="0,000" value="${quantity}" /><small class="field-hint" data-production-hint></small></label><button type="button" data-remove-production title="Remover insumo"><i data-lucide="trash-2"></i></button></div>`);
+function addProductionLine(container, inventoryId = "", quantity = "", unit = quantity === "" ? "" : "stock") {
+  document.getElementById(container).insertAdjacentHTML("beforeend", `<div class="recipe-line production-line"><label>Insumo<select required data-production-item>${inventoryOptions(inventoryId)}</select></label><label>Quantidade<input type="text" inputmode="decimal" autocomplete="off" placeholder="0,000" value="${quantity}" data-production-quantity /></label><label>Unidade<select data-production-unit aria-label="Unidade da quantidade"></select></label><button type="button" data-remove-production title="Remover insumo"><i data-lucide="trash-2"></i></button><small class="field-hint" data-production-hint></small></div>`);
   const linha = document.getElementById(container).lastElementChild;
+  const unidade = linha.querySelector("[data-production-unit]");
+  if (unit) {
+    unidade.dataset.chosen = "1";
+    unidade.dataset.initialValue = unit;
+  }
+  // A conversão pertence ao insumo selecionado. Atualizá-la no próprio campo
+  // evita deixar na tela a barra do item anterior enquanto a prévia recalcula.
   linha.querySelector("[data-production-item]").addEventListener("change", () => describeProductionLine(linha));
   describeProductionLine(linha);
   refreshIcons();
 }
 
-// A conversão era escrita uma única vez, na montagem da linha, e continuava lá
-// depois de o insumo mudar: a linha anunciava "1 barra = 2,8 kg" com a granola
-// selecionada, e quem confiasse nela lançava a batida errada. Agora ela é
-// reescrita a cada troca, e diz também em que unidade digitar quando o insumo
-// não tem unidade de manuseio nenhuma.
-function describeProductionLine(linha) {
-  const hint = linha.querySelector("[data-production-hint]");
-  if (!hint) return;
-  const item = state.inventory.find((row) => row.id === linha.querySelector("[data-production-item]").value);
+// A produção guarda a entrada na unidade do estoque, mas a equipe pode contar
+// no formato físico que retirou (por exemplo, barra). A ficha preenche em kg e
+// permanece em kg; lançamentos novos podem usar a embalagem sem fazer conta.
+function syncProductionUnit(line) {
+  const item = state.inventory.find((row) => row.id === line.querySelector("[data-production-item]").value);
+  const select = line.querySelector("[data-production-unit]");
   const pack = packOf(item);
-  hint.textContent = pack
-    ? `1 ${pack.unit} = ${number.format(pack.size)} ${item.unit} · digite em ${item.unit}`
-    : item ? `Em ${item.unit}` : "";
+  const signature = `${item ? item.id : ""}|${item ? item.unit : ""}|${pack ? `${pack.unit}:${pack.size}` : ""}`;
+  if (select.dataset.builtFor !== signature) {
+    const chosen = select.dataset.chosen === "1" ? (select.value || select.dataset.initialValue) : "";
+    select.innerHTML = `<option value="stock">${escapeHtml(item ? item.unit : "unidade")}</option>${pack ? `<option value="pack">${escapeHtml(pack.unit)}</option>` : ""}`;
+    select.value = chosen === "pack" && !pack ? "stock" : chosen || (pack ? "pack" : "stock");
+    select.dataset.builtFor = signature;
+    delete select.dataset.initialValue;
+  }
+  return { item, pack, usingPack: select.value === "pack" && Boolean(pack) };
+}
+
+function readProductionLine(line) {
+  const { item, pack, usingPack } = syncProductionUnit(line);
+  const input = line.querySelector("[data-production-quantity]");
+  const typed = parseQuantity(input.value);
+  return {
+    line,
+    item,
+    pack,
+    usingPack,
+    typed,
+    quantity: Number.isNaN(typed) ? NaN : roundQuantity(usingPack ? typed * pack.size : typed),
+  };
+}
+
+function describeProductionLine(line) {
+  const hint = line.querySelector("[data-production-hint]");
+  if (!hint) return;
+  const { item, pack, usingPack, typed, quantity } = readProductionLine(line);
+  if (!item) {
+    hint.textContent = "";
+    return;
+  }
+  const conversion = pack ? `1 ${pack.unit} = ${number.format(pack.size)} ${item.unit}` : `Em ${item.unit}`;
+  if (Number.isNaN(typed) || !(quantity > 0)) {
+    hint.textContent = conversion;
+    return;
+  }
+  const reading = usingPack
+    ? `${packAmount(pack, typed)} = ${number.format(quantity)} ${item.unit}`
+    : `${number.format(quantity)} ${item.unit}`;
+  hint.textContent = `${conversion} · ${reading}`;
+}
+
+function productionLines(container) {
+  return [...document.querySelectorAll(`#${container} .production-line`)].map(readProductionLine);
 }
 
 function readProductionLines(container) {
-  return [...document.querySelectorAll(`#${container} .production-line`)]
-    .map((linha) => ({ inventory_id: linha.querySelector("select").value, quantity: Number(linha.querySelector("input").value) }))
-    .filter((linha) => linha.inventory_id && linha.quantity > 0);
+  return productionLines(container)
+    .map((line) => ({ inventory_id: line.item?.id, quantity: line.quantity }))
+    .filter((line) => line.inventory_id && line.quantity > 0);
 }
 
 function openProduction() {
@@ -1814,7 +1959,11 @@ function refreshProductionPreview() {
   const preview = document.getElementById("production-preview");
   if (!preview) return;
   const form = document.getElementById("production-form");
-  const linhas = readProductionLines("production-lines");
+  const allLines = productionLines("production-lines");
+  allLines.forEach((line) => describeProductionLine(line.line));
+  const linhas = allLines
+    .map((line) => ({ inventory_id: line.item?.id, quantity: line.quantity }))
+    .filter((line) => line.inventory_id && line.quantity > 0);
   const saida = state.inventory.find((row) => row.id === form.elements.output_inventory_id.value);
   const quantidade = Number(form.elements.output_quantity.value || 0);
   const unidade = document.getElementById("production-output-unit");
@@ -1882,7 +2031,16 @@ function refreshProductionPreview() {
 async function submitProduction(event) {
   event.preventDefault();
   const form = new FormData(event.currentTarget);
-  const inputs = readProductionLines("production-lines");
+  const linhas = productionLines("production-lines");
+  const invalidas = linhas.filter((line) => line.item && !(line.quantity > 0));
+  if (invalidas.length) {
+    refreshProductionPreview();
+    invalidas[0].line.querySelector("[data-production-quantity]").focus();
+    return toast("Informe a quantidade de cada insumo, ou remova a linha que sobrou.", "error");
+  }
+  const inputs = linhas
+    .map((line) => ({ inventory_id: line.item?.id, quantity: line.quantity }))
+    .filter((line) => line.inventory_id && line.quantity > 0);
   if (!inputs.length) return toast("Inclua ao menos um insumo na fabricação.", "error");
   const payload = {
     recipe_id: form.get("recipe_id") || null,
@@ -2946,6 +3104,11 @@ function setRefreshing(value) {
   button.disabled = value;
   button.classList.toggle("is-loading", value);
   document.body.classList.toggle("is-refreshing", value);
+  const status = document.getElementById("data-status");
+  if (status) {
+    status.textContent = "Atualizando dados";
+    status.hidden = !value;
+  }
 }
 function toast(message, type) { const element = document.getElementById("toast"); element.textContent = message; element.className = `toast ${type}`; element.hidden = false; clearTimeout(toast.timer); toast.timer = setTimeout(() => { element.hidden = true; }, 4200); }
 
@@ -4029,16 +4192,15 @@ async function loadDispatch() {
   if (loadDispatch.pending) return;
   loadDispatch.pending = true;
   try {
-    const [board, territory, zones, runs, pending, shifts, storeLocation] = await Promise.all([
+    const [board, territory, zones, runs, pending, shifts] = await Promise.all([
       api(`/api/delivery/board?days=${state.deliveryPeriod}`),
       api(`/api/delivery/territory?days=90&horizon=7`),
       api("/api/delivery/zones"),
       api(`/api/delivery/runs?days=${state.deliveryPeriod}`),
       api(`/api/delivery/pending?days=${state.deliveryPeriod}`),
       api(`/api/delivery/shifts?days=${state.deliveryPeriod}`),
-      api("/api/delivery/store-location"),
     ]);
-    state.dispatch = { board, territory, zones, runs, pending, shifts, storeLocation };
+    state.dispatch = { board, territory, zones, runs, pending, shifts };
     renderDispatch();
   } catch (error) {
     toast(error.message || "Não foi possível carregar a operação de rua.", "error");
@@ -4055,7 +4217,6 @@ function renderDispatch() {
   renderTerritory(dados.territory);
   renderMenuByZone(dados.territory.menu || []);
   renderRuns(dados.runs);
-  renderGeofence(dados.storeLocation);
   renderPendingSales(dados.pending);
   renderShiftLog(dados.shifts);
   // As leituras do painel de rua entram junto das do acerto: as duas
@@ -4162,48 +4323,6 @@ function renderRuns(entregas) {
 }
 
 // A venda que veio da rua e ainda não é faturamento. O painel só existe quando
-// há algo a conferir: um quadro vazio todo dia ensina a ignorar o quadro.
-// A cerca do ponto. Capturar de dentro da loja é o ponto inteiro: o conversor
-// de endereço devolve o meio da rua, e duzentos metros de erro recusariam quem
-// chegou na porta.
-function renderGeofence(local) {
-  if (!local) return;
-  const marcada = local.latitude !== null && local.longitude !== null;
-  setText("#dl-geofence-state", !marcada ? "Sem posição" : "Conferindo");
-  document.getElementById("dl-geofence-radius").value = local.radius_m;
-  setText("#dl-geofence-summary", marcada
-    ? `Loja marcada em ${local.latitude.toFixed(5)}, ${local.longitude.toFixed(5)}${local.address ? ` · ${local.address}` : ""}. Definida em ${formatDateTime(local.updated_at)}.`
-    : "A loja ainda não tem posição marcada. Até ela ser marcada, check-in e check-out ficam bloqueados.");
-  document.getElementById("dl-geofence-summary").className = `modal-result full ${marcada ? "positive" : "neutral"}`;
-}
-
-async function capturarLocalDaLoja() {
-  const botao = document.getElementById("dl-geofence-capture");
-  if (!navigator.geolocation) return toast("Este aparelho não informa localização.", "error");
-  botao.disabled = true;
-  try {
-    const posicao = await new Promise((ok, erro) => navigator.geolocation.getCurrentPosition(ok, erro, {
-      enableHighAccuracy: true, timeout: 15000, maximumAge: 0,
-    }));
-    // Margem pior que o raio marcaria a loja no lugar errado, e aí a cerca
-    // passa a recusar quem chega. Melhor não gravar do que gravar torto.
-    const raio = Number(document.getElementById("dl-geofence-radius").value || 150);
-    if (posicao.coords.accuracy > raio) {
-      return toast(`O aparelho está com ${Math.round(posicao.coords.accuracy)} m de margem de erro, mais que o raio de ${raio} m. Vá para perto de uma janela ou saia à porta e tente de novo.`, "error");
-    }
-    await submitData("/api/delivery/store-location", {
-      latitude: posicao.coords.latitude,
-      longitude: posicao.coords.longitude,
-      radius_m: raio,
-      required: true,
-    }, "Posição da loja marcada.", "PUT");
-  } catch (_) {
-    toast("Não foi possível ler a localização. Autorize o acesso no navegador e tente de novo.", "error");
-  } finally {
-    botao.disabled = false;
-  }
-}
-
 function renderPendingSales(pendentes) {
   const painel = document.getElementById("dl-pending-panel");
   painel.hidden = !pendentes.length;

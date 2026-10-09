@@ -55,7 +55,16 @@ def ambiente(tmp_path_factory):
             client.post("/api/orders", json={
                 "items": [{"product_id": "acai-500", "quantity": 1}], "is_delivery": True,
                 "delivery_fee": 6, "customer_name": "Ana", "channel": "Delivery"})
-            client.post("/api/field/check-in", json={"courier_id": entregador["id"]})
+            # O aplicativo de rua envia a posição ao bater o ponto. O cenário
+            # de navegador precisa fazer o mesmo, para não depender da antiga
+            # brecha que deixava abrir turno sem a loja marcada ou sem GPS.
+            client.put("/api/delivery/store-location", json={
+                "latitude": -22.9632676, "longitude": -43.406644, "radius_m": 150,
+            }).raise_for_status()
+            client.post("/api/field/check-in", json={
+                "courier_id": entregador["id"],
+                "latitude": -22.9632676, "longitude": -43.406644, "accuracy": 10,
+            }).raise_for_status()
             corrida = client.post(f"/api/field/runs?courier_id={entregador['id']}", json={
                 "zone_id": zona["id"], "items": [{"product_id": "acai-500", "quantity": 1}],
                 "customer_name": "Ana"}).json()

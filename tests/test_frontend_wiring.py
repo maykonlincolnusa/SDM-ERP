@@ -212,6 +212,35 @@ def test_a_conversao_do_insumo_e_refeita_quando_qualquer_ponta_muda():
     assert "refreshInventoryPack();" in MANAGE_JS
 
 
+def test_fabricacao_converte_barra_em_unidade_de_estoque_sem_reinterpretar_a_ficha():
+    """A ficha salva kg, mas quem retira do freezer conta barras."""
+
+    assert 'data-production-unit' in APP_JS
+    assert 'usingPack ? typed * pack.size : typed' in APP_JS
+    # Ao abrir uma ficha, 8,4 significa 8,4 kg — nunca 8,4 barras.
+    assert 'unit = quantity === "" ? "" : "stock"' in APP_JS
+    assert 'unidade.dataset.initialValue = unit' in APP_JS
+
+
+def test_relatorios_pesados_sao_carregados_quando_a_tela_e_aberta():
+    """Uma promoção lenta não pode atrasar a venda no balcão."""
+
+    essential = re.search(r"const CARGA_ESSENCIAL = \{([\s\S]*?)\n\};", APP_JS).group(1)
+    assert "promotionMonth" not in essential
+    assert "forecast:" not in essential
+    assert "const CARGA_POR_TELA" in APP_JS
+    assert 'promotions: ["promotions", "promotionMonth"]' in APP_JS
+    assert "async function carregarDadosDaTela" in APP_JS
+    assert "else carregarDadosDaTela(target);" in APP_JS
+
+
+def test_imagem_decorativa_nao_atrasa_o_shell_do_aplicativo():
+    service_worker = (ESTATICO / "service-worker.js").read_text(encoding="utf-8")
+
+    assert 'loading="lazy" decoding="async" fetchpriority="low"' in HTML
+    assert '"/static/assets/acai-copo.png"' not in service_worker
+
+
 # ----------------------------------------------------------------------
 # A entrega, do balcao ao mapa
 # ----------------------------------------------------------------------

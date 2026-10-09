@@ -430,6 +430,61 @@ def test_o_mesmo_pedido_nao_entra_duas_vezes(tmp_path):
     assert segundo["skipped"] == 1
 
 
+def test_duas_entregas_com_mesmo_numero_visivel_chegam_a_fila(tmp_path):
+    """O ID da Anota, não o número mostrado, separa pedidos diferentes."""
+
+    fila = {
+        "success": True,
+        "data": {"orders": [{"orderId": "pedido-a"}, {"orderId": "pedido-b"}]},
+    }
+    pedidos = {
+        "pedido-a": {
+            "displayId": "42", "total": 30.0, "deliveryFee": 5.0, "type": "DELIVERY",
+            "customer": {"name": "Guimarães"},
+            "itens": [{"title": "Açaí 500 ml", "quantity": 1}],
+        },
+        # Algumas respostas chegam envelopadas em `info`; o nome precisa ser
+        # mantido exatamente como veio do pedido, inclusive o acento.
+        "pedido-b": {"info": {
+            "displayId": "42", "total": 28.0, "deliveryFee": 4.0, "type": "DELIVERY",
+            "customer": {"name": "Guimarães"},
+            "itens": [{"title": "Açaí 500 ml", "quantity": 1}],
+        }},
+    }
+
+    def transporte(method, url, *, headers, body, timeout):
+        if "/ping/get/" in url:
+            return 200, pedidos[url.rsplit("/", 1)[-1]]
+        return 200, fila
+
+    store = DemoStore(tmp_path / "store.json")
+    servico = AnotaAiService(
+        store, ERPService(store), FileVault(tmp_path / "cofre.json"), AnotaAiClient(transporte),
+    )
+    servico.vault.write(SECRET_NAME, {"integration_key": CHAVE})
+
+    resumo = servico.sync()
+
+    entregas = [linha for linha in store.list("orders") if linha.get("anota_order_id")]
+    assert resumo["queued"] == 2
+    assert resumo["created"] == 2
+    assert len(entregas) == 2
+    assert {linha["customer_name"] for linha in entregas} == {"Guimarães"}
+    assert len({linha["id"] for linha in entregas}) == 2
+
+    from app.schemas import CourierCheckIn, CourierCreate, StoreLocation
+    from app.services import DeliveryService, DispatchService
+
+    despacho = DispatchService(store)
+    entregador = DeliveryService(store).create_courier(CourierCreate(name="Guimarães"))
+    despacho.set_store_location(StoreLocation(latitude=-22.9632676, longitude=-43.406644))
+    despacho.check_in(entregador, CourierCheckIn(latitude=-22.9632676, longitude=-43.406644, accuracy=10))
+
+    fila_da_rua = despacho.queue(entregador["id"])["orders"]
+    assert len(fila_da_rua) == 2
+    assert {linha["customer_name"] for linha in fila_da_rua} == {"Guimarães"}
+
+
 def test_o_id_conversa_com_o_importador_de_planilha(tmp_path):
     """Os dois caminhos descrevem o mesmo pedido: o id é o que os concilia.
 

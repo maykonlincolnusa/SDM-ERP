@@ -107,7 +107,8 @@ def test_production_preview_rejects_consuming_its_own_output():
       const fields={'production-form':{elements:{output_inventory_id:{value:'item'},output_quantity:{value:'2'}}},'production-preview':{},'production-output-unit':{},'production-override':{checked:false},'production-override-field':{}};
       global.document={getElementById:id=>fields[id]};
       global.state={inventory:[{id:'item',quantity:5,unit:'kg',unit_cost:10}]};
-      global.readProductionLines=()=>[{inventory_id:'item',quantity:1}];
+      global.productionLines=()=>[{line:{},item:{id:'item'},quantity:1}];
+      global.describeProductionLine=()=>{};
       refreshProductionPreview();
       assert.match(fields['production-preview'].textContent,/diferente/);
       assert.equal(fields['production-preview'].className,'modal-result full negative');

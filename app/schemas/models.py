@@ -905,23 +905,15 @@ class DeliveryZoneUpdate(BaseModel):
 
 
 class StoreLocation(BaseModel):
-    """Onde fica a loja, para o ponto ser batido de dentro dela.
-
-    Capturada de dentro da loja, nao convertida do endereco: o conversor
-    devolve o meio da rua, e duzentos metros de erro ja recusariam quem chegou.
-    """
+    """Posição de referência da loja, sem restringir o ponto do entregador."""
 
     latitude: float = Field(ge=-90, le=90)
     longitude: float = Field(ge=-180, le=180)
-    # Raio em que o ponto e aceito. Abaixo de 50 m o erro normal de GPS urbano
-    # recusaria quem esta na porta; acima de 2 km a cerca deixa de cercar.
+    # Mantido para compatibilidade com configurações anteriores.
     radius_m: int = Field(default=150, ge=50, le=2000)
     address: str | None = Field(default=None, max_length=160)
-    # O ponto precisa ser conferido. Aceitar o registro sem validar a posição
-    # transforma check-in em um botão que funciona de qualquer lugar.
-    # Mantemos o campo para aceitar clientes antigos, mas o serviço sempre
-    # grava e aplica a conferência.
-    required: bool = True
+    # Mantido para aceitar configurações antigas; não bloqueia o ponto.
+    required: bool = False
 
 
 class CourierCheckIn(BaseModel):

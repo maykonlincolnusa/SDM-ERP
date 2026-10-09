@@ -72,6 +72,7 @@
           <button class="icon-button mobile-nav" id="mobile-menu" title="Abrir menu" aria-controls="main-navigation" aria-expanded="false"><i data-lucide="menu"></i></button>
           <div class="date-context"><span id="today-label">Hoje</span><strong>Operação em tempo real</strong></div>
           <div class="topbar-actions">
+            <span class="data-status" id="data-status" role="status" aria-live="polite" hidden>Atualizando dados</span>
             <button class="icon-button" type="button" id="refresh-data" title="Atualizar dados"><i data-lucide="refresh-cw"></i></button>
             <button class="icon-button" type="button" id="install-app" title="Instalar aplicativo" hidden><i data-lucide="download"></i></button>
             <button class="primary-button" type="button" data-modal="sale"><i data-lucide="plus"></i><span>Nova venda</span></button>
@@ -80,11 +81,20 @@
 
         <section class="view active" id="dashboard" aria-labelledby="dashboard-title">
           <div class="page-heading">
-            <div><p class="eyebrow">Visão geral</p><h1 id="dashboard-title">Bom trabalho, vamos cuidar da loja.</h1></div>
+            <div><p class="eyebrow">Centro de operação</p><h1 id="dashboard-title">Decida o próximo passo da loja.</h1><p class="page-description">Os números essenciais, as pendências e as ações de hoje em um só lugar.</p></div>
             <label class="period-control">Período <select id="period-select" aria-label="Selecionar período"><option value="7">Últimos 7 dias</option><option value="30">Últimos 30 dias</option></select></label>
           </div>
 
           <p class="period-gap" id="period-gap" hidden></p>
+          <section class="command-center" aria-labelledby="command-center-title">
+            <div class="command-center-copy"><p class="eyebrow">Comece por aqui</p><h2 id="command-center-title">Ações do dia</h2><p>Registre o que aconteceu agora. O restante do sistema se atualiza a partir desses movimentos.</p></div>
+            <div class="quick-actions">
+              <button class="quick-action primary" type="button" data-modal="sale"><i data-lucide="plus"></i><span><strong>Nova venda</strong><small>Registrar pedido</small></span></button>
+              <button class="quick-action" type="button" data-modal="withdrawal"><i data-lucide="package-minus"></i><span><strong>Saída de insumo</strong><small>Baixar estoque</small></span></button>
+              <button class="quick-action" type="button" data-modal="production"><i data-lucide="blend"></i><span><strong>Fabricação</strong><small>Transformar insumos</small></span></button>
+              <button class="quick-action" type="button" data-view-target="closing"><i data-lucide="calendar-check"></i><span><strong>Fechar o dia</strong><small>Conferir caixa</small></span></button>
+            </div>
+          </section>
           <section class="panel advisor-teaser" aria-labelledby="advisor-teaser-title">
             <div class="panel-header">
               <div><p class="eyebrow">Reunião da semana</p><h2 id="advisor-teaser-title">O que levar ao dono</h2></div>
@@ -107,7 +117,7 @@
 
             <section class="panel best-seller" aria-labelledby="featured-title">
               <div class="panel-header"><div><p class="eyebrow">Ação do dia</p><h2 id="featured-title">Faça render</h2></div><button class="icon-button" type="button" title="Ver cardápio" data-view-target="products"><i data-lucide="arrow-up-right"></i></button></div>
-              <div class="featured-content"><div><strong id="featured-name">Produto campeão</strong><p id="featured-copy">Acompanhe o item de maior giro para garantir disponibilidade.</p><span class="soft-chip"><i data-lucide="trending-up"></i><span id="featured-amount">--</span></span></div><img src="/static/assets/acai-copo.png" alt="Copo de açaí com frutas e granola" /></div>
+              <div class="featured-content"><div><strong id="featured-name">Produto campeão</strong><p id="featured-copy">Acompanhe o item de maior giro para garantir disponibilidade.</p><span class="soft-chip"><i data-lucide="trending-up"></i><span id="featured-amount">--</span></span></div><img src="/static/assets/acai-copo.png" alt="Copo de açaí com frutas e granola" loading="lazy" decoding="async" fetchpriority="low" /></div>
             </section>
           </div>
 
@@ -231,7 +241,9 @@
         </section>
 
         <section class="view" id="consumption" aria-labelledby="consumption-title">
-          <div class="page-heading"><div><p class="eyebrow">Saída de insumos</p><h1 id="consumption-title">Consumo</h1><p class="page-description">Tudo que saiu do estoque no período: venda, retirada operacional e perdas ficam separados.</p></div><div class="heading-actions"><button class="primary-button" type="button" data-modal="withdrawal"><i data-lucide="package-minus"></i><span>Registrar retirada</span></button><button class="secondary-button" type="button" data-modal="adjust"><i data-lucide="sliders-horizontal"></i><span>Lançar baixa</span></button></div></div>
+          <div class="page-heading"><div><p class="eyebrow">Saída de insumos</p><h1 id="consumption-title">Consumo</h1><p class="page-description">Veja o açaí na linguagem da operação: barras e kg no estoque; copos e ml somente nas vendas registradas.</p></div><div class="heading-actions"><button class="primary-button" type="button" data-modal="withdrawal"><i data-lucide="package-minus"></i><span>Registrar retirada</span></button><button class="secondary-button" type="button" data-modal="adjust"><i data-lucide="sliders-horizontal"></i><span>Lançar baixa</span></button></div></div>
+
+          <section class="panel stock-flow-panel" aria-labelledby="consumption-flow-title"><div class="panel-header"><div><p class="eyebrow">Do freezer ao copo</p><h2 id="consumption-flow-title">Fluxo conferível do açaí</h2></div></div><p class="panel-note">A ficha técnica baixa kg do estoque quando a venda é registrada. Os ml abaixo vêm dos copos vendidos — não são uma conversão de peso.</p><div class="stock-flow" id="consumption-flow"></div></section>
 
           <div class="metric-grid consumption-metrics">
             <article class="metric-card"><span class="metric-icon revenue"><i data-lucide="coins"></i></span><p>Custo consumido</p><strong id="consumption-total">--</strong><small id="consumption-daily">no período</small></article>
@@ -248,7 +260,7 @@
 
           <section class="panel table-panel">
             <div class="filter-row"><span class="field-label">Por insumo</span><label class="search-field"><i data-lucide="search"></i><input id="consumption-search" type="search" placeholder="Buscar insumo" /></label></div>
-            <div class="table-scroll"><table><thead><tr><th>Insumo</th><th class="align-right">Vendido</th><th class="align-right">Retirado</th><th class="align-right">Perdido</th><th class="align-right">Custo</th><th class="align-right">Saldo</th><th>Duração</th></tr></thead><tbody id="consumption-body"></tbody></table></div>
+            <div class="table-scroll"><table><thead><tr><th>Insumo</th><th class="align-right">Entrou</th><th class="align-right">Virou venda</th><th class="align-right">Retirado</th><th class="align-right">Perdido</th><th class="align-right">Custo</th><th class="align-right">Saldo</th><th>Duração</th></tr></thead><tbody id="consumption-body"></tbody></table></div>
           </section>
 
           <section class="panel table-panel" id="crossing-panel">
@@ -407,17 +419,6 @@
             <div class="panel-header"><div><p class="eyebrow">Agora</p><h2 id="dl-now-title">Na rua</h2></div><span class="soft-chip" id="dl-now-chip">--</span></div>
             <p class="panel-note">Quem fez check-in e o que está a caminho neste momento. A entrega marcada em vermelho passou do tempo combinado para a zona — é a única linha desta tela que pede uma ação agora.</p>
             <div class="now-grid" id="dl-now"></div>
-          </section>
-
-          <section class="panel" id="dl-geofence-panel" aria-labelledby="dl-geofence-title">
-            <div class="panel-header"><div><p class="eyebrow">Ponto</p><h2 id="dl-geofence-title">Onde o ponto pode ser batido</h2></div><span class="soft-chip" id="dl-geofence-state">--</span></div>
-            <p class="panel-note">Ponto batido de casa não é ponto. O check-in e o check-out só são aceitos dentro do raio da loja. <strong>Capture a posição de dentro da loja</strong> — converter o endereço em coordenada devolve o meio da rua, e duzentos metros de erro já recusariam quem chegou na porta.</p>
-            <div class="form-grid two">
-              <label>Raio aceito<input id="dl-geofence-radius" type="number" min="50" max="2000" step="10" value="150" /><small class="field-hint">Metros. Abaixo de 50 o erro normal de GPS na cidade recusa quem está na porta.</small></label>
-            </div>
-            <p class="modal-result full neutral" id="dl-geofence-summary"></p>
-            <button class="primary-button" type="button" id="dl-geofence-capture"><i data-lucide="crosshair"></i><span>Estou na loja — usar esta posição</span></button>
-            <p class="panel-note"><i data-lucide="info"></i> Isto levanta a barreira, não a fecha: quem quiser burlar instala um simulador de GPS no próprio celular, e o navegador não tem como saber. O que muda é que deixa de ser possível bater o ponto da cama sem esforço nenhum — e toda leitura fica registrada.</p>
           </section>
 
           <section class="panel table-panel" id="dl-pending-panel" aria-labelledby="dl-pending-title" hidden>
